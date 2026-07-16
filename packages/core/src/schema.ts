@@ -32,17 +32,43 @@ export type InputValidationResult =
   | InputValidationSuccess
   | InputValidationFailure;
 
-const ajv = new Ajv2020({
-  allowUnionTypes: true,
-  allErrors: true,
-  strict: true,
-  useDefaults: true,
-  validateFormats: true,
-});
-
-addFormats(ajv);
-
 const validators = new WeakMap<ObjectSchema202012, ValidateFunction<unknown>>();
+const validatorsById = new Map<
+  string,
+  { fingerprint: string; validator: ValidateFunction<unknown> }
+>();
+
+function createCompiler(): Ajv2020 {
+  const compiler = new Ajv2020({
+    allowUnionTypes: true,
+    allErrors: true,
+    strict: true,
+    useDefaults: true,
+    validateFormats: true,
+  });
+  addFormats(compiler);
+  return compiler;
+}
+
+function canonicalize(value: unknown): unknown {
+  if (Array.isArray(value)) {
+    return value.map(canonicalize);
+  }
+  if (typeof value !== "object" || value === null) {
+    return value;
+  }
+
+  return Object.fromEntries(
+    Object.entries(value)
+      .filter(([, child]) => child !== undefined)
+      .sort(([left], [right]) => left.localeCompare(right))
+      .map(([key, child]) => [key, canonicalize(child)]),
+  );
+}
+
+function schemaFingerprint(schema: ObjectSchema202012): string {
+  return JSON.stringify(canonicalize(schema));
+}
 
 function issue(
   keyword: string,
@@ -89,8 +115,28 @@ function compileValidator(
     return cached;
   }
 
-  const compiled = ajv.compile(schema as AnySchema);
+  const fingerprint =
+    schema.$id === undefined ? undefined : schemaFingerprint(schema);
+  const identified =
+    schema.$id === undefined ? undefined : validatorsById.get(schema.$id);
+  if (identified !== undefined) {
+    if (identified.fingerprint !== fingerprint) {
+      throw new Error(
+        `Schema $id ${schema.$id} is already registered with a different definition.`,
+      );
+    }
+    validators.set(schema, identified.validator);
+    return identified.validator;
+  }
+
+  // Ajv treats defensive copies that retain the same canonical $id as duplicate
+  // registrations in one instance. Compile each unique schema identity in isolation,
+  // then share the validator across structurally equivalent copies by $id.
+  const compiled = createCompiler().compile(schema as AnySchema);
   validators.set(schema, compiled);
+  if (schema.$id !== undefined && fingerprint !== undefined) {
+    validatorsById.set(schema.$id, { fingerprint, validator: compiled });
+  }
   return compiled;
 }
 

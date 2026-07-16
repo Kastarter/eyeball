@@ -46,6 +46,65 @@ describe("input schema validation", () => {
     expect(input).not.toHaveProperty("bodyFormat");
   });
 
+  it("validates defensive schema copies that retain the same canonical id", () => {
+    const identifiedTool = {
+      ...tool,
+      inputSchema: {
+        ...tool.inputSchema,
+        $id: "urn:eyeball:test:send_email:1.0.0:gmail",
+      },
+    } satisfies ToolDefinition;
+    const copiedTool = structuredClone(identifiedTool);
+
+    expect(
+      validateInput(identifiedTool, {
+        to: "buyer@example.com",
+        body: "First",
+      }).ok,
+    ).toBe(true);
+    expect(
+      validateInput(copiedTool, {
+        to: "buyer@example.com",
+        body: "Second",
+      }).ok,
+    ).toBe(true);
+  });
+
+  it("rejects conflicting definitions that reuse a canonical schema id", () => {
+    const first = {
+      ...tool,
+      inputSchema: {
+        ...tool.inputSchema,
+        $id: "urn:eyeball:test:conflicting-schema:1.0.0",
+      },
+    } satisfies ToolDefinition;
+    const conflicting = {
+      ...first,
+      inputSchema: {
+        ...first.inputSchema,
+        required: ["to", "body", "bodyFormat"],
+      },
+    } satisfies ToolDefinition;
+
+    expect(
+      validateInput(first, { to: "buyer@example.com", body: "First" }).ok,
+    ).toBe(true);
+    expect(
+      validateInput(conflicting, {
+        to: "buyer@example.com",
+        body: "Second",
+      }),
+    ).toMatchObject({
+      ok: false,
+      errors: [
+        {
+          keyword: "schema_profile",
+          message: expect.stringContaining("different definition"),
+        },
+      ],
+    });
+  });
+
   it("does not replace an explicitly supplied null with a default", () => {
     const result = validateInput(tool, {
       to: "buyer@example.com",

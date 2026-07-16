@@ -16,9 +16,11 @@
   },
   "scripts": {
     "build": "tsc -p tsconfig.json",
-    "test": "vitest run",
+    "generate": "node scripts/generate-baseline.mjs",
+    "check:generated": "node scripts/generate-baseline.mjs --check",
+    "test": "node scripts/generate-baseline.mjs --check && vitest run",
     "typecheck": "tsc -p tsconfig.json --noEmit",
-    "lint": "biome check src test"
+    "lint": "biome check scripts src test"
   },
   "dependencies": {
     "@eyeball/core": "workspace:*"

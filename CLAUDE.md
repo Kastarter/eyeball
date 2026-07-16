@@ -5,7 +5,8 @@ authenticated tools across SaaS, messaging, voice, social data, and business sys
 
 ## Current State
 
-- Monorepo scaffold is green; `@eyeball/core` implements RFC 001 contracts and framework converters with 77 tests.
+- Monorepo scaffold is green; `@eyeball/core` implements RFC 001 contracts and framework converters with 79 tests.
+- `@eyeball/catalog` compiles the frozen 20-capability, 187-contract, 157-provider baseline, publishes semantic email/messaging contracts and the RFC Gmail manifest, and validates registry materialization with 23 tests.
 - RFCs remain review-status; executor, toolkit, SDK, MCP, and cloud implementations remain pending.
 - The eight-document spec suite is:
   - `SPEC.md` — product, architecture, repos, delivery order, open questions, document map.
