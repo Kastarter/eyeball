@@ -26,6 +26,10 @@ export const noopLogger: ExecutorLogger = {
 export type FetchImplementation = typeof fetch;
 
 export interface AdapterContext {
+  /** Trusted project scope from the authenticated executor request. */
+  projectId: string;
+  /** Trusted external-user scope from ExecuteRequest. */
+  userId: string;
   tool: ToolDefinition;
   canonicalInput: Readonly<Record<string, JsonValue>>;
   credential: ResolvedCredential;

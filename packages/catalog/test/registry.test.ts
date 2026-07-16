@@ -126,7 +126,7 @@ describe("catalog registry materialization", () => {
       "2026-07-16T00:00:00.000Z",
     );
     expect(manifest).toMatchObject({
-      catalogVersion: "1.0",
+      catalogVersion: "1.1",
       generatedAt: "2026-07-16T00:00:00.000Z",
     });
     expect(manifest.providers).toHaveLength(1);
@@ -154,7 +154,11 @@ describe("catalog registry build errors", () => {
     ) as CapabilityToolContract;
     inventedContract.name = "invented_tool";
     expect(
-      () => new CatalogRegistry({ contracts: [inventedContract] }),
+      () =>
+        new CatalogRegistry({
+          catalogVersion: "1.0",
+          contracts: [inventedContract],
+        }),
     ).toThrow(/not present in catalog 1\.0/);
   });
 

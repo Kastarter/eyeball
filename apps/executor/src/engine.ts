@@ -604,6 +604,8 @@ export class ExecutionEngine {
         credential.connectionId,
       );
       const output = await adapter.execute({
+        projectId,
+        userId: request.userId,
         tool,
         canonicalInput: request.input,
         credential,

@@ -38,6 +38,8 @@ async function authorizationFor(
     return new Response(null, { status: 204 });
   }) as typeof fetch;
   const context: AdapterContext = {
+    projectId: "project_test",
+    userId: "user_test",
     tool,
     canonicalInput: {},
     credential,
@@ -79,6 +81,8 @@ describe("provider HTTP client", () => {
   it("does not send configured credentials to another origin", async () => {
     let calls = 0;
     const context: AdapterContext = {
+      projectId: "project_test",
+      userId: "user_test",
       tool,
       canonicalInput: {},
       credential: { type: "oauth2", accessToken: "fixture:secret" },

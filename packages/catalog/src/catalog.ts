@@ -11,7 +11,8 @@ import type {
   ProviderCatalogEntry,
 } from "./types.js";
 
-export const CATALOG_VERSION = "1.0" as const;
+/** Current additive catalog release. The generated 1.0 baseline remains frozen below. */
+export const CATALOG_VERSION = "1.1" as const;
 export const CATALOG_SNAPSHOT_DATE = "2026-07-16" as const;
 
 const capabilitiesBySlug = new Map<CapabilitySlug, CapabilityCatalogEntry>(

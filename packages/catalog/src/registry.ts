@@ -63,6 +63,22 @@ const ANNOTATION_KEYS = [
   "async",
 ] as const;
 
+function catalogVersionParts(
+  version: CatalogVersion,
+): readonly [number, number] {
+  const [major = "0", minor = "0"] = version.split(".");
+  return [Number(major), Number(minor)];
+}
+
+function isCompatibleManifestVersion(
+  manifestVersion: CatalogVersion,
+  registryVersion: CatalogVersion,
+): boolean {
+  const [manifestMajor, manifestMinor] = catalogVersionParts(manifestVersion);
+  const [registryMajor, registryMinor] = catalogVersionParts(registryVersion);
+  return manifestMajor === registryMajor && manifestMinor <= registryMinor;
+}
+
 function contractKey(
   capability: CapabilitySlug,
   name: string,
@@ -222,7 +238,7 @@ function assertManifestHeader(
     throw new Error(`${context} has unsupported schema version.`);
   }
   assertCatalogVersion(manifest.catalogVersion, context);
-  if (manifest.catalogVersion !== catalogVersion) {
+  if (!isCompatibleManifestVersion(manifest.catalogVersion, catalogVersion)) {
     throw new Error(
       `${context} targets catalog ${manifest.catalogVersion}; registry targets ${catalogVersion}.`,
     );
@@ -419,7 +435,7 @@ export class CatalogRegistry {
   readonly #manifests = new Map<string, ProviderManifest>();
 
   constructor(options: CatalogRegistryOptions = {}) {
-    const catalogVersion = options.catalogVersion ?? "1.0";
+    const catalogVersion = options.catalogVersion ?? "1.1";
     assertCatalogVersion(catalogVersion, "Catalog registry");
     this.catalogVersion = catalogVersion;
     this.registerContracts(options.contracts ?? []);
@@ -483,7 +499,10 @@ export class CatalogRegistry {
 
   registerManifest(manifest: ProviderManifest): this {
     assertManifestHeader(manifest, this.catalogVersion);
-    if (this.catalogVersion === "1.0") {
+    if (
+      manifest.catalogVersion === "1.0" &&
+      getProviderCatalogEntry(manifest.toolkit.slug) !== undefined
+    ) {
       assertCatalogProviderIdentity(manifest);
     }
     if (this.#manifests.has(manifest.toolkit.slug)) {
@@ -512,9 +531,11 @@ export class CatalogRegistry {
         implementation.requiredScopes,
         `Required scopes for ${manifest.toolkit.slug}.${implementation.canonicalTool}`,
       );
+      const baselineProvider = getProviderCatalogEntry(manifest.toolkit.slug);
       if (
-        this.catalogVersion === "1.0" &&
-        !getProviderCatalogEntry(manifest.toolkit.slug)?.memberships.some(
+        manifest.catalogVersion === "1.0" &&
+        baselineProvider !== undefined &&
+        !baselineProvider.memberships.some(
           ({ capability }) => capability === implementation.capability,
         )
       ) {

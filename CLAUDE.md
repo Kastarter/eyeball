@@ -6,9 +6,9 @@ authenticated tools across SaaS, messaging, voice, social data, and business sys
 ## Current State
 
 - Monorepo scaffold is green; `@eyeball/core` implements RFC 001 contracts and framework converters with 79 tests.
-- `@eyeball/catalog` compiles the frozen 20-capability, 187-contract, 157-provider baseline, publishes semantic email/messaging contracts plus ten provider manifests, and validates registry materialization with 32 tests.
-- `@eyeball/executor` implements RFC 001 sync/async execution, polling, idempotency, API-key isolation, and adapter dispatch with 40 tests, including real-mock email and messaging flows.
-- `@eyeball/toolkits` implements Gmail, Outlook, SMTP, SendGrid, Resend, and Mailgun email adapters plus Slack, Discord, Telegram, and WhatsApp Business messaging adapters; broader toolkit, SDK, MCP, and cloud implementations remain pending.
+- `@eyeball/catalog` keeps the frozen catalog 1.0 baseline and ships catalog 1.1 with 12 canonical voice contracts, 11 RFC 002 voice-agent contracts, and six voice manifests; catalog tests total 37.
+- `@eyeball/executor` implements RFC 001 sync/async execution, polling, idempotency, API-key isolation, and adapter dispatch with 46 tests, including in-process email, messaging, voice, and voice-agent mock flows.
+- `@eyeball/toolkits` implements the P0 email/messaging adapters plus Twilio, LiveKit, ElevenLabs, Deepgram, Pipecat, and the native `voice-agents` adapter.
 - The eight-document spec suite is:
   - `SPEC.md` — product, architecture, repos, delivery order, open questions, document map.
   - `docs/PROVIDERS.md` — definitive catalog 1.0 provider and canonical-tool inventory.
@@ -44,12 +44,14 @@ authenticated tools across SaaS, messaging, voice, social data, and business sys
 - Execution storage and scheduling sit behind `ExecutionStore` and `TaskQueue`; OSS currently uses atomic in-memory idempotency plus a bounded promise queue.
 - Shared adapter contracts live in `@eyeball/core`; `@eyeball/toolkits` depends on core, and the thin executor app registers toolkit adapters by slug.
 - Toolkit adapters receive materialized tools, defaulted canonical input, one resolved credential, a trusted manifest base URL, fetch, clock, and logger.
+- Adapter contexts pin trusted project/user scope; the native voice-agent adapter keeps immutable revisions and bindings behind an injectable `AgentStore`, while Pipecat owns session lifecycle and ordered events.
 - Mocks-first testing: build deterministic provider APIs and manifest-derived contracts before
   executor/toolkit implementation; unchanged suites certify real providers last.
 - MCP discovery omits async-by-nature tools by default; `includeAsync` represents negotiated Tasks support and emits required/optional task support.
 - Three repos: public `eyeball`, private `eyeball-cloud`, public `eyeball-mocks`.
 - Catalog 1.0: 20 capabilities, 187 capability-scoped tools, 157 providers, 34 P0
   (72 P1, 51 P2). Catalog 1.1 additively introduces the P0 `voice-agents` toolkit.
+- The catalog 1.1 registry accepts same-major 1.0 provider manifests while retaining catalog 1.0 identity and membership checks for those manifests.
 - Ordinary services run on Vercel; the voice worker runs on persistent container infrastructure.
 
 ## Build Order
@@ -67,6 +69,9 @@ authenticated tools across SaaS, messaging, voice, social data, and business sys
 - `AdapterContext` has no staged-file resolver, so email and messaging adapters reject nonempty canonical attachments until executor-to-toolkit file access is specified.
 - Activepieces bridge is unvalidated outside its engine; the compatibility spike is pending.
 - Voice sessions need durable state and a persistent worker; Vercel Functions cannot host the media loop.
+- The current `InMemoryAgentStore` is process-local; production revisions, number bindings, session pointers, and chat deduplication need a durable store.
+- The Pipecat mock `/sessions/:id/turns` route models an agent turn, not caller injection; scripted caller turns remain session-creation fixtures until the backend adds a caller-turn endpoint.
+- RFC 002 transport connection ownership cannot be verified inside the adapter until the executor exposes a scoped connection resolver for `transportConnectionId`.
 - Open contract item: reconcile RFC 001 `voiceAgentId` with RFC 002 `agentId`/revision semantics.
 - Open contract item: define idempotency propagation and retry correlation for SDK,
   converter-owned execution, and MCP surfaces.
