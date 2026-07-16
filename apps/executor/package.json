@@ -15,6 +15,7 @@
   "dependencies": {
     "@eyeball/catalog": "workspace:*",
     "@eyeball/core": "workspace:*",
+    "@eyeball/toolkits": "workspace:*",
     "@hono/node-server": "^1.16.0",
     "hono": "^4.8.10"
   }

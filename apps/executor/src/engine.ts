@@ -25,6 +25,7 @@ import {
   type ToolDefinition,
   validateInput,
 } from "@eyeball/core";
+import { defaultToolkitAdapters } from "@eyeball/toolkits";
 import {
   AdapterRegistry,
   type Clock,
@@ -338,7 +339,8 @@ export class ExecutionEngine {
 
   constructor(options: ExecutionEngineOptions = {}) {
     this.catalog = options.catalog ?? defaultCatalog;
-    this.adapters = options.adapters ?? new AdapterRegistry();
+    this.adapters =
+      options.adapters ?? new AdapterRegistry(defaultToolkitAdapters);
     this.credentialProvider =
       options.credentialProvider ?? new MockCredentialProvider([]);
     this.store = options.store ?? new InMemoryExecutionStore();

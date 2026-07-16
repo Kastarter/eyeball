@@ -35,6 +35,9 @@ importers:
       '@eyeball/core':
         specifier: workspace:*
         version: link:../../packages/core
+      '@eyeball/toolkits':
+        specifier: workspace:*
+        version: link:../../packages/toolkits
       '@hono/node-server':
         specifier: ^1.16.0
         version: 1.19.14(hono@4.12.30)
@@ -73,6 +76,12 @@ importers:
         version: 3.0.1(ajv@8.20.0)
 
   packages/sdk:
+    dependencies:
+      '@eyeball/core':
+        specifier: workspace:*
+        version: link:../core
+
+  packages/toolkits:
     dependencies:
       '@eyeball/core':
         specifier: workspace:*

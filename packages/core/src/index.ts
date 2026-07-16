@@ -1,5 +1,6 @@
 export const VERSION = "0.0.1";
 
+export * from "./adapters.js";
 export * from "./convert/index.js";
 export * from "./credentials.js";
 export * from "./errors.js";

@@ -6,9 +6,9 @@ authenticated tools across SaaS, messaging, voice, social data, and business sys
 ## Current State
 
 - Monorepo scaffold is green; `@eyeball/core` implements RFC 001 contracts and framework converters with 79 tests.
-- `@eyeball/catalog` compiles the frozen 20-capability, 187-contract, 157-provider baseline, publishes semantic email/messaging contracts and the RFC Gmail manifest, and validates registry materialization with 23 tests.
-- `@eyeball/executor` implements RFC 001 sync/async execution, polling, idempotency, API-key isolation, adapter dispatch, and provider HTTP normalization with 22 tests.
-- RFCs remain review-status; toolkit, SDK, MCP, and cloud implementations remain pending.
+- `@eyeball/catalog` compiles the frozen 20-capability, 187-contract, 157-provider baseline, publishes semantic email/messaging contracts plus six email manifests, and validates registry materialization with 27 tests.
+- `@eyeball/executor` implements RFC 001 sync/async execution, polling, idempotency, API-key isolation, and adapter dispatch with 32 tests, including real-mock email flows.
+- `@eyeball/toolkits` implements Gmail, Outlook, SMTP, SendGrid, Resend, and Mailgun email adapters; broader toolkit, SDK, MCP, and cloud implementations remain pending.
 - The eight-document spec suite is:
   - `SPEC.md` — product, architecture, repos, delivery order, open questions, document map.
   - `docs/PROVIDERS.md` — definitive catalog 1.0 provider and canonical-tool inventory.
@@ -40,7 +40,8 @@ authenticated tools across SaaS, messaging, voice, social data, and business sys
   project/user pair plus deterministic mocks; private cloud vault, hosted OAuth/connect,
   refresh, and multi-user connected accounts.
 - Execution storage and scheduling sit behind `ExecutionStore` and `TaskQueue`; OSS currently uses atomic in-memory idempotency plus a bounded promise queue.
-- Toolkit adapters are registered by toolkit slug and receive materialized tools, defaulted canonical input, one resolved credential, a trusted manifest base URL, fetch, clock, and logger.
+- Shared adapter contracts live in `@eyeball/core`; `@eyeball/toolkits` depends on core, and the thin executor app registers toolkit adapters by slug.
+- Toolkit adapters receive materialized tools, defaulted canonical input, one resolved credential, a trusted manifest base URL, fetch, clock, and logger.
 - Mocks-first testing: build deterministic provider APIs and manifest-derived contracts before
   executor/toolkit implementation; unchanged suites certify real providers last.
 - MCP discovery omits async-by-nature tools by default; `includeAsync` represents negotiated Tasks support and emits required/optional task support.
@@ -58,6 +59,8 @@ authenticated tools across SaaS, messaging, voice, social data, and business sys
 
 ## Known Issues
 
+- The Outlook email mock has no message PATCH/category or move route, so mock integration can only exercise an already-applied `add_email_label`; the adapter mutation branches target real Graph routes.
+- `AdapterContext` has no staged-file resolver, so email adapters reject nonempty canonical attachments until executor-to-toolkit file access is specified.
 - Activepieces bridge is unvalidated outside its engine; the compatibility spike is pending.
 - Voice sessions need durable state and a persistent worker; Vercel Functions cannot host the media loop.
 - Open contract item: reconcile RFC 001 `voiceAgentId` with RFC 002 `agentId`/revision semantics.
