@@ -29,6 +29,12 @@ importers:
 
   apps/executor:
     dependencies:
+      '@eyeball/catalog':
+        specifier: workspace:*
+        version: link:../../packages/catalog
+      '@eyeball/core':
+        specifier: workspace:*
+        version: link:../../packages/core
       '@hono/node-server':
         specifier: ^1.16.0
         version: 1.19.14(hono@4.12.30)

@@ -1,7 +1,9 @@
-import { Hono } from "hono";
+export * from "./adapters/index.js";
+export * from "./engine.js";
+export * from "./queue.js";
+export * from "./routes.js";
+export * from "./store.js";
 
-export const app = new Hono();
+import { createExecutorApp } from "./routes.js";
 
-app.get("/health", (context) =>
-  context.json({ status: "ok", service: "executor" }),
-);
+export const app = createExecutorApp();

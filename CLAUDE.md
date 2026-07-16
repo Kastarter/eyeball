@@ -7,7 +7,8 @@ authenticated tools across SaaS, messaging, voice, social data, and business sys
 
 - Monorepo scaffold is green; `@eyeball/core` implements RFC 001 contracts and framework converters with 79 tests.
 - `@eyeball/catalog` compiles the frozen 20-capability, 187-contract, 157-provider baseline, publishes semantic email/messaging contracts and the RFC Gmail manifest, and validates registry materialization with 23 tests.
-- RFCs remain review-status; executor, toolkit, SDK, MCP, and cloud implementations remain pending.
+- `@eyeball/executor` implements RFC 001 sync/async execution, polling, idempotency, API-key isolation, adapter dispatch, and provider HTTP normalization with 22 tests.
+- RFCs remain review-status; toolkit, SDK, MCP, and cloud implementations remain pending.
 - The eight-document spec suite is:
   - `SPEC.md` — product, architecture, repos, delivery order, open questions, document map.
   - `docs/PROVIDERS.md` — definitive catalog 1.0 provider and canonical-tool inventory.
@@ -27,6 +28,8 @@ authenticated tools across SaaS, messaging, voice, social data, and business sys
 
 - Public package exports use ESM `.js` specifiers from package `src/index.ts` barrels.
 - Credential env vars use `EYEBALL_CRED_<TOOLKIT>_*`; OSS env auth is one project/user pair.
+- Executor API keys use `EYEBALL_API_KEYS="key:projectId,..."`; `/v1/*` is project-scoped and `/health` is public.
+- Executor HTTP tests use Hono `app.request` and in-process provider apps; they never bind loopback sockets.
 - Canonical tool names use `toolkit.operation`; restricted surfaces use reversible `toolkit__operation`.
 - Format converters pass canonical JSON Schema objects through unchanged; OpenAI strict mode stays omitted until a version-pinned compatibility validator exists.
 
@@ -36,6 +39,8 @@ authenticated tools across SaaS, messaging, voice, social data, and business sys
 - Auth boundary is the `CredentialProvider` seam: an OSS env provider restricted to one
   project/user pair plus deterministic mocks; private cloud vault, hosted OAuth/connect,
   refresh, and multi-user connected accounts.
+- Execution storage and scheduling sit behind `ExecutionStore` and `TaskQueue`; OSS currently uses atomic in-memory idempotency plus a bounded promise queue.
+- Toolkit adapters are registered by toolkit slug and receive materialized tools, defaulted canonical input, one resolved credential, a trusted manifest base URL, fetch, clock, and logger.
 - Mocks-first testing: build deterministic provider APIs and manifest-derived contracts before
   executor/toolkit implementation; unchanged suites certify real providers last.
 - MCP discovery omits async-by-nature tools by default; `includeAsync` represents negotiated Tasks support and emits required/optional task support.
