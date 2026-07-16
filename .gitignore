@@ -3,3 +3,6 @@ dist
 .turbo
 .pnpm-store
 .env*
+
+# nested standalone repo (eyeball-mocks)
+mocks/
