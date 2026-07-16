@@ -5,7 +5,7 @@ authenticated tools across SaaS, messaging, voice, social data, and business sys
 
 ## Current State
 
-- Monorepo scaffold is green; `@eyeball/core` implements RFC 001 contracts with 57 tests.
+- Monorepo scaffold is green; `@eyeball/core` implements RFC 001 contracts and framework converters with 77 tests.
 - RFCs remain review-status; executor, toolkit, SDK, MCP, and cloud implementations remain pending.
 - The eight-document spec suite is:
   - `SPEC.md` — product, architecture, repos, delivery order, open questions, document map.
@@ -27,6 +27,7 @@ authenticated tools across SaaS, messaging, voice, social data, and business sys
 - Public package exports use ESM `.js` specifiers from package `src/index.ts` barrels.
 - Credential env vars use `EYEBALL_CRED_<TOOLKIT>_*`; OSS env auth is one project/user pair.
 - Canonical tool names use `toolkit.operation`; restricted surfaces use reversible `toolkit__operation`.
+- Format converters pass canonical JSON Schema objects through unchanged; OpenAI strict mode stays omitted until a version-pinned compatibility validator exists.
 
 ## Architecture
 
@@ -36,6 +37,7 @@ authenticated tools across SaaS, messaging, voice, social data, and business sys
   refresh, and multi-user connected accounts.
 - Mocks-first testing: build deterministic provider APIs and manifest-derived contracts before
   executor/toolkit implementation; unchanged suites certify real providers last.
+- MCP discovery omits async-by-nature tools by default; `includeAsync` represents negotiated Tasks support and emits required/optional task support.
 - Three repos: public `eyeball`, private `eyeball-cloud`, public `eyeball-mocks`.
 - Catalog 1.0: 20 capabilities, 187 capability-scoped tools, 157 providers, 34 P0
   (72 P1, 51 P2). Catalog 1.1 additively introduces the P0 `voice-agents` toolkit.
