@@ -36,11 +36,14 @@ const expectedTools = [
 
 describe("default email provider manifests", () => {
   it("materializes exactly the executable provider subsets", () => {
-    expect(defaultCatalog.listTools().map(({ name }) => name)).toEqual(
-      expectedTools,
-    );
-    expect(defaultCatalog.listManifests()).toHaveLength(6);
-    expect(defaultCatalog.listToolkits()).toEqual(
+    expect(
+      defaultCatalog.listTools({ capability: "email" }).map(({ name }) => name),
+    ).toEqual(expectedTools);
+    const emailManifests = defaultCatalog.listManifests({
+      capability: "email",
+    });
+    expect(emailManifests).toHaveLength(6);
+    expect(emailManifests.map(({ toolkit }) => toolkit)).toEqual(
       [
         gmailManifest,
         mailgunManifest,

@@ -6,9 +6,9 @@ authenticated tools across SaaS, messaging, voice, social data, and business sys
 ## Current State
 
 - Monorepo scaffold is green; `@eyeball/core` implements RFC 001 contracts and framework converters with 79 tests.
-- `@eyeball/catalog` compiles the frozen 20-capability, 187-contract, 157-provider baseline, publishes semantic email/messaging contracts plus six email manifests, and validates registry materialization with 27 tests.
-- `@eyeball/executor` implements RFC 001 sync/async execution, polling, idempotency, API-key isolation, and adapter dispatch with 32 tests, including real-mock email flows.
-- `@eyeball/toolkits` implements Gmail, Outlook, SMTP, SendGrid, Resend, and Mailgun email adapters; broader toolkit, SDK, MCP, and cloud implementations remain pending.
+- `@eyeball/catalog` compiles the frozen 20-capability, 187-contract, 157-provider baseline, publishes semantic email/messaging contracts plus ten provider manifests, and validates registry materialization with 32 tests.
+- `@eyeball/executor` implements RFC 001 sync/async execution, polling, idempotency, API-key isolation, and adapter dispatch with 40 tests, including real-mock email and messaging flows.
+- `@eyeball/toolkits` implements Gmail, Outlook, SMTP, SendGrid, Resend, and Mailgun email adapters plus Slack, Discord, Telegram, and WhatsApp Business messaging adapters; broader toolkit, SDK, MCP, and cloud implementations remain pending.
 - The eight-document spec suite is:
   - `SPEC.md` — product, architecture, repos, delivery order, open questions, document map.
   - `docs/PROVIDERS.md` — definitive catalog 1.0 provider and canonical-tool inventory.
@@ -32,6 +32,8 @@ authenticated tools across SaaS, messaging, voice, social data, and business sys
 - Executor HTTP tests use Hono `app.request` and in-process provider apps; they never bind loopback sockets.
 - Canonical tool names use `toolkit.operation`; restricted surfaces use reversible `toolkit__operation`.
 - Format converters pass canonical JSON Schema objects through unchanged; OpenAI strict mode stays omitted until a version-pinned compatibility validator exists.
+- WhatsApp Business connections keep `phoneNumberId` beside `apiKey` in the resolved API-key credential tuple; messaging calls do not repeat it under `x_provider`.
+- Telegram Bot requests put the API key in the `bot{token}` path and also retain Bearer auth for the shared mock-kit triggers; Telegram ignores the extra header in production.
 
 ## Architecture
 
@@ -60,7 +62,9 @@ authenticated tools across SaaS, messaging, voice, social data, and business sys
 ## Known Issues
 
 - The Outlook email mock has no message PATCH/category or move route, so mock integration can only exercise an already-applied `add_email_label`; the adapter mutation branches target real Graph routes.
-- `AdapterContext` has no staged-file resolver, so email adapters reject nonempty canonical attachments until executor-to-toolkit file access is specified.
+- Telegram Bot `getUpdates` is an update stream, not a durable message-history API; canonical list/get coverage can only see updates still available to the bot.
+- The WhatsApp Business mock GET-message route is an intentional canonical-test shim; Meta Cloud API does not support arbitrary retrieval of previously sent messages.
+- `AdapterContext` has no staged-file resolver, so email and messaging adapters reject nonempty canonical attachments until executor-to-toolkit file access is specified.
 - Activepieces bridge is unvalidated outside its engine; the compatibility spike is pending.
 - Voice sessions need durable state and a persistent worker; Vercel Functions cannot host the media loop.
 - Open contract item: reconcile RFC 001 `voiceAgentId` with RFC 002 `agentId`/revision semantics.
