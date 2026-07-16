@@ -100,4 +100,50 @@ describe("provider HTTP client", () => {
     ).rejects.toMatchObject({ code: "not_supported" });
     expect(calls).toBe(0);
   });
+
+  it("retains bounded provider diagnostics while redacting secret fields", async () => {
+    const context: AdapterContext = {
+      projectId: "project_test",
+      userId: "user_test",
+      tool,
+      canonicalInput: {},
+      credential: { type: "api_key", values: { apiKey: "fixture:secret" } },
+      baseUrl: "https://provider.example.test",
+      fetchImpl: (async () =>
+        new Response(
+          JSON.stringify({
+            error: {
+              type: "card_error",
+              code: "card_declined",
+              message: "The card was declined.",
+              access_token: "must-not-escape",
+            },
+          }),
+          {
+            status: 402,
+            headers: { "Content-Type": "application/json" },
+          },
+        )) as typeof fetch,
+      clock: systemClock,
+      logger: noopLogger,
+    };
+
+    await expect(
+      createProviderHttpClient(context)("charge"),
+    ).rejects.toMatchObject({
+      code: "provider_error",
+      providerDetail: {
+        toolkit: "echo",
+        status: 402,
+        detail: {
+          error: {
+            type: "card_error",
+            code: "card_declined",
+            message: "The card was declined.",
+            access_token: "[REDACTED]",
+          },
+        },
+      },
+    });
+  });
 });

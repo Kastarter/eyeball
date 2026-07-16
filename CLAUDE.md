@@ -6,9 +6,9 @@ authenticated tools across SaaS, messaging, voice, social data, and business sys
 ## Current State
 
 - Monorepo scaffold is green; `@eyeball/core` implements RFC 001 contracts and framework converters with 79 tests.
-- `@eyeball/catalog` keeps the frozen catalog 1.0 baseline and ships catalog 1.1 with 12 canonical voice contracts, 11 RFC 002 voice-agent contracts, and six voice manifests; catalog tests total 37.
-- `@eyeball/executor` implements RFC 001 sync/async execution, polling, idempotency, API-key isolation, and adapter dispatch with 46 tests, including in-process email, messaging, voice, and voice-agent mock flows.
-- `@eyeball/toolkits` implements the P0 email/messaging adapters plus Twilio, LiveKit, ElevenLabs, Deepgram, Pipecat, and the native `voice-agents` adapter.
+- `@eyeball/catalog` keeps the frozen catalog 1.0 baseline and ships catalog 1.1 with the email, messaging, voice, CRM, ERP/accounting, payments, e-commerce, and customer-support contracts plus 22 provider manifests; catalog tests total 43.
+- `@eyeball/executor` implements RFC 001 sync/async execution, polling, idempotency, API-key isolation, and adapter dispatch with 54 tests, including in-process email, messaging, voice, voice-agent, and business-provider mock flows.
+- `@eyeball/toolkits` implements the P0 email, messaging, voice, CRM, ERP/accounting, payments, e-commerce, and customer-support adapters, including the native `voice-agents` adapter.
 - The eight-document spec suite is:
   - `SPEC.md` — product, architecture, repos, delivery order, open questions, document map.
   - `docs/PROVIDERS.md` — definitive catalog 1.0 provider and canonical-tool inventory.
@@ -67,6 +67,7 @@ authenticated tools across SaaS, messaging, voice, social data, and business sys
 - Telegram Bot `getUpdates` is an update stream, not a durable message-history API; canonical list/get coverage can only see updates still available to the bot.
 - The WhatsApp Business mock GET-message route is an intentional canonical-test shim; Meta Cloud API does not support arbitrary retrieval of previously sent messages.
 - `AdapterContext` has no staged-file resolver, so email and messaging adapters reject nonempty canonical attachments until executor-to-toolkit file access is specified.
+- `AdapterContext` does not expose the executor `Idempotency-Key`, so provider adapters (including Stripe) cannot propagate it upstream even though executor-level replay protection still applies.
 - Activepieces bridge is unvalidated outside its engine; the compatibility spike is pending.
 - Voice sessions need durable state and a persistent worker; Vercel Functions cannot host the media loop.
 - The current `InMemoryAgentStore` is process-local; production revisions, number bindings, session pointers, and chat deduplication need a durable store.

@@ -86,6 +86,49 @@ async function responseBody(response: Response): Promise<unknown> {
   }
 }
 
+const SENSITIVE_PROVIDER_FIELD =
+  /(?:authorization|cookie|credential|password|secret|token|api[_-]?key)/iu;
+const MAX_PROVIDER_DETAIL_DEPTH = 6;
+const MAX_PROVIDER_DETAIL_ENTRIES = 50;
+const MAX_PROVIDER_DETAIL_STRING_LENGTH = 4_096;
+
+/** Keeps actionable provider diagnostics while bounding and redacting the payload. */
+function sanitizeProviderDetail(
+  value: unknown,
+  depth = 0,
+): JsonValue | undefined {
+  if (depth > MAX_PROVIDER_DETAIL_DEPTH) return "[TRUNCATED]";
+  if (
+    value === null ||
+    typeof value === "boolean" ||
+    (typeof value === "number" && Number.isFinite(value))
+  ) {
+    return value;
+  }
+  if (typeof value === "string") {
+    return value.length <= MAX_PROVIDER_DETAIL_STRING_LENGTH
+      ? value
+      : `${value.slice(0, MAX_PROVIDER_DETAIL_STRING_LENGTH)}[TRUNCATED]`;
+  }
+  if (Array.isArray(value)) {
+    return value
+      .slice(0, MAX_PROVIDER_DETAIL_ENTRIES)
+      .map((entry) => sanitizeProviderDetail(entry, depth + 1) ?? null);
+  }
+  if (typeof value !== "object" || value === undefined) return undefined;
+
+  return Object.fromEntries(
+    Object.entries(value)
+      .slice(0, MAX_PROVIDER_DETAIL_ENTRIES)
+      .map(([key, entry]) => [
+        key,
+        SENSITIVE_PROVIDER_FIELD.test(key)
+          ? "[REDACTED]"
+          : (sanitizeProviderDetail(entry, depth + 1) ?? null),
+      ]),
+  );
+}
+
 function isAbortError(error: unknown): boolean {
   return (
     typeof error === "object" &&
@@ -143,6 +186,7 @@ export function createProviderHttpClient(
     }
 
     const body = await responseBody(response);
+    const detail = sanitizeProviderDetail(body);
     const mapped = fromHttpStatus(response.status, body);
     const retryAfter =
       parseRetryAfter(
@@ -157,6 +201,7 @@ export function createProviderHttpClient(
       providerDetail: {
         toolkit: context.tool.toolkit,
         status: response.status,
+        ...(detail === undefined ? {} : { detail }),
       },
       cause: mapped,
     });
