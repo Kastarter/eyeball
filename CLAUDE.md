@@ -5,7 +5,8 @@ authenticated tools across SaaS, messaging, voice, social data, and business sys
 
 ## Current State
 
-- Specification phase complete; implementation has not started; RFCs remain review-status.
+- Monorepo scaffold is green; `@eyeball/core` implements RFC 001 contracts with 57 tests.
+- RFCs remain review-status; executor, toolkit, SDK, MCP, and cloud implementations remain pending.
 - The eight-document spec suite is:
   - `SPEC.md` — product, architecture, repos, delivery order, open questions, document map.
   - `docs/PROVIDERS.md` — definitive catalog 1.0 provider and canonical-tool inventory.
@@ -16,7 +17,18 @@ authenticated tools across SaaS, messaging, voice, social data, and business sys
   - `docs/ADMIN-UI.md` — hosted admin UI product and design brief.
   - `docs/DOCS-PLAN.md` — mock-first Mintlify documentation plan.
 
-## Key Decisions
+## Stack
+
+- TypeScript, Node 24, Turborepo + pnpm, Hono, Postgres/Neon + Drizzle, Next.js.
+- Core schema validation uses Ajv Draft 2020-12 plus `ajv-formats` with defaults enabled.
+
+## Conventions
+
+- Public package exports use ESM `.js` specifiers from package `src/index.ts` barrels.
+- Credential env vars use `EYEBALL_CRED_<TOOLKIT>_*`; OSS env auth is one project/user pair.
+- Canonical tool names use `toolkit.operation`; restricted surfaces use reversible `toolkit__operation`.
+
+## Architecture
 
 - Open-core under an FSL-1.1 placeholder; final license needs legal review.
 - Auth boundary is the `CredentialProvider` seam: an OSS env provider restricted to one
@@ -25,7 +37,6 @@ authenticated tools across SaaS, messaging, voice, social data, and business sys
 - Mocks-first testing: build deterministic provider APIs and manifest-derived contracts before
   executor/toolkit implementation; unchanged suites certify real providers last.
 - Three repos: public `eyeball`, private `eyeball-cloud`, public `eyeball-mocks`.
-- Stack: TypeScript, Node 24, Turborepo + pnpm, Hono, Postgres/Neon + Drizzle, Next.js.
 - Catalog 1.0: 20 capabilities, 187 capability-scoped tools, 157 providers, 34 P0
   (72 P1, 51 P2). Catalog 1.1 additively introduces the P0 `voice-agents` toolkit.
 - Ordinary services run on Vercel; the voice worker runs on persistent container infrastructure.
@@ -37,7 +48,7 @@ authenticated tools across SaaS, messaging, voice, social data, and business sys
 - Run the five-piece Activepieces compatibility spike as the first bridge gate.
 - Keep catalog/compiler outputs, mocks, contract suites, docs reference, and runtime versions pinned.
 
-## Known Risks
+## Known Issues
 
 - Activepieces bridge is unvalidated outside its engine; the compatibility spike is pending.
 - Voice sessions need durable state and a persistent worker; Vercel Functions cannot host the media loop.
