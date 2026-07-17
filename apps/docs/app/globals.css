@@ -986,7 +986,7 @@ button {
   display: grid;
   grid-template-columns: 18px minmax(0, 1fr);
   gap: 12px;
-  margin: 20px 0;
+  margin: 16px 0;
   padding: 16px 20px;
   border: 1px solid var(--border-subtle);
   border-left-width: 3px;
