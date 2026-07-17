@@ -8,6 +8,7 @@ import {
   TOOL_ERROR_CODES,
 } from "@eyeball/core";
 import { type Context, Hono } from "hono";
+import type { DevVaultCredentialProvider } from "./dev-vault.js";
 import {
   ExecutionEngine,
   ExecutionRequestError,
@@ -37,6 +38,8 @@ export interface ExecutorAppOptions {
   apiKeys?: ApiKeyringInput;
   env?: Readonly<Record<string, string | undefined>>;
   requestIdFactory?: () => string;
+  /** Enables the process-local fixture connection route. Never use as a cloud vault. */
+  devVault?: DevVaultCredentialProvider;
 }
 
 export function parseApiKeyring(
@@ -181,7 +184,22 @@ export function createExecutorApp(options: ExecutorAppOptions = {}): Hono<{
   Variables: ExecutorVariables;
 }> {
   const env = options.env ?? process.env;
-  const engine = options.engine ?? new ExecutionEngine({ env });
+  const engine =
+    options.engine ??
+    new ExecutionEngine({
+      env,
+      ...(options.devVault === undefined
+        ? {}
+        : { credentialProvider: options.devVault }),
+    });
+  if (
+    options.devVault !== undefined &&
+    engine.credentialProvider !== options.devVault
+  ) {
+    throw new Error(
+      "The executor engine and dev-vault route must use the same credential provider.",
+    );
+  }
   const keyring =
     options.apiKeys === undefined
       ? parseApiKeyring(env.EYEBALL_API_KEYS)
@@ -233,6 +251,72 @@ export function createExecutorApp(options: ExecutorAppOptions = {}): Hono<{
       return handleRouteError(context, error);
     }
   });
+
+  const devVault = options.devVault;
+  if (devVault !== undefined) {
+    // Development-only fixture route. Real connection/OAuth lifecycle is private cloud.
+    app.post("/v1/connections", async (context) => {
+      let request: unknown;
+      try {
+        request = await context.req.json();
+      } catch {
+        return invalidQuery(context, "Request body must be valid JSON.");
+      }
+      if (
+        typeof request !== "object" ||
+        request === null ||
+        Array.isArray(request)
+      ) {
+        return invalidQuery(
+          context,
+          "Connection request must be a JSON object.",
+        );
+      }
+      const record = request as Readonly<Record<string, unknown>>;
+      const unknownKey = Object.keys(record).find(
+        (key) => key !== "userId" && key !== "toolkit",
+      );
+      if (unknownKey !== undefined) {
+        return invalidQuery(
+          context,
+          `Unknown connection request field: ${unknownKey}.`,
+        );
+      }
+      if (
+        typeof record.userId !== "string" ||
+        record.userId.trim().length === 0
+      ) {
+        return invalidQuery(context, "userId must be a non-empty string.");
+      }
+      if (
+        typeof record.toolkit !== "string" ||
+        record.toolkit.trim().length === 0
+      ) {
+        return invalidQuery(context, "toolkit must be a non-empty string.");
+      }
+
+      try {
+        const connection = await devVault.createConnection({
+          projectId: context.get("projectId"),
+          userId: record.userId,
+          toolkit: record.toolkit,
+        });
+        return context.json(
+          {
+            connectionId: connection.connectionId,
+            redirectUrl: connection.redirectUrl,
+            status: connection.status,
+          },
+          201,
+        );
+      } catch (error) {
+        if (error instanceof EyeballError) {
+          return requestFailure(context, error, 422);
+        }
+        return handleRouteError(context, error);
+      }
+    });
+  }
 
   app.get("/v1/executions", async (context) => {
     const query = parseListQuery(context);

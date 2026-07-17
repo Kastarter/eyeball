@@ -21,6 +21,7 @@
     "lint": "biome check src test"
   },
   "dependencies": {
+    "@eyeball/catalog": "workspace:*",
     "@eyeball/core": "workspace:*"
   }
 }

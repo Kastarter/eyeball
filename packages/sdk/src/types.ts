@@ -1,0 +1,160 @@
+import type {
+  AiSdkToolSet,
+  AnthropicToolDescriptor,
+  CapabilitySlug,
+  ConnectionId,
+  ExecutionMode,
+  ExecutionRecord,
+  ExecutionStatus,
+  JsonValue,
+  McpToolDescriptor,
+  OpenAIFunctionToolDescriptor,
+  ToolDefinition,
+  ToolNameMap,
+} from "@eyeball/core";
+
+export type EyeballToolFormat =
+  | "canonical"
+  | "anthropic"
+  | "openai"
+  | "ai-sdk"
+  | "mcp";
+
+export interface EyeballToolFormatMap {
+  canonical: readonly ToolDefinition[];
+  anthropic: AnthropicToolDescriptor[];
+  openai: OpenAIFunctionToolDescriptor[];
+  "ai-sdk": AiSdkToolSet;
+  mcp: McpToolDescriptor[];
+}
+
+export interface GetToolsOptions<
+  Format extends EyeballToolFormat = "canonical",
+> {
+  /**
+   * Binds framework-owned execute callbacks to an end user. Tool discovery itself is
+   * resolved entirely from the local `@eyeball/catalog`; hosted project catalog policy
+   * belongs to eyeball-cloud and is not fetched by this method.
+   */
+  userId?: string;
+  toolkits?: readonly string[];
+  capability?: CapabilitySlug;
+  format?: Format;
+  /** MCP only: include async-by-nature tools after Tasks support is negotiated. */
+  includeAsync?: boolean;
+}
+
+export interface GetToolsResult<Format extends EyeballToolFormat> {
+  tools: EyeballToolFormatMap[Format];
+  nameMap: ToolNameMap;
+  raw: readonly ToolDefinition[];
+}
+
+export interface ExecuteToolOptions {
+  /** Uses the client-level userId when omitted. */
+  userId?: string;
+  input: Readonly<Record<string, JsonValue>>;
+  /** Defaults from the canonical tool's `annotations.async` value. */
+  mode?: ExecutionMode;
+  /**
+   * Stable caller key for retry correlation. When omitted for a mutation, the SDK
+   * generates a fresh `crypto.randomUUID()` for this invocation. Pass your own key
+   * when separate calls must replay the same execution.
+   */
+  idempotencyKey?: string;
+  connectionId?: ConnectionId;
+}
+
+export interface WaitForExecutionOptions {
+  /** Milliseconds between polls. Defaults to 500. */
+  pollMs?: number;
+  /** Total milliseconds before a timeout error. Defaults to 60,000. */
+  timeoutMs?: number;
+}
+
+export interface RunToolOptions
+  extends Omit<ExecuteToolOptions, "input">,
+    WaitForExecutionOptions {}
+
+export interface ListExecutionsOptions {
+  status?: ExecutionStatus;
+  /** Canonical dotted or restricted wire name. */
+  tool?: string;
+  /** Uses the client-level userId when omitted. */
+  userId?: string;
+  cursor?: string;
+  limit?: number;
+}
+
+export interface ExecutionPage {
+  executions: readonly ExecutionRecord[];
+  nextCursor?: string;
+}
+
+export interface CreateConnectionOptions {
+  /** Uses the client-level userId when omitted. */
+  userId?: string;
+  toolkit: string;
+}
+
+export interface ConnectedConnection {
+  connectionId: ConnectionId;
+  redirectUrl: null;
+  status: "connected";
+}
+
+export interface EyeballClock {
+  now(): number;
+}
+
+export type EyeballSleep = (milliseconds: number) => Promise<void>;
+
+export interface EyeballOptions {
+  apiKey: string;
+  baseUrl: string;
+  fetch?: typeof globalThis.fetch;
+  /** Default end-user binding for user-scoped methods. */
+  userId?: string;
+  /** Test seam used by execution polling. */
+  clock?: EyeballClock;
+  /** Test seam used by execution polling. */
+  sleep?: EyeballSleep;
+}
+
+export interface ExecuteToolCallsOptions {
+  /** Uses the client-level userId when omitted. */
+  userId?: string;
+  connectionId?: ConnectionId;
+  mode?: ExecutionMode;
+  pollMs?: number;
+  timeoutMs?: number;
+}
+
+export interface AnthropicToolCall {
+  type: "tool_use";
+  id: string;
+  name: string;
+  input: unknown;
+}
+
+export interface AnthropicToolResultBlock {
+  type: "tool_result";
+  tool_use_id: string;
+  content: string;
+  is_error?: boolean;
+}
+
+export interface OpenAIToolCall {
+  id: string;
+  type?: "function";
+  function: {
+    name: string;
+    arguments: string | Readonly<Record<string, JsonValue>>;
+  };
+}
+
+export interface OpenAIToolResultMessage {
+  role: "tool";
+  tool_call_id: string;
+  content: string;
+}
