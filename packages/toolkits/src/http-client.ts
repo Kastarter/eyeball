@@ -87,7 +87,7 @@ async function responseBody(response: Response): Promise<unknown> {
 }
 
 const SENSITIVE_PROVIDER_FIELD =
-  /(?:authorization|cookie|credential|password|secret|token|api[_-]?key)/iu;
+  /(?:^key$|authorization|cookie|credential|password|secret|token|api[_-]?key)/iu;
 const MAX_PROVIDER_DETAIL_DEPTH = 6;
 const MAX_PROVIDER_DETAIL_ENTRIES = 50;
 const MAX_PROVIDER_DETAIL_STRING_LENGTH = 4_096;
@@ -95,6 +95,7 @@ const MAX_PROVIDER_DETAIL_STRING_LENGTH = 4_096;
 /** Keeps actionable provider diagnostics while bounding and redacting the payload. */
 function sanitizeProviderDetail(
   value: unknown,
+  secrets: readonly string[],
   depth = 0,
 ): JsonValue | undefined {
   if (depth > MAX_PROVIDER_DETAIL_DEPTH) return "[TRUNCATED]";
@@ -106,14 +107,21 @@ function sanitizeProviderDetail(
     return value;
   }
   if (typeof value === "string") {
-    return value.length <= MAX_PROVIDER_DETAIL_STRING_LENGTH
-      ? value
-      : `${value.slice(0, MAX_PROVIDER_DETAIL_STRING_LENGTH)}[TRUNCATED]`;
+    const redacted = secrets.reduce(
+      (text, secret) =>
+        secret.length === 0 ? text : text.replaceAll(secret, "[REDACTED]"),
+      value,
+    );
+    return redacted.length <= MAX_PROVIDER_DETAIL_STRING_LENGTH
+      ? redacted
+      : `${redacted.slice(0, MAX_PROVIDER_DETAIL_STRING_LENGTH)}[TRUNCATED]`;
   }
   if (Array.isArray(value)) {
     return value
       .slice(0, MAX_PROVIDER_DETAIL_ENTRIES)
-      .map((entry) => sanitizeProviderDetail(entry, depth + 1) ?? null);
+      .map(
+        (entry) => sanitizeProviderDetail(entry, secrets, depth + 1) ?? null,
+      );
   }
   if (typeof value !== "object" || value === undefined) return undefined;
 
@@ -124,9 +132,29 @@ function sanitizeProviderDetail(
         key,
         SENSITIVE_PROVIDER_FIELD.test(key)
           ? "[REDACTED]"
-          : (sanitizeProviderDetail(entry, depth + 1) ?? null),
+          : (sanitizeProviderDetail(entry, secrets, depth + 1) ?? null),
       ]),
   );
+}
+
+function credentialSecrets(
+  credential: ResolvedCredential,
+  authorization: string | undefined,
+): readonly string[] {
+  const values =
+    credential.type === "oauth2"
+      ? [credential.accessToken]
+      : credential.type === "api_key"
+        ? Object.values(credential.values)
+        : credential.type === "basic"
+          ? [credential.password]
+          : [];
+  return [
+    ...new Set([
+      ...values,
+      ...(authorization === undefined ? [] : [authorization]),
+    ]),
+  ];
 }
 
 function isAbortError(error: unknown): boolean {
@@ -168,7 +196,11 @@ export function createProviderHttpClient(
 
     let response: Response;
     try {
-      response = await context.fetchImpl(url, { ...init, headers });
+      response = await context.fetchImpl(url, {
+        ...init,
+        headers,
+        redirect: "manual",
+      });
     } catch (error) {
       throw new EyeballError({
         code: isAbortError(error)
@@ -181,22 +213,40 @@ export function createProviderHttpClient(
       });
     }
 
-    if (response.status < 400) {
+    if (response.status >= 200 && response.status < 300) {
       return response;
     }
 
+    if (response.status >= 300 && response.status < 400) {
+      throw new EyeballError({
+        code: TOOL_ERROR_CODES.PROVIDER_ERROR,
+        message: "The provider returned an unexpected redirect.",
+        retryable: false,
+        providerDetail: {
+          toolkit: context.tool.toolkit,
+          status: response.status,
+        },
+      });
+    }
+
     const body = await responseBody(response);
-    const detail = sanitizeProviderDetail(body);
-    const mapped = fromHttpStatus(response.status, body);
+    const detail = sanitizeProviderDetail(
+      body,
+      credentialSecrets(context.credential, authorization),
+    );
+    // Preserve provider classification signals from the original body while
+    // deriving every caller-visible field from the redacted copy.
+    const classified = fromHttpStatus(response.status, body);
+    const mapped = fromHttpStatus(response.status, detail);
     const retryAfter =
       parseRetryAfter(
         response.headers.get("Retry-After"),
         context.clock.now(),
-      ) ?? mapped.retryAfter;
+      ) ?? classified.retryAfter;
     throw new EyeballError({
-      code: mapped.code,
+      code: classified.code,
       message: mapped.message,
-      retryable: mapped.retryable,
+      retryable: classified.retryable,
       ...(retryAfter === undefined ? {} : { retryAfter }),
       providerDetail: {
         toolkit: context.tool.toolkit,

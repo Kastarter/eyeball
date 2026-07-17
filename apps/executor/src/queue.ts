@@ -59,8 +59,8 @@ export class PromiseTaskQueue implements TaskQueue {
       }
 
       this.#active += 1;
-      void queued
-        .task()
+      void Promise.resolve()
+        .then(queued.task)
         .then(queued.resolve, queued.reject)
         .finally(() => {
           this.#active -= 1;

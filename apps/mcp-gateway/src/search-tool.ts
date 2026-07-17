@@ -12,6 +12,7 @@ import type {
 } from "@eyeball/core";
 
 export const SEARCH_TOOL_NAME = "eyeball.search_tools" as const;
+export const EXECUTE_TOOL_NAME = "eyeball.execute_tool" as const;
 export const DEFAULT_SEARCH_LIMIT = DEFAULT_TOOL_SEARCH_LIMIT;
 export const MAX_SEARCH_LIMIT = MAX_TOOL_SEARCH_LIMIT;
 
@@ -115,6 +116,27 @@ export const searchToolDescriptor: McpToolDescriptor = {
     readOnlyHint: true,
     destructiveHint: false,
     idempotentHint: true,
+  },
+};
+
+/** Callable indirection used by standard MCP hosts in search-only discovery mode. */
+export const executeToolDescriptor: McpToolDescriptor = {
+  name: EXECUTE_TOOL_NAME,
+  description:
+    "Execute a synchronous canonical provider tool returned by eyeball.search_tools. Put the returned tool name in name and its canonical arguments in input.",
+  inputSchema: {
+    type: "object",
+    additionalProperties: false,
+    required: ["name", "input"],
+    properties: {
+      name: { type: "string", minLength: 1 },
+      input: { type: "object" },
+    },
+  },
+  annotations: {
+    readOnlyHint: false,
+    destructiveHint: true,
+    idempotentHint: false,
   },
 };
 

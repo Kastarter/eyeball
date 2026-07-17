@@ -32,18 +32,24 @@ export type InputValidationResult =
   | InputValidationSuccess
   | InputValidationFailure;
 
-const validators = new WeakMap<ObjectSchema202012, ValidateFunction<unknown>>();
+interface CachedValidator {
+  fingerprint: string;
+  validator: ValidateFunction<unknown>;
+}
+
+const inputValidators = new WeakMap<ObjectSchema202012, CachedValidator>();
+const outputValidators = new WeakMap<ObjectSchema202012, CachedValidator>();
 const validatorsById = new Map<
   string,
   { fingerprint: string; validator: ValidateFunction<unknown> }
 >();
 
-function createCompiler(): Ajv2020 {
+function createCompiler(useDefaults: boolean): Ajv2020 {
   const compiler = new Ajv2020({
     allowUnionTypes: true,
     allErrors: true,
     strict: true,
-    useDefaults: true,
+    useDefaults,
     validateFormats: true,
   });
   addFormats(compiler);
@@ -109,33 +115,42 @@ function schemaProfileIssue(
 
 function compileValidator(
   schema: ObjectSchema202012,
+  useDefaults: boolean,
 ): ValidateFunction<unknown> {
-  const cached = validators.get(schema);
+  const fingerprint = schemaFingerprint(schema);
+  const identityCache = useDefaults ? inputValidators : outputValidators;
+  const cached = identityCache.get(schema);
   if (cached !== undefined) {
-    return cached;
+    if (cached.fingerprint !== fingerprint) {
+      throw new Error("Schema object changed after it was compiled.");
+    }
+    return cached.validator;
   }
 
-  const fingerprint =
-    schema.$id === undefined ? undefined : schemaFingerprint(schema);
+  const idCacheKey =
+    schema.$id === undefined
+      ? undefined
+      : `${useDefaults ? "input" : "output"}:${schema.$id}`;
   const identified =
-    schema.$id === undefined ? undefined : validatorsById.get(schema.$id);
+    idCacheKey === undefined ? undefined : validatorsById.get(idCacheKey);
   if (identified !== undefined) {
     if (identified.fingerprint !== fingerprint) {
       throw new Error(
         `Schema $id ${schema.$id} is already registered with a different definition.`,
       );
     }
-    validators.set(schema, identified.validator);
+    identityCache.set(schema, identified);
     return identified.validator;
   }
 
   // Ajv treats defensive copies that retain the same canonical $id as duplicate
   // registrations in one instance. Compile each unique schema identity in isolation,
   // then share the validator across structurally equivalent copies by $id.
-  const compiled = createCompiler().compile(schema as AnySchema);
-  validators.set(schema, compiled);
-  if (schema.$id !== undefined && fingerprint !== undefined) {
-    validatorsById.set(schema.$id, { fingerprint, validator: compiled });
+  const compiled = createCompiler(useDefaults).compile(schema as AnySchema);
+  const entry = { fingerprint, validator: compiled };
+  identityCache.set(schema, entry);
+  if (idCacheKey !== undefined) {
+    validatorsById.set(idCacheKey, entry);
   }
   return compiled;
 }
@@ -148,30 +163,93 @@ function fromAjvError(error: ErrorObject): InputValidationIssue {
   });
 }
 
-function isObjectInput(
-  input: unknown,
-): input is Readonly<Record<string, JsonValue>> {
-  return typeof input === "object" && input !== null && !Array.isArray(input);
+function jsonValueIssue(
+  value: unknown,
+  path: string,
+  ancestors: WeakSet<object>,
+): InputValidationIssue | undefined {
+  if (
+    value === null ||
+    typeof value === "string" ||
+    typeof value === "boolean"
+  ) {
+    return undefined;
+  }
+  if (typeof value === "number") {
+    return Number.isFinite(value)
+      ? undefined
+      : issue("type", "JSON numbers must be finite.", { instancePath: path });
+  }
+  if (typeof value !== "object") {
+    return issue("type", "Value must contain only JSON data.", {
+      instancePath: path,
+    });
+  }
+  if (ancestors.has(value)) {
+    return issue("type", "JSON values must not contain cycles.", {
+      instancePath: path,
+    });
+  }
+
+  ancestors.add(value);
+  try {
+    if (Array.isArray(value)) {
+      for (let index = 0; index < value.length; index += 1) {
+        const childIssue = jsonValueIssue(
+          value[index],
+          `${path}/${index}`,
+          ancestors,
+        );
+        if (childIssue !== undefined) return childIssue;
+      }
+      return undefined;
+    }
+
+    const prototype = Object.getPrototypeOf(value);
+    if (prototype !== Object.prototype && prototype !== null) {
+      return issue(
+        "type",
+        "JSON objects must be plain objects, not class instances or collection types.",
+        { instancePath: path },
+      );
+    }
+    for (const [key, child] of Object.entries(value)) {
+      const escapedKey = key.replaceAll("~", "~0").replaceAll("/", "~1");
+      const childIssue = jsonValueIssue(
+        child,
+        `${path}/${escapedKey}`,
+        ancestors,
+      );
+      if (childIssue !== undefined) return childIssue;
+    }
+    return undefined;
+  } catch {
+    return issue("type", "Value could not be inspected as JSON data.", {
+      instancePath: path,
+    });
+  } finally {
+    ancestors.delete(value);
+  }
 }
 
-/**
- * Validates and defaults canonical input without mutating the caller's object.
- * Supported JSON Schema formats are assertions through `ajv-formats`.
- */
-export function validateInput(
-  tool: Pick<ToolDefinition, "inputSchema">,
+function validateObject(
+  schema: ObjectSchema202012,
   input: unknown,
+  options: { useDefaults: boolean; noun: "Input" | "Output" },
 ): InputValidationResult {
-  const profileError = schemaProfileIssue(tool.inputSchema);
+  const profileError = schemaProfileIssue(schema);
   if (profileError !== undefined) {
     return { ok: false, errors: [profileError] };
   }
-
-  if (!isObjectInput(input)) {
+  if (typeof input !== "object" || input === null || Array.isArray(input)) {
     return {
       ok: false,
-      errors: [issue("type", "Input must be an object.")],
+      errors: [issue("type", `${options.noun} must be an object.`)],
     };
+  }
+  const inputJsonIssue = jsonValueIssue(input, "", new WeakSet());
+  if (inputJsonIssue !== undefined) {
+    return { ok: false, errors: [inputJsonIssue] };
   }
 
   let value: Record<string, JsonValue>;
@@ -180,17 +258,12 @@ export function validateInput(
   } catch {
     return {
       ok: false,
-      errors: [
-        issue(
-          "type",
-          "Input must contain only structured-cloneable JSON values.",
-        ),
-      ],
+      errors: [issue("type", "Value could not be cloned as JSON data.")],
     };
   }
   let validator: ValidateFunction<unknown>;
   try {
-    validator = compileValidator(tool.inputSchema);
+    validator = compileValidator(schema, options.useDefaults);
   } catch (error) {
     return {
       ok: false,
@@ -199,7 +272,7 @@ export function validateInput(
           "schema_profile",
           error instanceof Error
             ? error.message
-            : "Tool input schema is invalid.",
+            : `Tool ${options.noun.toLowerCase()} schema is invalid.`,
         ),
       ],
     };
@@ -211,6 +284,39 @@ export function validateInput(
       errors: (validator.errors ?? []).map(fromAjvError),
     };
   }
+  const defaultedJsonIssue = jsonValueIssue(value, "", new WeakSet());
+  return defaultedJsonIssue === undefined
+    ? { ok: true, value }
+    : { ok: false, errors: [defaultedJsonIssue] };
+}
 
-  return { ok: true, value };
+/**
+ * Validates and defaults canonical input without mutating the caller's object.
+ * Supported JSON Schema formats are assertions through `ajv-formats`.
+ */
+export function validateInput(
+  tool: Pick<ToolDefinition, "inputSchema">,
+  input: unknown,
+): InputValidationResult {
+  return validateObject(tool.inputSchema, input, {
+    useDefaults: true,
+    noun: "Input",
+  });
+}
+
+/** Validates canonical adapter output without applying JSON Schema defaults. */
+export function validateOutput(
+  tool: Pick<ToolDefinition, "outputSchema">,
+  output: unknown,
+): InputValidationResult {
+  if (tool.outputSchema === undefined) {
+    return {
+      ok: false,
+      errors: [issue("schema_profile", "Tool output schema is missing.")],
+    };
+  }
+  return validateObject(tool.outputSchema, output, {
+    useDefaults: false,
+    noun: "Output",
+  });
 }

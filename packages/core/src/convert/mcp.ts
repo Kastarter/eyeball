@@ -1,10 +1,11 @@
-import { buildNameMap } from "../naming.js";
-import type {
-  ObjectSchema202012,
-  QualifiedToolName,
-  ToolDefinition,
-} from "../types/tool.js";
-import { toolDescription } from "./shared.js";
+import { buildNameMap, type ToolNameMap } from "../naming.js";
+import type { QualifiedToolName, ToolDefinition } from "../types/tool.js";
+import {
+  immutableDefinitions,
+  type MutableObjectSchema,
+  mutableObjectSchema,
+  toolDescription,
+} from "./shared.js";
 
 export interface McpToolAnnotations {
   readOnlyHint: boolean;
@@ -19,8 +20,8 @@ export interface McpToolExecution {
 export interface McpToolDescriptor {
   name: QualifiedToolName;
   description: string;
-  inputSchema: ObjectSchema202012;
-  outputSchema?: ObjectSchema202012;
+  inputSchema: MutableObjectSchema;
+  outputSchema?: MutableObjectSchema;
   annotations: McpToolAnnotations;
   /** Present only when the MCP Tasks protocol has been negotiated. */
   execution?: McpToolExecution;
@@ -31,25 +32,41 @@ export interface McpConversionOptions {
   includeAsync?: boolean;
 }
 
+export interface McpToolsConversion {
+  tools: McpToolDescriptor[];
+  nameMap: ToolNameMap;
+  definitions: readonly ToolDefinition[];
+}
+
 export function toMcpTools(
   tools: readonly ToolDefinition[],
   options: McpConversionOptions = {},
-): McpToolDescriptor[] {
+): McpToolsConversion {
   // MCP preserves dotted names, but catalog-level naming and collision checks
   // remain format-independent.
-  buildNameMap(tools);
-
   const includeAsync = options.includeAsync ?? false;
+  const selected = tools.filter(
+    (tool) => includeAsync || !tool.annotations.async,
+  );
+  // Run the shared validation/collision checks, then expose an identity map because
+  // MCP emits the canonical dotted names themselves rather than restricted names.
+  buildNameMap(selected);
+  const identityEntries = selected.map(
+    (tool) => [tool.name, tool.name] as const,
+  );
+  const nameMap: ToolNameMap = {
+    canonicalToWire: Object.freeze(Object.fromEntries(identityEntries)),
+    wireToCanonical: Object.freeze(Object.fromEntries(identityEntries)),
+  };
 
-  return tools
-    .filter((tool) => includeAsync || !tool.annotations.async)
-    .map((tool) => ({
+  return {
+    tools: selected.map((tool) => ({
       name: tool.name,
       description: toolDescription(tool),
-      inputSchema: tool.inputSchema,
+      inputSchema: mutableObjectSchema(tool.inputSchema),
       ...(tool.outputSchema === undefined
         ? {}
-        : { outputSchema: tool.outputSchema }),
+        : { outputSchema: mutableObjectSchema(tool.outputSchema) }),
       annotations: {
         readOnlyHint: tool.annotations.readOnly,
         destructiveHint: tool.annotations.destructive,
@@ -62,5 +79,8 @@ export function toMcpTools(
             } satisfies McpToolExecution,
           }
         : {}),
-    }));
+    })),
+    nameMap,
+    definitions: immutableDefinitions(selected),
+  };
 }

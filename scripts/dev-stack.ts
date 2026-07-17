@@ -415,13 +415,18 @@ export async function createInProcessDevStack(
 
 async function runDevStack(): Promise<void> {
   const stack = await startDevStack();
+  // Keys are redacted in logs by default; a real key may be supplied via env.
+  const showFullKey = process.argv.includes("--show-key");
+  const apiKeyLine = showFullKey
+    ? `project API key: ${stack.apiKey}`
+    : `project API key: ${stack.apiKey.slice(0, 4)}… (run with --show-key to print)`;
   process.stdout.write(
     `${[
       "eyeball dev stack ready",
       `mockhouse (${stack.providerCount} providers): ${stack.mockhouseUrl}`,
       `executor: ${stack.executorUrl}`,
       `mcp gateway: ${stack.mcpGatewayUrl}`,
-      `project API key: ${stack.apiKey}`,
+      apiKeyLine,
       `default user: ${stack.userId}`,
     ].join("\n")}\n`,
   );

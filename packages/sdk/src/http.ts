@@ -46,10 +46,13 @@ function envelopeError(body: unknown): EyeballError | undefined {
     retryable: error.retryable,
     ...(retryAfter === undefined ? {} : { retryAfter }),
     ...(providerDetail === undefined ? {} : { providerDetail }),
+    ...(typeof body.requestId === "string"
+      ? { requestId: body.requestId }
+      : {}),
   });
 }
 
-function normalizedBaseUrl(value: string): string {
+function normalizedBaseUrl(value: string, allowInsecureHttp: boolean): string {
   const trimmed = value.trim();
   let url: URL;
   try {
@@ -70,6 +73,16 @@ function normalizedBaseUrl(value: string): string {
       "baseUrl must be an HTTP(S) URL without credentials, query, or fragment.",
     );
   }
+  const loopback =
+    url.hostname === "localhost" ||
+    url.hostname === "::1" ||
+    url.hostname === "[::1]" ||
+    /^127(?:\.\d{1,3}){3}$/u.test(url.hostname);
+  if (url.protocol === "http:" && !loopback && !allowInsecureHttp) {
+    throw new TypeError(
+      "baseUrl must use HTTPS unless it targets loopback; set allowInsecureHttp only for isolated development transports.",
+    );
+  }
   return url.toString().replace(/\/+$/u, "");
 }
 
@@ -82,12 +95,16 @@ export class EyeballHttpClient {
     apiKey: string;
     baseUrl: string;
     fetchImpl: typeof globalThis.fetch;
+    allowInsecureHttp?: boolean;
   }) {
     if (options.apiKey.trim().length === 0) {
       throw new TypeError("apiKey must not be empty.");
     }
     this.#apiKey = options.apiKey;
-    this.#baseUrl = normalizedBaseUrl(options.baseUrl);
+    this.#baseUrl = normalizedBaseUrl(
+      options.baseUrl,
+      options.allowInsecureHttp ?? false,
+    );
     this.#fetch = options.fetchImpl;
   }
 

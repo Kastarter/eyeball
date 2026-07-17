@@ -1,6 +1,6 @@
 ---
 title: "Get an execution"
-description: "GET /v1/executions/:id for input, connection context, status, output, or normalized error."
+description: "GET /v1/executions/:id for public status, output, or normalized error."
 ---
 
 ```bash
@@ -8,7 +8,7 @@ curl "$EYEBALL_EXECUTOR_URL/v1/executions/exe_01JZ6WA0Q73ZQ5B51SRYB6M4Z8" \
   -H "Authorization: Bearer $EYEBALL_API_KEY"
 ```
 
-The detail route returns the project-scoped execution, including the canonical input and connection context retained by the engine:
+The route returns the project-scoped public execution record. Canonical input, connection selection, idempotency keys, and internal project fields are deliberately not exposed:
 
 ```json
 {
@@ -19,12 +19,6 @@ The detail route returns the project-scoped execution, including the canonical i
   "status": "succeeded",
   "userId": "demo_user",
   "createdAt": "2026-07-17T12:00:00.000Z",
-  "projectId": "proj_docs",
-  "mode": "sync",
-  "input": {
-    "query": "reservation",
-    "pageSize": 5
-  },
   "output": {
     "emails": [],
     "nextPageToken": "page_2"

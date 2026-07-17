@@ -3,7 +3,7 @@ import {
   type ResolvedCredential,
   type ToolDefinition,
 } from "@eyeball/core";
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import {
   type AdapterContext,
   createProviderHttpClient,
@@ -145,5 +145,101 @@ describe("provider HTTP client", () => {
         },
       },
     });
+  });
+
+  it("redacts credential values from the public provider error message", async () => {
+    const secret = "sk_live_private_123";
+    const context: AdapterContext = {
+      projectId: "project_test",
+      userId: "user_test",
+      tool,
+      canonicalInput: {},
+      credential: { type: "api_key", values: { apiKey: secret } },
+      baseUrl: "https://provider.example.test",
+      fetchImpl: (async () =>
+        Response.json(
+          { error: { message: `invalid token ${secret}` } },
+          { status: 401 },
+        )) as typeof fetch,
+      clock: systemClock,
+      logger: noopLogger,
+    };
+
+    let thrown: unknown;
+    try {
+      await createProviderHttpClient(context)("charge");
+    } catch (error) {
+      thrown = error;
+    }
+    expect(thrown).toMatchObject({
+      message: expect.stringContaining("[REDACTED]"),
+      providerDetail: {
+        detail: { error: { message: expect.stringContaining("[REDACTED]") } },
+      },
+    });
+    expect(JSON.stringify(thrown)).not.toContain(secret);
+  });
+
+  it("classifies authentication failures before redacting credential signals", async () => {
+    const secret = "fixture:EXPIRED_TOKEN";
+    const context: AdapterContext = {
+      projectId: "project_test",
+      userId: "user_test",
+      tool,
+      canonicalInput: {},
+      credential: { type: "api_key", values: { apiKey: secret } },
+      baseUrl: "https://provider.example.test",
+      fetchImpl: (async () =>
+        Response.json({ error: secret }, { status: 401 })) as typeof fetch,
+      clock: systemClock,
+      logger: noopLogger,
+    };
+
+    let thrown: unknown;
+    try {
+      await createProviderHttpClient(context)("charge");
+    } catch (error) {
+      thrown = error;
+    }
+    expect(thrown).toMatchObject({
+      code: "auth_expired",
+      message: "[REDACTED]",
+      providerDetail: { detail: { error: "[REDACTED]" } },
+    });
+    expect(JSON.stringify(thrown)).not.toContain(secret);
+  });
+
+  it("does not automatically follow credentialed redirects", async () => {
+    const fetchImpl = vi.fn(
+      async (_input: RequestInfo | URL, init?: RequestInit) => {
+        expect(init?.redirect).toBe("manual");
+        return new Response(null, {
+          status: 307,
+          headers: { Location: "https://attacker.example.test/capture" },
+        });
+      },
+    ) as typeof fetch;
+    const context: AdapterContext = {
+      projectId: "project_test",
+      userId: "user_test",
+      tool,
+      canonicalInput: {},
+      credential: { type: "api_key", values: { apiKey: "fixture:secret" } },
+      baseUrl: "https://provider.example.test",
+      fetchImpl,
+      clock: systemClock,
+      logger: noopLogger,
+    };
+
+    await expect(
+      createProviderHttpClient(context)("redirect", {
+        method: "POST",
+        body: "sensitive body",
+      }),
+    ).rejects.toMatchObject({
+      code: "provider_error",
+      message: "The provider returned an unexpected redirect.",
+    });
+    expect(fetchImpl).toHaveBeenCalledTimes(1);
   });
 });

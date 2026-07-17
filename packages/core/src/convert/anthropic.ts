@@ -1,16 +1,23 @@
 import { buildNameMap, type ToolNameMap } from "../naming.js";
-import type { ObjectSchema202012, ToolDefinition } from "../types/tool.js";
-import { toolDescription, wireNameFor } from "./shared.js";
+import type { ToolDefinition } from "../types/tool.js";
+import {
+  immutableDefinitions,
+  type MutableObjectSchema,
+  mutableObjectSchema,
+  toolDescription,
+  wireNameFor,
+} from "./shared.js";
 
 export interface AnthropicToolDescriptor {
   name: string;
   description: string;
-  input_schema: ObjectSchema202012;
+  input_schema: MutableObjectSchema;
 }
 
 export interface AnthropicToolsConversion {
   tools: AnthropicToolDescriptor[];
   nameMap: ToolNameMap;
+  definitions: readonly ToolDefinition[];
 }
 
 export interface AnthropicConversionOptions {
@@ -28,8 +35,9 @@ export function toAnthropicTools(
     tools: tools.map((tool) => ({
       name: wireNameFor(nameMap, tool.name),
       description: toolDescription(tool, options.includeAnnotationHints),
-      input_schema: tool.inputSchema,
+      input_schema: mutableObjectSchema(tool.inputSchema),
     })),
     nameMap,
+    definitions: immutableDefinitions(tools),
   };
 }

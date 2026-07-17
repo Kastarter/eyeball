@@ -374,6 +374,12 @@ inside an authenticated production executor.
 ### 3.1 Wire types
 
 The API key identifies `projectId`; it is deliberately absent from the request body.
+An unpinned project key is the authority for every end user in that project: the authenticated
+caller may select any `userId` and its project-scoped connections. Operators MAY instead use
+the keyring form `key:projectId:userId` to pin a key to one end user; the executor and MCP
+gateway MUST reject any conflicting body, header, query, or MCP `_meta` identity. Use pinned
+keys when a project credential is delegated to a less-trusted MCP host. The legacy
+`key:projectId` form intentionally retains project-wide authority.
 `userId` is the developer's stable external-user identifier. A supplied `connectionId`
 MUST belong to that project, user, and tool's toolkit. When it is absent, the executor uses
 the sole usable connection or the connection explicitly marked default; ambiguity returns
@@ -389,7 +395,7 @@ export interface ExecuteRequest {
   userId: string;
   connectionId?: string;
   input: Readonly<Record<string, JsonValue>>;
-  mode: ExecutionMode;
+  mode?: ExecutionMode;
 }
 
 export interface ExecutionBase {
@@ -428,7 +434,8 @@ export type ExecutionRecord = ExecutionBase & {
 );
 ```
 
-`POST /v1/execute` accepts exactly `ExecuteRequest`. Sync mode waits and returns
+`POST /v1/execute` accepts exactly `ExecuteRequest`; when `mode` is absent it defaults to
+`async` for an async-by-nature definition and `sync` otherwise. Sync mode waits and returns
 `SyncExecuteResponse` with HTTP 200. Async mode allocates once and immediately returns
 `AsyncExecuteResponse` with HTTP 202. `GET /v1/executions/:id` returns the current
 `ExecutionRecord`. Valid transitions are `pending -> running -> succeeded|failed` and

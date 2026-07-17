@@ -4,3 +4,8 @@ packages:
 allowBuilds:
   esbuild: true
   sharp: true
+minimumReleaseAgeExclude:
+  - '@ai-sdk/gateway@4.0.22'
+  - '@anthropic-ai/sdk@0.112.1'
+  - ai@7.0.30
+  - openai@6.48.0

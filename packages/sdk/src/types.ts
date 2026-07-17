@@ -117,6 +117,23 @@ export interface ConnectedConnection {
   status: "connected";
 }
 
+export interface ConnectionSummary {
+  connectionId: ConnectionId;
+  createdAt: string;
+  userId: string;
+  toolkit: string;
+  status: "connected" | "expired" | "revoked";
+}
+
+export interface ConnectionPage {
+  connections: readonly ConnectionSummary[];
+}
+
+export interface RevokedConnection {
+  connectionId: ConnectionId;
+  status: "revoked";
+}
+
 export interface EyeballClock {
   now(): number;
 }
@@ -133,9 +150,13 @@ export interface EyeballOptions {
   clock?: EyeballClock;
   /** Test seam used by execution polling. */
   sleep?: EyeballSleep;
+  /** Development-only escape hatch for non-loopback cleartext executor URLs. */
+  allowInsecureHttp?: boolean;
 }
 
 export interface ExecuteToolCallsOptions {
+  /** Exact map emitted with the model-facing tool bundle. Unmapped calls are rejected. */
+  nameMap: ToolNameMap;
   /** Uses the client-level userId when omitted. */
   userId?: string;
   connectionId?: ConnectionId;
@@ -158,14 +179,22 @@ export interface AnthropicToolResultBlock {
   is_error?: boolean;
 }
 
-export interface OpenAIToolCall {
+export interface OpenAIFunctionToolCall {
   id: string;
-  type?: "function";
+  type: "function";
   function: {
     name: string;
     arguments: string | Readonly<Record<string, JsonValue>>;
   };
 }
+
+export interface OpenAICustomToolCall {
+  id: string;
+  type: "custom";
+  custom: { name: string; input: string };
+}
+
+export type OpenAIToolCall = OpenAIFunctionToolCall | OpenAICustomToolCall;
 
 export interface OpenAIToolResultMessage {
   role: "tool";

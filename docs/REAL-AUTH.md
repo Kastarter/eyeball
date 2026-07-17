@@ -54,6 +54,10 @@ Writes and refreshes are serialized within one process. Concurrent callers resol
 in-flight refresh. This is intentionally a single-process/single-tenant store: do not point multiple executor processes
 at the same file. Use Eyeball Cloud for hosted multi-user connection ownership and distributed refresh.
 
+The authenticated records detect ciphertext tampering but do not provide external monotonic rollback detection. Restore
+only trusted backups, and revoke or rotate credentials at the upstream provider as well as deleting them locally; a copied
+older vault file can otherwise restore an older, still-valid credential.
+
 ### 2.1 CLI quickstart
 
 ```bash
@@ -98,8 +102,9 @@ provider-approved public client without a secret.
 
 The authorization code is exchanged immediately. The encrypted record stores access/refresh tokens, expiry, scopes,
 token type, client settings, and redirect URI. On expiry, `resolve` posts the refresh grant, persists any rotated refresh
-token, and returns the fresh access token. A rejected or unreachable refresh becomes non-retryable `auth_expired` with a
-reconnect command; the provider response body is not exposed.
+token, and returns the fresh access token. A rejected refresh grant becomes non-retryable `auth_expired` with a reconnect
+command; transport failures, HTTP 429, and provider 5xx responses become retryable `provider_unavailable`. Provider response
+bodies are not exposed.
 
 Use a production read-only canonical call as a final local check:
 

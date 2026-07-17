@@ -1,4 +1,5 @@
 import {
+  createConnectionId,
   createExecutionId,
   MockCredentialProvider,
   type ToolkitAdapter,
@@ -54,7 +55,7 @@ describe("MCP gateway to executor", () => {
       init?: Parameters<typeof fetch>[1],
     ) => executorApp.request(new Request(input, init))) as typeof fetch;
     const gateway = createMcpGatewayApp({
-      executorBaseUrl: "http://executor.mcp.test",
+      executorBaseUrl: "https://executor.mcp.test",
       fetchImpl,
       apiKey: API_KEY,
       userId: USER_ID,
@@ -118,5 +119,118 @@ describe("MCP gateway to executor", () => {
         acceptedRecipients: ["recipient@example.com"],
       },
     });
+  });
+
+  it("cannot use a connection belonging to another user or project", async () => {
+    const USER_B = "user_mcp_other";
+    const PROJECT_B = "proj_mcp_other";
+    const ownConnection = createConnectionId("mcp_own");
+    const otherUserConnection = createConnectionId("mcp_other_user");
+    const otherProjectConnection = createConnectionId("mcp_other_project");
+    const execute = vi.fn(async () => ({ emails: [] }));
+    let executionIndex = 0;
+    const engine = new ExecutionEngine({
+      adapters: new AdapterRegistry([
+        { toolkitSlug: "gmail", execute } satisfies ToolkitAdapter,
+      ]),
+      credentialProvider: new MockCredentialProvider([
+        {
+          match: {
+            projectId: PROJECT_ID,
+            userId: USER_ID,
+            toolkitSlug: "gmail",
+            connectionId: ownConnection,
+          },
+          credential: {
+            type: "oauth2",
+            accessToken: "fixture:own",
+            scopes: [GMAIL_SCOPE],
+          },
+        },
+        {
+          match: {
+            projectId: PROJECT_ID,
+            userId: USER_B,
+            toolkitSlug: "gmail",
+            connectionId: otherUserConnection,
+          },
+          credential: {
+            type: "oauth2",
+            accessToken: "fixture:other-user",
+            scopes: [GMAIL_SCOPE],
+          },
+        },
+        {
+          match: {
+            projectId: PROJECT_B,
+            userId: USER_ID,
+            toolkitSlug: "gmail",
+            connectionId: otherProjectConnection,
+          },
+          credential: {
+            type: "oauth2",
+            accessToken: "fixture:other-project",
+            scopes: [GMAIL_SCOPE],
+          },
+        },
+      ]),
+      executionIdFactory: () => {
+        executionIndex += 1;
+        return createExecutionId(`mcp_scope_${executionIndex}`);
+      },
+    });
+    const executorApp = createExecutorApp({
+      engine,
+      apiKeys: {
+        [API_KEY]: { projectId: PROJECT_ID, userId: USER_ID },
+      },
+      requestIdFactory: () => "req_mcp_scope",
+    });
+    const fetchImpl = (async (
+      input: Parameters<typeof fetch>[0],
+      init?: Parameters<typeof fetch>[1],
+    ) => executorApp.request(new Request(input, init))) as typeof fetch;
+    const gateway = createMcpGatewayApp({
+      executorBaseUrl: "https://executor.mcp.test",
+      fetchImpl,
+      apiKeys: {
+        [API_KEY]: { projectId: PROJECT_ID, userId: USER_ID },
+      },
+    });
+    const invoke = async (connectionId: string, id: string) =>
+      gateway.request("/mcp", {
+        method: "POST",
+        headers: {
+          Authorization: `Bearer ${API_KEY}`,
+          "Content-Type": "application/json",
+        },
+        body: JSON.stringify({
+          jsonrpc: "2.0",
+          id,
+          method: "tools/call",
+          params: {
+            name: "gmail.list_emails",
+            arguments: {},
+            _meta: { "dev.eyeball/connectionId": connectionId },
+          },
+        }),
+      });
+
+    const own = await invoke(ownConnection, "own");
+    const crossUser = await invoke(otherUserConnection, "cross-user");
+    const crossProject = await invoke(otherProjectConnection, "cross-project");
+
+    await expect(own.json()).resolves.toMatchObject({
+      result: { structuredContent: { emails: [] } },
+    });
+    for (const response of [crossUser, crossProject]) {
+      await expect(response.json()).resolves.toMatchObject({
+        result: {
+          isError: true,
+          content: [{ text: expect.stringContaining("auth_missing") }],
+        },
+      });
+    }
+    expect(execute).toHaveBeenCalledTimes(1);
   });
 });

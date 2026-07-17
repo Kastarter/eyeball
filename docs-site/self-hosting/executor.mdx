@@ -18,7 +18,7 @@ Check health:
 curl http://127.0.0.1:3000/health
 ```
 
-`EYEBALL_API_KEYS` is a comma-separated `key:projectId` keyring. Duplicate keys and malformed entries fail startup.
+`EYEBALL_API_KEYS` is a comma-separated keyring. Use `key:projectId` for project-wide authority or `key:projectId:userId` to pin a key to one end user. A pinned key rejects conflicting request-body, header, query, and MCP metadata identities. Duplicate keys and malformed entries fail startup.
 
 The stock `src/server.ts` creates `createExecutorApp()` with:
 

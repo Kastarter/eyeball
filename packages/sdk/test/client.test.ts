@@ -1,4 +1,9 @@
-import { EyeballError, TOOL_ERROR_CODES } from "@eyeball/core";
+import {
+  buildNameMap,
+  EyeballError,
+  TOOL_ERROR_CODES,
+  validateCanonicalToolName,
+} from "@eyeball/core";
 import { describe, expect, it, vi } from "vitest";
 import { Eyeball, executeToolCalls } from "../src/index.js";
 
@@ -218,6 +223,25 @@ describe("Eyeball SDK", () => {
     });
   });
 
+  it("allows the authoritative executor to accept a server-newer canonical tool", async () => {
+    const requests: Request[] = [];
+    const eb = client(
+      testFetch(async (request) => {
+        const body = (await request.json()) as { tool: string };
+        return immediateSuccess(body.tool, { serverNewer: true });
+      }, requests),
+      { userId: "user_sdk" },
+    );
+
+    await expect(
+      eb.tools.run("future-provider.server_new_tool", { value: 1 }),
+    ).resolves.toEqual({ serverNewer: true });
+    await expect(requests[0]?.json()).resolves.toMatchObject({
+      tool: "future-provider.server_new_tool",
+      mode: "sync",
+    });
+  });
+
   it("defaults async tools from annotations and waits for canonical output", async () => {
     const requests: Request[] = [];
     const sleeps: number[] = [];
@@ -358,6 +382,7 @@ describe("Eyeball SDK", () => {
     ).rejects.toMatchObject({
       code: TOOL_ERROR_CODES.TIMEOUT,
       retryable: false,
+      executionId: "exe_never",
     });
     expect(sleeps).toEqual([5, 5, 2]);
 
@@ -385,6 +410,7 @@ describe("Eyeball SDK", () => {
       retryable: true,
       retryAfter: 7,
       providerDetail: { toolkit: "gmail", status: 429 },
+      requestId: "req_rate_limit",
     });
   });
 
@@ -427,13 +453,75 @@ describe("Eyeball SDK", () => {
       message: expect.stringContaining("private eyeball-cloud Auth Vault"),
     });
   });
+
+  it("lists and deletes development connections", async () => {
+    const requests: Request[] = [];
+    const eb = client(
+      testFetch((request) => {
+        if (request.method === "DELETE") {
+          return jsonResponse({
+            connectionId: "conn_sdk_dev",
+            status: "revoked",
+          });
+        }
+        return jsonResponse({
+          connections: [
+            {
+              connectionId: "conn_sdk_dev",
+              userId: "user_sdk",
+              toolkit: "gmail",
+              status: "connected",
+              createdAt: "2026-07-17T00:00:00.000Z",
+              updatedAt: "2026-07-17T00:00:00.000Z",
+            },
+          ],
+        });
+      }, requests),
+      { userId: "user_sdk" },
+    );
+
+    await expect(eb.connections.list()).resolves.toMatchObject({
+      connections: [{ connectionId: "conn_sdk_dev" }],
+    });
+    await expect(eb.connections.delete("conn_sdk_dev")).resolves.toEqual({
+      connectionId: "conn_sdk_dev",
+      status: "revoked",
+    });
+    const [listRequest, deleteRequest] = requests;
+    if (listRequest === undefined || deleteRequest === undefined) {
+      throw new Error("Expected list and delete connection requests.");
+    }
+    expect(new URL(listRequest.url).pathname).toBe("/v1/connections");
+    expect(new URL(deleteRequest.url).pathname).toBe(
+      "/v1/connections/conn_sdk_dev",
+    );
+  });
+
+  it("rejects cleartext non-loopback executor URLs without an explicit opt-in", () => {
+    const options = {
+      apiKey: "ey_test_sdk",
+      baseUrl: "http://executor.example.test",
+      fetch: testFetch(() => jsonResponse({})),
+    };
+
+    expect(() => new Eyeball(options)).toThrow("must use HTTPS");
+    expect(
+      () => new Eyeball({ ...options, allowInsecureHttp: true }),
+    ).not.toThrow();
+  });
 });
 
 describe("executeToolCalls", () => {
+  const nameMap = buildNameMap(
+    ["gmail.list_emails", "gmail.get_email"].map((name) => ({
+      name: validateCanonicalToolName(name),
+    })),
+  );
+
   it("returns framework-native success and normalized error blocks", async () => {
     const run = vi.fn(
       async (name: string, _input: unknown, _options: unknown) => {
-        if (name === "gmail__get_email") {
+        if (name === "gmail.get_email") {
           throw new EyeballError({
             code: TOOL_ERROR_CODES.NOT_FOUND,
             message: "Message not found.",
@@ -444,20 +532,24 @@ describe("executeToolCalls", () => {
     );
     const eb = { tools: { run } } as unknown as Eyeball;
 
-    const anthropic = await executeToolCalls(eb, [
-      {
-        type: "tool_use",
-        id: "toolu_list",
-        name: "gmail__list_emails",
-        input: {},
-      },
-      {
-        type: "tool_use",
-        id: "toolu_get",
-        name: "gmail__get_email",
-        input: { messageId: "missing" },
-      },
-    ]);
+    const anthropic = await executeToolCalls(
+      eb,
+      [
+        {
+          type: "tool_use",
+          id: "toolu_list",
+          name: "gmail__list_emails",
+          input: {},
+        },
+        {
+          type: "tool_use",
+          id: "toolu_get",
+          name: "gmail__get_email",
+          input: { messageId: "missing" },
+        },
+      ],
+      { nameMap },
+    );
     expect(anthropic).toEqual([
       {
         type: "tool_result",
@@ -478,24 +570,28 @@ describe("executeToolCalls", () => {
       },
     ]);
 
-    const openai = await executeToolCalls(eb, [
-      {
-        id: "call_list",
-        type: "function",
-        function: {
-          name: "gmail__list_emails",
-          arguments: JSON.stringify({ query: "invoice" }),
+    const openai = await executeToolCalls(
+      eb,
+      [
+        {
+          id: "call_list",
+          type: "function",
+          function: {
+            name: "gmail__list_emails",
+            arguments: JSON.stringify({ query: "invoice" }),
+          },
         },
-      },
-      {
-        id: "call_invalid",
-        type: "function",
-        function: {
-          name: "gmail__list_emails",
-          arguments: "{not-json",
+        {
+          id: "call_invalid",
+          type: "function",
+          function: {
+            name: "gmail__list_emails",
+            arguments: "{not-json",
+          },
         },
-      },
-    ]);
+      ],
+      { nameMap },
+    );
     expect(openai).toEqual([
       {
         role: "tool",
@@ -517,7 +613,7 @@ describe("executeToolCalls", () => {
     expect(run).toHaveBeenCalledTimes(3);
     expect(run).toHaveBeenNthCalledWith(
       1,
-      "gmail__list_emails",
+      "gmail.list_emails",
       {},
       {
         idempotencyKey: "anthropic:toolu_list",
@@ -525,13 +621,13 @@ describe("executeToolCalls", () => {
     );
     expect(run).toHaveBeenNthCalledWith(
       2,
-      "gmail__get_email",
+      "gmail.get_email",
       { messageId: "missing" },
       { idempotencyKey: "anthropic:toolu_get" },
     );
     expect(run).toHaveBeenNthCalledWith(
       3,
-      "gmail__list_emails",
+      "gmail.list_emails",
       { query: "invoice" },
       { idempotencyKey: "openai:call_list" },
     );
@@ -546,14 +642,18 @@ describe("executeToolCalls", () => {
       },
     } as unknown as Eyeball;
 
-    const [result] = await executeToolCalls(eb, [
-      {
-        type: "tool_use",
-        id: "toolu_redacted",
-        name: "gmail__list_emails",
-        input: {},
-      },
-    ]);
+    const [result] = await executeToolCalls(
+      eb,
+      [
+        {
+          type: "tool_use",
+          id: "toolu_redacted",
+          name: "gmail__list_emails",
+          input: {},
+        },
+      ],
+      { nameMap },
+    );
 
     expect(result).toEqual({
       type: "tool_result",
@@ -568,5 +668,53 @@ describe("executeToolCalls", () => {
       is_error: true,
     });
     expect(result?.content).not.toContain("SECRET_TOKEN");
+  });
+
+  it("refuses tool names that were not present in the emitted bundle", async () => {
+    const run = vi.fn(async () => ({ refunded: true }));
+    const eb = { tools: { run } } as unknown as Eyeball;
+
+    const [result] = await executeToolCalls(
+      eb,
+      [
+        {
+          type: "tool_use",
+          id: "toolu_injected",
+          name: "stripe__create_refund",
+          input: { paymentId: "pay_1" },
+        },
+      ],
+      { nameMap },
+    );
+
+    expect(result).toMatchObject({
+      is_error: true,
+      content: expect.stringContaining("not_supported"),
+    });
+    expect(run).not.toHaveBeenCalled();
+  });
+
+  it("accepts OpenAI's current custom-call union and returns a typed error", async () => {
+    const run = vi.fn();
+    const eb = { tools: { run } } as unknown as Eyeball;
+
+    const [result] = await executeToolCalls(
+      eb,
+      [
+        {
+          id: "custom-1",
+          type: "custom",
+          custom: { name: "shell", input: "pwd" },
+        },
+      ],
+      { nameMap },
+    );
+
+    expect(result).toMatchObject({
+      role: "tool",
+      tool_call_id: "custom-1",
+      content: expect.stringContaining("not_supported"),
+    });
+    expect(run).not.toHaveBeenCalled();
   });
 });

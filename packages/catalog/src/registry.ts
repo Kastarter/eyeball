@@ -329,7 +329,7 @@ function assertCatalogProviderIdentity(manifest: ProviderManifest): void {
     provider.authClass !== manifest.auth.class
   ) {
     throw new Error(
-      `Manifest ${manifest.toolkit.slug} disagrees with its catalog 1.0 provider metadata.`,
+      `Manifest ${manifest.toolkit.slug} disagrees with its catalog-major provider metadata.`,
     );
   }
 }
@@ -517,7 +517,7 @@ export class CatalogRegistry {
   registerManifest(manifest: ProviderManifest): this {
     assertManifestHeader(manifest, this.catalogVersion);
     if (
-      manifest.catalogVersion === "1.0" &&
+      manifest.catalogVersion.split(".", 1)[0] === "1" &&
       getProviderCatalogEntry(manifest.toolkit.slug) !== undefined
     ) {
       assertCatalogProviderIdentity(manifest);
@@ -550,7 +550,7 @@ export class CatalogRegistry {
       );
       const baselineProvider = getProviderCatalogEntry(manifest.toolkit.slug);
       if (
-        manifest.catalogVersion === "1.0" &&
+        manifest.catalogVersion.split(".", 1)[0] === "1" &&
         baselineProvider !== undefined &&
         !baselineProvider.memberships.some(
           ({ capability }) => capability === implementation.capability,

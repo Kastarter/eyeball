@@ -1,4 +1,11 @@
-import { mkdtemp, readdir, readFile, rm, writeFile } from "node:fs/promises";
+import {
+  mkdtemp,
+  readdir,
+  readFile,
+  rm,
+  symlink,
+  writeFile,
+} from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { basename, join, relative, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -167,78 +174,15 @@ async function walk(directory: string): Promise<string[]> {
   return children.flat().sort();
 }
 
-const frameworkShims = `
-declare module "@anthropic-ai/sdk" {
-  namespace Anthropic {
-    interface MessageParam { role: "user" | "assistant"; content: string | readonly unknown[] }
-    interface ToolUseBlock { type: "tool_use"; id: string; name: string; input: unknown }
-    interface Message {
-      content: Array<ToolUseBlock | { type: string; text?: string }>;
-      stop_reason: string | null;
-    }
-  }
-  class Anthropic {
-    messages: {
-      create(input: {
-        model: string;
-        max_tokens: number;
-        messages: Anthropic.MessageParam[];
-        tools: readonly unknown[];
-      }): Promise<Anthropic.Message>;
-    };
-  }
-  export default Anthropic;
-}
-
-declare module "openai" {
-  namespace OpenAI {
-    namespace Chat.Completions {
-      interface ChatCompletionMessageParam { role: string; content?: unknown; tool_calls?: unknown[] }
-      interface ChatCompletionMessage {
-        role: "assistant";
-        content: string | null;
-        tool_calls?: Array<{
-          id: string;
-          type: "function";
-          function: { name: string; arguments: string };
-        }>;
-      }
-    }
-  }
-  class OpenAI {
-    chat: {
-      completions: {
-        create(input: {
-          model: string;
-          messages: OpenAI.Chat.Completions.ChatCompletionMessageParam[];
-          tools: readonly unknown[];
-        }): Promise<{ choices: Array<{ message: OpenAI.Chat.Completions.ChatCompletionMessage }> }>;
-      };
-    };
-  }
-  export default OpenAI;
-}
-
-declare module "ai" {
-  export function generateText(input: {
-    model: unknown;
-    prompt: string;
-    tools: Record<string, unknown>;
-    maxSteps?: number;
-  }): Promise<{ text: string }>;
-}
-
-declare module "@ai-sdk/anthropic" {
-  export function anthropic(model: string): unknown;
-}
-`;
-
 async function main(): Promise<void> {
   const tempDirectory = await mkdtemp(join(tmpdir(), "eyeball-docs-snippets-"));
   try {
-    const shimsPath = join(tempDirectory, "framework-shims.d.ts");
-    await writeFile(shimsPath, frameworkShims, "utf8");
-    const snippetPaths: string[] = [shimsPath];
+    await symlink(
+      join(repositoryRoot, "node_modules"),
+      join(tempDirectory, "node_modules"),
+      process.platform === "win32" ? "junction" : "dir",
+    );
+    const snippetPaths: string[] = [];
     let snippetCount = 0;
     const schemaErrors: string[] = [];
 

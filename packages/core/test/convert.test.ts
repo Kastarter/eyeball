@@ -1,6 +1,5 @@
 import { describe, expect, it, vi } from "vitest";
 import {
-  buildNameMap,
   convert,
   JSON_SCHEMA_DRAFT_2020_12,
   type ToolDefinition,
@@ -208,7 +207,8 @@ describe("Anthropic tool conversion", () => {
     const result = toAnthropicTools(tools);
 
     expect(result.tools.map((tool) => tool.name)).toEqual(restrictedNames);
-    expect(result.tools[0]?.input_schema).toBe(gmailSendEmail.inputSchema);
+    expect(result.tools[0]?.input_schema).toEqual(gmailSendEmail.inputSchema);
+    expect(result.tools[0]?.input_schema).not.toBe(gmailSendEmail.inputSchema);
     expect(result.nameMap.wireToCanonical.gmail__send_email).toBe(
       "gmail.send_email",
     );
@@ -235,7 +235,10 @@ describe("OpenAI tool conversion", () => {
       restrictedNames,
     );
     expect(result.tools[0]).toMatchObject({ type: "function" });
-    expect(result.tools[0]?.function.parameters).toBe(
+    expect(result.tools[0]?.function.parameters).toEqual(
+      gmailSendEmail.inputSchema,
+    );
+    expect(result.tools[0]?.function.parameters).not.toBe(
       gmailSendEmail.inputSchema,
     );
   });
@@ -250,14 +253,14 @@ describe("OpenAI tool conversion", () => {
 });
 
 describe("Vercel AI SDK tool conversion", () => {
-  it("returns dependency-free descriptors keyed by restricted names", () => {
+  it("returns AI SDK-native descriptors keyed by restricted names", () => {
     const result = toAiSdkTools(tools);
 
-    expect(Object.keys(result)).toEqual(restrictedNames);
-    expect(result.gmail__send_email?.inputSchema).toBe(
+    expect(Object.keys(result.tools)).toEqual(restrictedNames);
+    expect(result.tools.gmail__send_email?.inputSchema.jsonSchema).toEqual(
       gmailSendEmail.inputSchema,
     );
-    expect(result.gmail__send_email).not.toHaveProperty("execute");
+    expect(result.tools.gmail__send_email).not.toHaveProperty("execute");
   });
 
   it("binds each descriptor to the injected wire-name executor", async () => {
@@ -268,7 +271,9 @@ describe("Vercel AI SDK tool conversion", () => {
     const result = toAiSdkTools(tools, execute);
     const input = { to: ["buyer@example.com"], subject: "Hi", body: "Hello" };
 
-    await expect(result.gmail__send_email?.execute?.(input)).resolves.toEqual({
+    await expect(
+      result.tools.gmail__send_email?.execute?.(input),
+    ).resolves.toEqual({
       wireName: "gmail__send_email",
       input,
     });
@@ -280,14 +285,15 @@ describe("MCP tool conversion", () => {
   it("preserves canonical dotted names, schemas, and MCP safety hints", () => {
     const result = toMcpTools(tools);
 
-    expect(result.map((tool) => tool.name)).toEqual([
+    expect(result.tools.map((tool) => tool.name)).toEqual([
       "gmail.send_email",
       "gmail.list_threads",
       "dynamics-365-business-central.create_journal_entry",
     ]);
-    expect(result[0]?.inputSchema).toBe(gmailSendEmail.inputSchema);
-    expect(result[0]?.outputSchema).toBe(gmailSendEmail.outputSchema);
-    expect(result[1]?.annotations).toEqual({
+    expect(result.tools[0]?.inputSchema).toEqual(gmailSendEmail.inputSchema);
+    expect(result.tools[0]?.inputSchema).not.toBe(gmailSendEmail.inputSchema);
+    expect(result.tools[0]?.outputSchema).toEqual(gmailSendEmail.outputSchema);
+    expect(result.tools[1]?.annotations).toEqual({
       readOnlyHint: true,
       destructiveHint: false,
       idempotentHint: true,
@@ -296,14 +302,18 @@ describe("MCP tool conversion", () => {
 
   it("omits async-by-nature tools unless Tasks support is negotiated", () => {
     expect(
-      toMcpTools(tools).some((tool) => tool.name === "twilio.start_call"),
+      toMcpTools(tools).tools.some((tool) => tool.name === "twilio.start_call"),
     ).toBe(false);
   });
 
   it("includes async tools with task support after negotiation", () => {
     const result = toMcpTools(tools, { includeAsync: true });
-    const asyncTool = result.find((tool) => tool.name === "twilio.start_call");
-    const syncTool = result.find((tool) => tool.name === "gmail.send_email");
+    const asyncTool = result.tools.find(
+      (tool) => tool.name === "twilio.start_call",
+    );
+    const syncTool = result.tools.find(
+      (tool) => tool.name === "gmail.send_email",
+    );
 
     expect(asyncTool?.execution).toEqual({ taskSupport: "required" });
     expect(syncTool?.execution).toEqual({ taskSupport: "optional" });
@@ -316,20 +326,17 @@ describe("shared conversion guarantees", () => {
     const openai = toOpenAITools(tools);
     const aiSdk = toAiSdkTools(tools);
     const mcp = toMcpTools(tools, { includeAsync: true });
-    const nameMap = buildNameMap(tools);
-
     for (const tool of anthropic.tools) {
       expect(anthropic.nameMap.wireToCanonical[tool.name]).toBeDefined();
     }
     for (const tool of openai.tools) {
       expect(openai.nameMap.wireToCanonical[tool.function.name]).toBeDefined();
     }
-    for (const wireName of Object.keys(aiSdk)) {
-      expect(nameMap.wireToCanonical[wireName]).toBeDefined();
+    for (const wireName of Object.keys(aiSdk.tools)) {
+      expect(aiSdk.nameMap.wireToCanonical[wireName]).toBeDefined();
     }
-    for (const tool of mcp) {
-      const wireName = nameMap.canonicalToWire[tool.name];
-      expect(nameMap.wireToCanonical[wireName]).toBe(tool.name);
+    for (const tool of mcp.tools) {
+      expect(mcp.nameMap.wireToCanonical[tool.name]).toBe(tool.name);
     }
   });
 
@@ -346,8 +353,10 @@ describe("shared conversion guarantees", () => {
     const descriptions = [
       ...toAnthropicTools(tools).tools.map((tool) => tool.description),
       ...toOpenAITools(tools).tools.map((tool) => tool.function.description),
-      ...Object.values(toAiSdkTools(tools)).map((tool) => tool.description),
-      ...toMcpTools(tools).map((tool) => tool.description),
+      ...Object.values(toAiSdkTools(tools).tools).map(
+        (tool) => tool.description,
+      ),
+      ...toMcpTools(tools).tools.map((tool) => tool.description),
     ];
 
     expect(descriptions.every((description) => description.length > 0)).toBe(
@@ -375,7 +384,24 @@ describe("shared conversion guarantees", () => {
   it("dispatches to each typed format converter", () => {
     expect(convert(tools, "anthropic")).toHaveProperty("nameMap");
     expect(convert(tools, "openai")).toHaveProperty("nameMap");
-    expect(convert(tools, "ai-sdk")).toHaveProperty("gmail__send_email");
-    expect(convert(tools, "mcp")[0]?.name).toBe("gmail.send_email");
+    expect(convert(tools, "ai-sdk").tools).toHaveProperty("gmail__send_email");
+    expect(convert(tools, "mcp").tools[0]?.name).toBe("gmail.send_email");
+  });
+
+  it("returns detached, deeply immutable definition sidecars", () => {
+    const source = structuredClone([gmailSendEmail]);
+    const bundle = toAnthropicTools(source);
+
+    expect(bundle.definitions).toEqual(source);
+    expect(bundle.definitions).not.toBe(source);
+    expect(Object.isFrozen(bundle.definitions)).toBe(true);
+    expect(Object.isFrozen(bundle.definitions[0]?.inputSchema)).toBe(true);
+
+    const sourceTool = source[0];
+    if (sourceTool === undefined) {
+      throw new Error("Expected the source fixture to contain one tool.");
+    }
+    sourceTool.description = "Changed after conversion.";
+    expect(bundle.definitions[0]?.description).toBe(gmailSendEmail.description);
   });
 });

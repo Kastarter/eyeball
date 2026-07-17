@@ -14,7 +14,7 @@ eyeball exposes Streamable HTTP MCP at `/mcp`. Configure a project key and a sta
       "type": "http",
       "url": "http://127.0.0.1:3001/mcp",
       "headers": {
-        "Authorization": "Bearer eyeball_test_project",
+        "Authorization": "Bearer eyeball_dev_project",
         "X-Eyeball-User-Id": "demo_user"
       }
     }
@@ -30,7 +30,7 @@ eyeball exposes Streamable HTTP MCP at `/mcp`. Configure a project key and a sta
     "eyeball": {
       "url": "http://127.0.0.1:3001/mcp",
       "headers": {
-        "Authorization": "Bearer eyeball_test_project",
+        "Authorization": "Bearer eyeball_dev_project",
         "X-Eyeball-User-Id": "demo_user"
       }
     }
@@ -49,7 +49,16 @@ Ask the client to call `eyeball.search_tools` when the full catalog is too large
 }
 ```
 
-Then call the returned canonical tool name. Mutations use `mcp:<session-id>:<json-rpc-id>` as their default idempotency key, and terminal responses include `_meta["dev.eyeball/execution"]`.
+In search discovery mode, pass the selected card to the always-listed `eyeball.execute_tool` tool:
+
+```json
+{
+  "name": "gmail.search_emails",
+  "input": {"query": "reservation", "pageSize": 5}
+}
+```
+
+Catalog discovery mode lists provider tools directly instead. Mutations use `mcp:<session-id>:<json-rpc-id>` as their default idempotency key, and terminal responses include `_meta["dev.eyeball/execution"]`.
 
 <Note>
   When the gateway and executor target mocks, the complete MCP tool path runs with zero third-party SaaS accounts.

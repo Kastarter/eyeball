@@ -40,7 +40,7 @@ export const MCP_DEMO_PROJECT_ID = "proj_agent_loop";
 export const MCP_DEMO_USER_ID = "user_agent_loop";
 
 const MOCK_ORIGIN = "http://mockhouse.agent-loop.test";
-const EXECUTOR_ORIGIN = "http://executor.agent-loop.test";
+const EXECUTOR_ORIGIN = "https://executor.agent-loop.test";
 const GMAIL_SCOPE = "https://www.googleapis.com/auth/gmail.modify";
 
 export interface McpToolResult {

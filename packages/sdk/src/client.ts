@@ -5,6 +5,7 @@ import {
 } from "@eyeball/catalog";
 import {
   buildNameMap,
+  type ConnectionId,
   type ExecutionBase,
   type ExecutionRecord,
   type ExecutionResult,
@@ -23,6 +24,7 @@ import {
 import { EyeballHttpClient, errorFromNormalized } from "./http.js";
 import type {
   ConnectedConnection,
+  ConnectionPage,
   CreateConnectionOptions,
   ExecuteToolOptions,
   ExecutionPage,
@@ -33,6 +35,7 @@ import type {
   GetToolsOptions,
   GetToolsResult,
   ListExecutionsOptions,
+  RevokedConnection,
   RunToolOptions,
   SearchToolsOptions,
   SearchToolsResult,
@@ -89,17 +92,9 @@ function canonicalToolName(name: string): QualifiedToolName {
   }
 }
 
-function localTool(name: string): ToolDefinition {
+function localTool(name: string): ToolDefinition | undefined {
   const canonical = canonicalToolName(name);
-  const tool = defaultCatalog.getTool(canonical);
-  if (tool === undefined) {
-    throw new EyeballError({
-      code: TOOL_ERROR_CODES.NOT_SUPPORTED,
-      message: `Tool ${canonical} is not present in the local @eyeball/catalog.`,
-      retryable: false,
-    });
-  }
-  return tool;
+  return defaultCatalog.getTool(canonical);
 }
 
 function canonicalInput(input: unknown): Readonly<Record<string, JsonValue>> {
@@ -198,6 +193,7 @@ export class ExecutionsClient {
           code: TOOL_ERROR_CODES.TIMEOUT,
           message: `Execution ${executionId} did not reach a terminal state within ${timeoutMs}ms.`,
           retryable: false,
+          executionId,
         });
       }
       await this.#context.sleep(Math.min(pollMs, timeoutMs - elapsed));
@@ -307,7 +303,7 @@ export class ToolsClient {
           options.includeAsync === undefined
             ? {}
             : { includeAsync: options.includeAsync },
-        );
+        ).tools;
         break;
       case "ai-sdk": {
         const boundUserId = effectiveUserId(
@@ -320,7 +316,7 @@ export class ToolsClient {
             return invalidInput(`Unknown converted tool name: ${wireName}.`);
           }
           return this.run(canonicalName, input, { userId: boundUserId });
-        });
+        }).tools;
         break;
       }
     }
@@ -337,12 +333,15 @@ export class ToolsClient {
     toolName: string,
     options: ExecuteToolOptions,
   ): Promise<ExecutionResult> {
-    const tool = localTool(toolName);
+    const canonical = canonicalToolName(toolName);
+    const tool = localTool(canonical);
     const userId = effectiveUserId(options.userId, this.#context.defaultUserId);
-    const mode = options.mode ?? (tool.annotations.async ? "async" : "sync");
+    const mode = options.mode ?? (tool?.annotations.async ? "async" : "sync");
     const idempotencyKey =
       options.idempotencyKey ??
-      (tool.annotations.readOnly ? undefined : globalThis.crypto.randomUUID());
+      (tool?.annotations.readOnly === true
+        ? undefined
+        : globalThis.crypto.randomUUID());
     const headers = new Headers();
     if (idempotencyKey !== undefined) {
       headers.set("Idempotency-Key", idempotencyKey);
@@ -354,7 +353,7 @@ export class ToolsClient {
       method: "POST",
       headers,
       body: JSON.stringify({
-        tool: tool.name,
+        tool: canonical,
         userId,
         input: canonicalInput(options.input),
         mode,
@@ -445,6 +444,17 @@ export class ConnectionsClient {
       throw error;
     }
   }
+
+  list(): Promise<ConnectionPage> {
+    return this.#context.http.request("/v1/connections");
+  }
+
+  delete(connectionId: ConnectionId): Promise<RevokedConnection> {
+    return this.#context.http.request(
+      `/v1/connections/${encodeURIComponent(connectionId)}`,
+      { method: "DELETE" },
+    );
+  }
 }
 
 export class Eyeball {
@@ -467,6 +477,9 @@ export class Eyeball {
         apiKey: options.apiKey,
         baseUrl: options.baseUrl,
         fetchImpl,
+        ...(options.allowInsecureHttp === undefined
+          ? {}
+          : { allowInsecureHttp: options.allowInsecureHttp }),
       }),
       ...(options.userId === undefined
         ? {}

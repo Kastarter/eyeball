@@ -76,12 +76,14 @@ function createHarness() {
     clientA: new Eyeball({
       apiKey: API_KEY_A,
       baseUrl: "http://executor.local",
+      allowInsecureHttp: true,
       fetch: executorFetch,
       userId: USER_ID,
     }),
     clientB: new Eyeball({
       apiKey: API_KEY_B,
       baseUrl: "http://executor.local",
+      allowInsecureHttp: true,
       fetch: executorFetch,
       userId: USER_ID,
     }),

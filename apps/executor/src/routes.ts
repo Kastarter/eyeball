@@ -1,10 +1,14 @@
 import { randomUUID } from "node:crypto";
 import {
+  type ApiKeyringInput,
   createErrorEnvelope,
   type ExecutionStatus,
   EyeballError,
+  fromRestrictedToolName,
   isCanonicalToolName,
   isConnectionId,
+  materializeApiKeyring,
+  parseApiKeyring,
   type QualifiedToolName,
   TOOL_ERROR_CODES,
 } from "@eyeball/core";
@@ -25,12 +29,13 @@ const EXECUTION_STATUSES = new Set<ExecutionStatus>([
   "failed",
 ]);
 
-type ApiKeyringInput =
-  | Readonly<Record<string, string>>
-  | ReadonlyMap<string, string>;
+export { parseApiKeyring } from "@eyeball/core";
+
+const USER_ID_HEADER = "X-Eyeball-User-Id";
 
 export interface ExecutorVariables {
   projectId: string;
+  pinnedUserId: string | undefined;
   requestId: string;
 }
 
@@ -47,48 +52,6 @@ export interface ExecutorAppOptions {
   devVoiceSessions?: DevVoiceSessionAdvancer;
 }
 
-export function parseApiKeyring(
-  value: string | undefined,
-): Map<string, string> {
-  const keyring = new Map<string, string>();
-  if (value === undefined || value.trim().length === 0) {
-    return keyring;
-  }
-
-  for (const rawEntry of value.split(",")) {
-    const entry = rawEntry.trim();
-    const separator = entry.indexOf(":");
-    if (
-      separator <= 0 ||
-      separator !== entry.lastIndexOf(":") ||
-      separator === entry.length - 1
-    ) {
-      throw new Error(
-        "EYEBALL_API_KEYS entries must use the key:projectId format.",
-      );
-    }
-    const key = entry.slice(0, separator).trim();
-    const projectId = entry.slice(separator + 1).trim();
-    if (key.length === 0 || projectId.length === 0) {
-      throw new Error(
-        "EYEBALL_API_KEYS entries must include a key and project ID.",
-      );
-    }
-    if (keyring.has(key)) {
-      throw new Error("EYEBALL_API_KEYS must not contain duplicate keys.");
-    }
-    keyring.set(key, projectId);
-  }
-  return keyring;
-}
-
-function materializeKeyring(input: ApiKeyringInput): Map<string, string> {
-  if (input instanceof Map) {
-    return new Map(input);
-  }
-  return new Map(Object.entries(input));
-}
-
 function bearerToken(header: string | undefined): string | undefined {
   if (header === undefined) {
     return undefined;
@@ -100,11 +63,35 @@ function bearerToken(header: string | undefined): string | undefined {
 function requestFailure(
   context: ExecutorContext,
   error: EyeballError,
-  status: 401 | 404 | 409 | 422 | 500,
+  status: 401 | 403 | 404 | 409 | 422 | 500,
 ): Response {
   return context.json(
     createErrorEnvelope(error, context.get("requestId")),
     status,
+  );
+}
+
+function pinnedUserFailure(context: ExecutorContext): Response {
+  return requestFailure(
+    context,
+    new EyeballError({
+      code: TOOL_ERROR_CODES.AUTH_INSUFFICIENT_SCOPE,
+      message: "This API key is pinned to a different end user.",
+    }),
+    403,
+  );
+}
+
+function rejectsPinnedUser(
+  context: ExecutorContext,
+  ...candidates: readonly (string | undefined)[]
+): boolean {
+  const pinned = context.get("pinnedUserId");
+  return (
+    pinned !== undefined &&
+    candidates.some(
+      (candidate) => candidate !== undefined && candidate !== pinned,
+    )
   );
 }
 
@@ -149,11 +136,20 @@ function parseListQuery(
     );
   }
   const toolValue = context.req.query("tool");
-  if (toolValue !== undefined && !isCanonicalToolName(toolValue)) {
-    return invalidQuery(
-      context,
-      "tool must be a qualified canonical tool name.",
-    );
+  let tool: QualifiedToolName | undefined;
+  if (toolValue !== undefined) {
+    if (isCanonicalToolName(toolValue)) {
+      tool = toolValue;
+    } else {
+      try {
+        tool = fromRestrictedToolName(toolValue);
+      } catch {
+        return invalidQuery(
+          context,
+          "tool must be a canonical dotted or reversible restricted tool name.",
+        );
+      }
+    }
   }
   const userId = context.req.query("userId");
   if (userId !== undefined && userId.trim().length === 0) {
@@ -176,9 +172,7 @@ function parseListQuery(
     ...(statusValue === undefined
       ? {}
       : { status: statusValue as ExecutionStatus }),
-    ...(toolValue === undefined
-      ? {}
-      : { tool: toolValue as QualifiedToolName }),
+    ...(tool === undefined ? {} : { tool }),
     ...(userId === undefined ? {} : { userId }),
     ...(cursor === undefined ? {} : { cursor }),
     ...(limit === undefined ? {} : { limit }),
@@ -215,7 +209,7 @@ export function createExecutorApp(options: ExecutorAppOptions = {}): Hono<{
   const keyring =
     options.apiKeys === undefined
       ? parseApiKeyring(env.EYEBALL_API_KEYS)
-      : materializeKeyring(options.apiKeys);
+      : materializeApiKeyring(options.apiKeys);
   const requestIdFactory =
     options.requestIdFactory ??
     (() => `req_${randomUUID().replaceAll("-", "")}`);
@@ -228,8 +222,8 @@ export function createExecutorApp(options: ExecutorAppOptions = {}): Hono<{
   app.use("/v1/*", async (context, next) => {
     context.set("requestId", requestIdFactory());
     const token = bearerToken(context.req.header("Authorization"));
-    const projectId = token === undefined ? undefined : keyring.get(token);
-    if (projectId === undefined) {
+    const principal = token === undefined ? undefined : keyring.get(token);
+    if (principal === undefined) {
       return requestFailure(
         context,
         new EyeballError({
@@ -239,7 +233,15 @@ export function createExecutorApp(options: ExecutorAppOptions = {}): Hono<{
         401,
       );
     }
-    context.set("projectId", projectId);
+    context.set("projectId", principal.projectId);
+    context.set("pinnedUserId", principal.userId);
+    if (
+      principal.userId !== undefined &&
+      context.req.header(USER_ID_HEADER) !== undefined &&
+      context.req.header(USER_ID_HEADER) !== principal.userId
+    ) {
+      return pinnedUserFailure(context);
+    }
     await next();
   });
 
@@ -252,6 +254,21 @@ export function createExecutorApp(options: ExecutorAppOptions = {}): Hono<{
     }
 
     try {
+      const bodyUserId =
+        typeof request === "object" && request !== null && "userId" in request
+          ? typeof request.userId === "string"
+            ? request.userId
+            : undefined
+          : undefined;
+      if (
+        rejectsPinnedUser(
+          context,
+          bodyUserId,
+          context.req.header(USER_ID_HEADER),
+        )
+      ) {
+        return pinnedUserFailure(context);
+      }
       const idempotencyKey = context.req.header("Idempotency-Key");
       const outcome = await engine.execute({
         projectId: context.get("projectId"),
@@ -272,7 +289,15 @@ export function createExecutorApp(options: ExecutorAppOptions = {}): Hono<{
         const connections = await devVault.listConnections(
           context.get("projectId"),
         );
-        return context.json({ connections });
+        const pinned = context.get("pinnedUserId");
+        return context.json({
+          connections:
+            pinned === undefined
+              ? connections
+              : connections.filter(
+                  (connection) => connection.userId === pinned,
+                ),
+        });
       } catch (error) {
         return handleRouteError(context, error);
       }
@@ -296,6 +321,15 @@ export function createExecutorApp(options: ExecutorAppOptions = {}): Hono<{
         );
       }
       const record = request as Readonly<Record<string, unknown>>;
+      if (
+        rejectsPinnedUser(
+          context,
+          typeof record.userId === "string" ? record.userId : undefined,
+          context.req.header(USER_ID_HEADER),
+        )
+      ) {
+        return pinnedUserFailure(context);
+      }
       const unknownKey = Object.keys(record).find(
         (key) => key !== "userId" && key !== "toolkit",
       );
@@ -349,6 +383,18 @@ export function createExecutorApp(options: ExecutorAppOptions = {}): Hono<{
         );
       }
       try {
+        const pinned = context.get("pinnedUserId");
+        if (pinned !== undefined) {
+          const connections = await devVault.listConnections(
+            context.get("projectId"),
+          );
+          const selected = connections.find(
+            (connection) => connection.connectionId === connectionId,
+          );
+          if (selected !== undefined && selected.userId !== pinned) {
+            return pinnedUserFailure(context);
+          }
+        }
         const connection = await devVault.revokeConnection(
           context.get("projectId"),
           connectionId,
@@ -391,6 +437,15 @@ export function createExecutorApp(options: ExecutorAppOptions = {}): Hono<{
           );
         }
         const record = request as Readonly<Record<string, unknown>>;
+        if (
+          rejectsPinnedUser(
+            context,
+            typeof record.userId === "string" ? record.userId : undefined,
+            context.req.header(USER_ID_HEADER),
+          )
+        ) {
+          return pinnedUserFailure(context);
+        }
         const unknownKey = Object.keys(record).find(
           (key) => key !== "userId" && key !== "milliseconds" && key !== "end",
         );
@@ -451,6 +506,17 @@ export function createExecutorApp(options: ExecutorAppOptions = {}): Hono<{
     if (query instanceof Response) {
       return query;
     }
+    const pinned = context.get("pinnedUserId");
+    if (
+      rejectsPinnedUser(
+        context,
+        query.userId,
+        context.req.header(USER_ID_HEADER),
+      )
+    ) {
+      return pinnedUserFailure(context);
+    }
+    if (pinned !== undefined) query.userId = pinned;
     try {
       const page = await engine.listExecutions(context.get("projectId"), query);
       return context.json(page);
@@ -461,10 +527,13 @@ export function createExecutorApp(options: ExecutorAppOptions = {}): Hono<{
 
   app.get("/v1/executions/:id", async (context) => {
     try {
-      const execution = await engine.getExecutionDetail(
+      const execution = await engine.getExecution(
         context.get("projectId"),
         context.req.param("id"),
       );
+      if (rejectsPinnedUser(context, execution.userId)) {
+        return pinnedUserFailure(context);
+      }
       return context.json(execution);
     } catch (error) {
       return handleRouteError(context, error);

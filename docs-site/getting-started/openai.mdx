@@ -32,7 +32,10 @@ for (;;) {
   const calls = message.tool_calls ?? [];
   if (calls.length === 0) break;
   messages.push(
-    ...(await executeToolCalls(eyeball, calls, { userId: "demo_user" })),
+    ...(await executeToolCalls(eyeball, calls, {
+      userId: "demo_user",
+      nameMap: bundle.nameMap,
+    })),
   );
 }
 ```

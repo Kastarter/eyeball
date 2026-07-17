@@ -38,6 +38,12 @@ Eyeball is one typed, authenticated tool API for AI agents: agents discover cano
 
 The executor always resolves a catalog manifest and a credential before dispatching an adapter. In local development, manifest base-URL overrides point every implemented provider at Mockhouse; production deployments replace that boundary with real provider endpoints and a hosted credential vault.
 
+## Security and trust model
+
+Project API keys are server credentials and, by default, authorize the caller to act for every end user in that project. That is deliberate: an unpinned `key:projectId` entry is the project authority, while provider connections are still checked against both project and selected user.
+
+When a key is handed to a less-trusted MCP host or another end-user-scoped client, pin it with `key:projectId:userId` in `EYEBALL_API_KEYS`. The executor and MCP gateway reject a different user supplied through an execute or connection body, `X-Eyeball-User-Id`, query filter, or MCP `_meta`. A gateway that uses a separate downstream executor credential must configure its inbound keyring independently; see the self-hosting guide. Keep remote traffic behind TLS, and never embed project keys in browser bundles.
+
 ## Repository map
 
 The main monorepo and `mocks/` are separate Git repositories checked out together.
@@ -64,6 +70,7 @@ Use Node.js 24 or newer and pnpm 11.
 ```sh
 pnpm install
 pnpm --dir mocks install
+pnpm build
 pnpm dev:stack
 ```
 
@@ -74,7 +81,7 @@ pnpm dev:stack
 - the MCP gateway at `http://127.0.0.1:3001/mcp`
 - a development project using API key `eyeball_dev_project` and user `demo_user`
 
-With the stack running, use the same SDK example published in the docs site:
+With the stack running, save the following SDK example as `example.ts` in the repository root:
 
 ```ts
 import { Eyeball } from "@eyeball/sdk";
@@ -121,6 +128,7 @@ ANTHROPIC_API_KEY=... pnpm demo:anthropic
 
 | Surface | Status in `0.1.0` |
 | --- | --- |
+| Activepieces bridge breadth spike | **Top pending item:** `packages/bridge` remains an empty compatibility stub; the five-piece spike and vendoring decision are not done |
 | 37 toolkits/provider manifests | Built in catalog `1.1` with canonical schemas and discovery |
 | 457-row contract matrix | Built: 218 smoke rows and 239 explicit `not_supported` rows |
 | Admin panel | Built as the local Next.js dashboard |

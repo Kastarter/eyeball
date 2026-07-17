@@ -1,7 +1,7 @@
 import { renderToStaticMarkup } from "react-dom/server";
 import { describe, expect, it } from "vitest";
-import type { ExecutionDetail, ExecutionRecord } from "@/src/lib/api";
-import { ExecutionsScreen, executionCurl } from "./executions-screen";
+import type { ExecutionRecord } from "@/src/lib/api";
+import { ExecutionsScreen } from "./executions-screen";
 
 const failedExecution = {
   catalogVersion: "2026.07.17",
@@ -28,19 +28,6 @@ const failedExecution = {
   userId: "user_sam",
 } as const satisfies ExecutionRecord;
 
-const failedDetail = {
-  ...failedExecution,
-  connectionId: "conn_gmail_sam",
-  idempotencyKey: "reservation-confirmation-123",
-  input: {
-    body: "Your table is confirmed.",
-    subject: "Reservation confirmed",
-    to: ["sam@example.com"],
-  },
-  mode: "sync",
-  projectId: "restaurant-demo",
-} as const satisfies ExecutionDetail;
-
 describe("ExecutionsScreen server rendering", () => {
   it("renders the filterable execution table and pagination affordance", () => {
     const markup = renderToStaticMarkup(
@@ -62,35 +49,21 @@ describe("ExecutionsScreen server rendering", () => {
     expect(markup).toContain("Clear 2");
   });
 
-  it("renders a deep-linked detail drawer with the canonical envelope", () => {
+  it("renders a deep-linked detail drawer with the public execution record", () => {
     const markup = renderToStaticMarkup(
       <ExecutionsScreen
         initialExecution={failedExecution.executionId}
-        initialExecutionDetail={failedDetail}
+        initialExecutionDetail={failedExecution}
         initialExecutions={[failedExecution]}
         project="restaurant-demo"
       />,
     );
 
     expect(markup).toContain("Execution detail");
-    expect(markup).toContain("Canonical request");
-    expect(markup).toContain("sam@example.com");
     expect(markup).toContain("provider_rate_limited");
     expect(markup).toContain("Provider detail");
     expect(markup).toContain("Retryable");
-    expect(markup).toContain("reservation-confirmation-123");
-    expect(markup).toContain("Authorization: Bearer &lt;REDACTED&gt;");
-  });
-
-  it("shell-quotes apostrophes in copied cURL request values", () => {
-    const command = executionCurl({
-      ...failedDetail,
-      idempotencyKey: "Sam's-reservation",
-      input: { ...failedDetail.input, body: "Sam's table is confirmed." },
-    });
-
-    expect(command).toContain(`Sam'"'"'s-reservation`);
-    expect(command).toContain(`Sam'"'"'s table is confirmed.`);
-    expect(command).toContain("Authorization: Bearer <REDACTED>");
+    expect(markup).toContain("Execution context");
+    expect(markup).not.toContain("Canonical request");
   });
 });

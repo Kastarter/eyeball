@@ -1,10 +1,12 @@
-import { buildNameMap } from "../naming.js";
-import type {
-  JsonValue,
-  ObjectSchema202012,
-  ToolDefinition,
-} from "../types/tool.js";
-import { toolDescription, wireNameFor } from "./shared.js";
+import { jsonSchema, type Schema } from "@ai-sdk/provider-utils";
+import { buildNameMap, type ToolNameMap } from "../naming.js";
+import type { JsonValue, ToolDefinition } from "../types/tool.js";
+import {
+  immutableDefinitions,
+  mutableObjectSchema,
+  toolDescription,
+  wireNameFor,
+} from "./shared.js";
 
 export type AiSdkExecute = (
   wireName: string,
@@ -13,35 +15,47 @@ export type AiSdkExecute = (
 
 export interface AiSdkToolDescriptor {
   description: string;
-  /** Plain JSON Schema object for the AI SDK's jsonSchema() wrapper. */
-  inputSchema: ObjectSchema202012;
+  /** AI SDK-native schema wrapper, ready for direct use in a ToolSet. */
+  inputSchema: Schema<unknown>;
   execute?: (input: unknown) => Promise<JsonValue>;
 }
 
 export type AiSdkToolSet = Record<string, AiSdkToolDescriptor>;
 
+export interface AiSdkToolsConversion {
+  tools: AiSdkToolSet;
+  nameMap: ToolNameMap;
+  definitions: readonly ToolDefinition[];
+}
+
 export function toAiSdkTools(
   tools: readonly ToolDefinition[],
   execute?: AiSdkExecute,
-): AiSdkToolSet {
+): AiSdkToolsConversion {
   const nameMap = buildNameMap(tools);
 
-  return Object.fromEntries(
+  const converted = Object.fromEntries(
     tools.map((tool) => {
       const wireName = wireNameFor(nameMap, tool.name);
+      const schema = jsonSchema(mutableObjectSchema(tool.inputSchema) as never);
       const descriptor: AiSdkToolDescriptor =
         execute === undefined
           ? {
               description: toolDescription(tool),
-              inputSchema: tool.inputSchema,
+              inputSchema: schema,
             }
           : {
               description: toolDescription(tool),
-              inputSchema: tool.inputSchema,
+              inputSchema: schema,
               execute: (input) => execute(wireName, input),
             };
 
       return [wireName, descriptor];
     }),
   );
+  return {
+    tools: converted,
+    nameMap,
+    definitions: immutableDefinitions(tools),
+  };
 }

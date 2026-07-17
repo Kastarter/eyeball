@@ -62,6 +62,10 @@ export interface EyeballErrorOptions {
   retryable?: boolean;
   retryAfter?: number;
   providerDetail?: ProviderErrorDetail;
+  /** API request correlation identifier; not part of the normalized tool error body. */
+  requestId?: string;
+  /** Execution that can be polled or reconciled after this client-side error. */
+  executionId?: string;
   cause?: unknown;
 }
 
@@ -70,6 +74,8 @@ export class EyeballError extends Error {
   readonly retryable: boolean;
   readonly retryAfter?: number;
   readonly providerDetail?: ProviderErrorDetail;
+  readonly requestId?: string;
+  readonly executionId?: string;
 
   constructor(options: EyeballErrorOptions) {
     super(options.message, { cause: options.cause });
@@ -89,6 +95,12 @@ export class EyeballError extends Error {
 
     if (options.providerDetail !== undefined) {
       this.providerDetail = options.providerDetail;
+    }
+    if (options.requestId !== undefined) {
+      this.requestId = options.requestId;
+    }
+    if (options.executionId !== undefined) {
+      this.executionId = options.executionId;
     }
   }
 

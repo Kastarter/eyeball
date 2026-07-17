@@ -43,9 +43,14 @@ interface VendorCall {
 
 interface HarnessOptions {
   asyncAnnotation?: boolean;
+  beforeAdapterExecute?: () => Promise<void>;
   credential?: ResolvedCredential;
+  credentialFailure?: Error;
+  emptyOutput?: boolean;
   includeAdapter?: boolean;
   invalidOutput?: boolean;
+  outputDefault?: boolean;
+  pinnedUserId?: string;
   readOnly?: boolean;
   token?: string;
 }
@@ -67,17 +72,28 @@ function echoContract(options: HarnessOptions): CapabilityToolContract {
         uppercase: { type: "boolean", default: false },
       },
     },
-    outputSchema: {
-      $schema: JSON_SCHEMA_DRAFT_2020_12,
-      $id: "urn:eyeball:test:echo:run:output:1.0.0",
-      type: "object",
-      additionalProperties: false,
-      required: ["echo", "uppercase"],
-      properties: {
-        echo: { type: "string" },
-        uppercase: { type: "boolean" },
-      },
-    },
+    outputSchema: options.outputDefault
+      ? {
+          $schema: JSON_SCHEMA_DRAFT_2020_12,
+          $id: "urn:eyeball:test:echo:run:output-default:1.0.0",
+          type: "object",
+          additionalProperties: false,
+          required: ["fabricated"],
+          properties: {
+            fabricated: { type: "boolean", default: true },
+          },
+        }
+      : {
+          $schema: JSON_SCHEMA_DRAFT_2020_12,
+          $id: "urn:eyeball:test:echo:run:output:1.0.0",
+          type: "object",
+          additionalProperties: false,
+          required: ["echo", "uppercase"],
+          properties: {
+            echo: { type: "string" },
+            uppercase: { type: "boolean" },
+          },
+        },
     annotations: {
       readOnly: options.readOnly ?? true,
       destructive: options.readOnly === false,
@@ -119,10 +135,19 @@ function echoManifest(): ProviderManifest {
 
 class EchoAdapter implements ToolkitAdapter {
   readonly toolkitSlug = "echo";
+  readonly #beforeExecute: (() => Promise<void>) | undefined;
+  readonly #emptyOutput: boolean;
   readonly #invalidOutput: boolean;
 
-  constructor(invalidOutput = false) {
-    this.#invalidOutput = invalidOutput;
+  constructor(
+    options: Pick<
+      HarnessOptions,
+      "beforeAdapterExecute" | "emptyOutput" | "invalidOutput"
+    > = {},
+  ) {
+    this.#beforeExecute = options.beforeAdapterExecute;
+    this.#emptyOutput = options.emptyOutput ?? false;
+    this.#invalidOutput = options.invalidOutput ?? false;
   }
 
   async execute(context: AdapterContext): Promise<JsonValue> {
@@ -132,6 +157,7 @@ class EchoAdapter implements ToolkitAdapter {
         message: `Echo does not implement ${context.tool.name}.`,
       });
     }
+    await this.#beforeExecute?.();
     const client = createProviderHttpClient(context);
     const response = await client("/echo", {
       method: "POST",
@@ -140,6 +166,9 @@ class EchoAdapter implements ToolkitAdapter {
     });
     if (this.#invalidOutput) {
       return { unexpected: true };
+    }
+    if (this.#emptyOutput) {
+      return {};
     }
     return (await response.json()) as JsonValue;
   }
@@ -220,6 +249,9 @@ function createHarness(options: HarnessOptions = {}) {
     kind: "mock",
     resolve: async (context) => {
       credentialResolveCalls += 1;
+      if (options.credentialFailure !== undefined) {
+        throw options.credentialFailure;
+      }
       return mockCredentials.resolve(context);
     },
   };
@@ -231,9 +263,7 @@ function createHarness(options: HarnessOptions = {}) {
   const engine = new ExecutionEngine({
     catalog,
     adapters: new AdapterRegistry(
-      options.includeAdapter === false
-        ? []
-        : [new EchoAdapter(options.invalidOutput ?? false)],
+      options.includeAdapter === false ? [] : [new EchoAdapter(options)],
     ),
     credentialProvider,
     store,
@@ -247,7 +277,13 @@ function createHarness(options: HarnessOptions = {}) {
   });
   const app = createExecutorApp({
     engine,
-    apiKeys: { [API_KEY_A]: PROJECT_A, [API_KEY_B]: PROJECT_B },
+    apiKeys: {
+      [API_KEY_A]:
+        options.pinnedUserId === undefined
+          ? PROJECT_A
+          : { projectId: PROJECT_A, userId: options.pinnedUserId },
+      [API_KEY_B]: PROJECT_B,
+    },
     requestIdFactory: () => "req_test",
   });
 
@@ -281,7 +317,11 @@ function executeRequest(
 function postExecute(
   app: ReturnType<typeof createExecutorApp>,
   request: unknown,
-  options: { apiKey?: string; idempotencyKey?: string } = {},
+  options: {
+    apiKey?: string;
+    idempotencyKey?: string;
+    userIdHeader?: string;
+  } = {},
 ): Promise<Response> {
   const headers: Record<string, string> = {
     Authorization: `Bearer ${options.apiKey ?? API_KEY_A}`,
@@ -289,6 +329,9 @@ function postExecute(
   };
   if (options.idempotencyKey !== undefined) {
     headers["Idempotency-Key"] = options.idempotencyKey;
+  }
+  if (options.userIdHeader !== undefined) {
+    headers["X-Eyeball-User-Id"] = options.userIdHeader;
   }
   return app.request("/v1/execute", {
     method: "POST",
@@ -332,6 +375,23 @@ describe("RFC 001 execution API", () => {
     ]);
   });
 
+  it("defaults a missing mode from annotations and accepts restricted names", async () => {
+    const harness = createHarness();
+    const request = {
+      ...executeRequest("restricted"),
+      tool: "echo__run",
+    } as Record<string, unknown>;
+    delete request.mode;
+
+    const response = await postExecute(harness.app, request);
+
+    expect(response.status).toBe(200);
+    await expect(response.json()).resolves.toMatchObject({
+      tool: "echo.run",
+      status: "succeeded",
+    });
+  });
+
   it("rejects invalid canonical input before credentials or allocation", async () => {
     const harness = createHarness();
 
@@ -342,7 +402,11 @@ describe("RFC 001 execution API", () => {
 
     expect(response.status).toBe(422);
     expect(await response.json()).toMatchObject({
-      error: { code: "invalid_input", retryable: false },
+      error: {
+        code: "invalid_input",
+        retryable: false,
+        message: expect.stringContaining("at input"),
+      },
       requestId: "req_test",
     });
     expect(harness.credentialResolveCalls).toBe(0);
@@ -427,11 +491,8 @@ describe("RFC 001 execution API", () => {
     expect(poll.status).toBe(200);
     expect(await poll.json()).toMatchObject({
       executionId: "exe_test1",
-      projectId: PROJECT_A,
       userId: USER_1,
       status: "succeeded",
-      input: { message: "queued", uppercase: false },
-      mode: "async",
       output: { echo: "queued", uppercase: false },
       createdAt: expect.any(String),
       startedAt: expect.any(String),
@@ -482,12 +543,49 @@ describe("RFC 001 execution API", () => {
       harness.app,
       "/v1/executions/exe_test1",
     );
-    await expect(detail.json()).resolves.toMatchObject({
-      projectId: PROJECT_A,
-      idempotencyKey: "same-request",
-      input: { message: "same", uppercase: false },
-      mode: "sync",
+    const record = (await detail.json()) as Record<string, unknown>;
+    expect(record).toMatchObject({
+      executionId: "exe_test1",
+      userId: USER_1,
+      status: "succeeded",
     });
+    expect(record).not.toHaveProperty("projectId");
+    expect(record).not.toHaveProperty("idempotencyKey");
+    expect(record).not.toHaveProperty("input");
+    expect(record).not.toHaveProperty("mode");
+  });
+
+  it("waits for an in-flight synchronous idempotent replay", async () => {
+    let releaseAdapter!: () => void;
+    let markStarted!: () => void;
+    const adapterStarted = new Promise<void>((resolve) => {
+      markStarted = resolve;
+    });
+    const adapterReleased = new Promise<void>((resolve) => {
+      releaseAdapter = resolve;
+    });
+    const harness = createHarness({
+      beforeAdapterExecute: async () => {
+        markStarted();
+        await adapterReleased;
+      },
+    });
+    const request = executeRequest("overlap");
+
+    const firstPromise = postExecute(harness.app, request, {
+      idempotencyKey: "overlap-request",
+    });
+    await adapterStarted;
+    const secondPromise = postExecute(harness.app, request, {
+      idempotencyKey: "overlap-request",
+    });
+    releaseAdapter();
+    const [first, second] = await Promise.all([firstPromise, secondPromise]);
+
+    expect(first.status).toBe(200);
+    expect(second.status).toBe(200);
+    expect(await first.json()).toEqual(await second.json());
+    expect(harness.calls).toHaveLength(1);
   });
 
   it("preserves a trusted reserved ID across idempotent worker retries", async () => {
@@ -635,6 +733,24 @@ describe("RFC 001 execution API", () => {
     expect(missingScope.calls).toHaveLength(0);
   });
 
+  it("surfaces unexpected credential-provider exceptions as HTTP 500", async () => {
+    const harness = createHarness({
+      credentialFailure: new TypeError("credential implementation bug"),
+    });
+
+    const response = await postExecute(harness.app, executeRequest("hello"));
+
+    expect(response.status).toBe(500);
+    expect(await response.json()).toEqual({
+      error: {
+        code: "provider_error",
+        message: "The executor encountered an internal error.",
+        retryable: false,
+      },
+      requestId: "req_test",
+    });
+  });
+
   it("scopes execution reads and lists to the API key project", async () => {
     const harness = createHarness();
     const created = await postExecute(harness.app, executeRequest("private"));
@@ -677,6 +793,21 @@ describe("RFC 001 execution API", () => {
     });
   });
 
+  it("does not insert output-schema defaults into adapter results", async () => {
+    const harness = createHarness({ emptyOutput: true, outputDefault: true });
+
+    const response = await postExecute(
+      harness.app,
+      executeRequest("missing output"),
+    );
+
+    expect(response.status).toBe(200);
+    expect(await response.json()).toMatchObject({
+      status: "failed",
+      error: { code: "provider_error", retryable: false },
+    });
+  });
+
   it("rejects missing and unknown API keys with the same 401 envelope", async () => {
     const harness = createHarness();
     const missing = await harness.app.request("/v1/executions");
@@ -696,6 +827,34 @@ describe("RFC 001 execution API", () => {
     });
   });
 
+  it("enforces an API key's pinned end user for body and header identities", async () => {
+    const harness = createHarness({ pinnedUserId: USER_1 });
+
+    const accepted = await postExecute(
+      harness.app,
+      executeRequest("pinned", { userId: USER_1 }),
+      { userIdHeader: USER_1 },
+    );
+    const wrongBody = await postExecute(
+      harness.app,
+      executeRequest("wrong body", { userId: USER_2 }),
+    );
+    const wrongHeader = await postExecute(
+      harness.app,
+      executeRequest("wrong header", { userId: USER_1 }),
+      { userIdHeader: USER_2 },
+    );
+
+    expect(accepted.status).toBe(200);
+    for (const response of [wrongBody, wrongHeader]) {
+      expect(response.status).toBe(403);
+      await expect(response.json()).resolves.toMatchObject({
+        error: { code: "auth_insufficient_scope" },
+      });
+    }
+    expect(harness.calls).toHaveLength(1);
+  });
+
   it("filters and paginates project execution records", async () => {
     const harness = createHarness();
     await postExecute(harness.app, executeRequest("one", { userId: USER_1 }));
@@ -710,6 +869,14 @@ describe("RFC 001 execution API", () => {
       nextCursor: string;
     };
     expect(firstBody.executions).toHaveLength(1);
+
+    const restrictedFilter = await authenticatedGet(
+      harness.app,
+      "/v1/executions?tool=echo__run",
+    );
+    expect(
+      (await restrictedFilter.json()) as { executions: unknown[] },
+    ).toMatchObject({ executions: [expect.any(Object), expect.any(Object)] });
     expect(firstBody.nextCursor).toEqual(expect.any(String));
     const secondPage = await authenticatedGet(
       harness.app,

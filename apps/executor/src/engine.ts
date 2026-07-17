@@ -8,11 +8,14 @@ import {
   type ExecuteRequest,
   type ExecutionBase,
   type ExecutionId,
+  type ExecutionMode,
   type ExecutionRecord,
   type ExecutionResult,
   type ExecutionStatus,
   EyeballError,
   type EyeballErrorOptions,
+  fromRestrictedToolName,
+  isCanonicalToolName,
   isConnectionId,
   isExecutionId,
   type JsonValue,
@@ -24,6 +27,7 @@ import {
   TOOL_ERROR_CODES,
   type ToolDefinition,
   validateInput,
+  validateOutput,
 } from "@eyeball/core";
 import { defaultToolkitAdapters } from "@eyeball/toolkits";
 import {
@@ -133,7 +137,22 @@ function isObject(value: unknown): value is Readonly<Record<string, unknown>> {
   return typeof value === "object" && value !== null && !Array.isArray(value);
 }
 
-function parseExecuteRequest(value: unknown): ExecuteRequest {
+type ParsedExecuteRequest = Omit<ExecuteRequest, "mode"> & {
+  mode?: ExecutionMode;
+};
+
+function canonicalToolName(value: string): QualifiedToolName {
+  if (isCanonicalToolName(value)) return value;
+  try {
+    return fromRestrictedToolName(value);
+  } catch {
+    return invalidRequest(
+      "tool must be a canonical dotted or reversible restricted tool name.",
+    );
+  }
+}
+
+function parseExecuteRequest(value: unknown): ParsedExecuteRequest {
   if (!isObject(value)) {
     return invalidRequest("The execute request must be a JSON object.");
   }
@@ -152,7 +171,11 @@ function parseExecuteRequest(value: unknown): ExecuteRequest {
   if (!isObject(value.input)) {
     return invalidRequest("input must be a JSON object.");
   }
-  if (value.mode !== "sync" && value.mode !== "async") {
+  if (
+    value.mode !== undefined &&
+    value.mode !== "sync" &&
+    value.mode !== "async"
+  ) {
     return invalidRequest('mode must be either "sync" or "async".');
   }
   if (
@@ -164,13 +187,13 @@ function parseExecuteRequest(value: unknown): ExecuteRequest {
   }
 
   return {
-    tool: value.tool as QualifiedToolName,
+    tool: canonicalToolName(value.tool),
     userId: value.userId,
     ...(value.connectionId === undefined
       ? {}
       : { connectionId: value.connectionId }),
     input: value.input as Readonly<Record<string, JsonValue>>,
-    mode: value.mode,
+    ...(value.mode === undefined ? {} : { mode: value.mode }),
   };
 }
 
@@ -246,6 +269,24 @@ function normalizedError(error: unknown): NormalizedToolError {
     retryable: false,
     cause: error,
   }).toJSON();
+}
+
+class UnexpectedCredentialProviderError extends Error {
+  constructor(cause: unknown) {
+    super("Credential provider failed unexpectedly.", { cause });
+    this.name = "UnexpectedCredentialProviderError";
+  }
+}
+
+function validationMessage(
+  errors: readonly { instancePath: string; message: string }[],
+): string {
+  const first = errors[0];
+  if (first === undefined) return "Canonical input is invalid.";
+  const location =
+    first.instancePath.length === 0 ? "input" : `input${first.instancePath}`;
+  const remaining = errors.length - 1;
+  return `Canonical input is invalid at ${location}: ${first.message}${remaining === 0 ? "" : ` (${remaining} more issue${remaining === 1 ? "" : "s"}).`}`;
 }
 
 function resolveBaseUrl(
@@ -376,15 +417,11 @@ export class ExecutionEngine {
 
     const validation = validateInput(tool, request.input);
     if (!validation.ok) {
-      const first = validation.errors[0];
-      return invalidRequest(
-        first === undefined
-          ? "Canonical input is invalid."
-          : `Canonical input is invalid: ${first.message}`,
-      );
+      return invalidRequest(validationMessage(validation.errors));
     }
     const canonicalRequest: ExecuteRequest = {
       ...request,
+      mode: request.mode ?? (tool.annotations.async ? "async" : "sync"),
       input: validation.value,
     };
     if (tool.annotations.async && canonicalRequest.mode === "sync") {
@@ -450,13 +487,21 @@ export class ExecutionEngine {
           409,
         );
       }
+      const replayRecord =
+        canonicalRequest.mode === "sync" &&
+        (allocation.record.status === "pending" ||
+          allocation.record.status === "running")
+          ? await this.store.waitForTerminal(
+              command.projectId,
+              allocation.record.executionId,
+            )
+          : allocation.record;
       return {
         statusCode:
-          allocation.record.status === "pending" ||
-          allocation.record.status === "running"
+          replayRecord.status === "pending" || replayRecord.status === "running"
             ? 202
             : 200,
-        response: executeResponse(allocation.record),
+        response: executeResponse(replayRecord),
         replayed: true,
       };
     }
@@ -622,14 +667,25 @@ export class ExecutionEngine {
 
     try {
       const adapter = this.adapters.require(tool.toolkit);
-      const credential = await this.credentialProvider.resolve({
-        projectId,
-        userId: request.userId,
-        toolkitSlug: tool.toolkit,
-        ...(request.connectionId === undefined
-          ? {}
-          : { connectionId: request.connectionId }),
-      });
+      let credential: ResolvedCredential;
+      try {
+        credential = await this.credentialProvider.resolve({
+          projectId,
+          userId: request.userId,
+          toolkitSlug: tool.toolkit,
+          ...(request.connectionId === undefined
+            ? {}
+            : { connectionId: request.connectionId }),
+        });
+      } catch (error) {
+        if (
+          error instanceof CredentialProviderError ||
+          error instanceof EyeballError
+        ) {
+          throw error;
+        }
+        throw new UnexpectedCredentialProviderError(error);
+      }
       await this.store.setResolvedConnection(
         projectId,
         pending.executionId,
@@ -688,6 +744,7 @@ export class ExecutionEngine {
         error: normalizedError(error),
         latencyMs: Math.max(0, completedAt.valueOf() - startedAt.valueOf()),
       });
+      if (error instanceof UnexpectedCredentialProviderError) throw error;
     }
   }
 
@@ -695,10 +752,7 @@ export class ExecutionEngine {
     if (tool.outputSchema === undefined) {
       return output;
     }
-    const validation = validateInput(
-      { inputSchema: tool.outputSchema },
-      output,
-    );
+    const validation = validateOutput(tool, output);
     if (!validation.ok) {
       throw new EyeballError({
         code: TOOL_ERROR_CODES.PROVIDER_ERROR,

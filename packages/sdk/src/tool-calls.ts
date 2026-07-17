@@ -15,6 +15,27 @@ function anthropicCall(
   return "type" in call && call.type === "tool_use";
 }
 
+function openAIFunctionCall(
+  call: OpenAIToolCall,
+): call is Extract<OpenAIToolCall, { type: "function" }> {
+  return call.type === "function";
+}
+
+function mappedToolName(
+  options: ExecuteToolCallsOptions,
+  wireName: string,
+): string {
+  const canonical = options.nameMap.wireToCanonical[wireName];
+  if (canonical === undefined) {
+    throw new EyeballError({
+      code: TOOL_ERROR_CODES.NOT_SUPPORTED,
+      message: `Tool call ${JSON.stringify(wireName)} was not present in the emitted tool bundle.`,
+      retryable: false,
+    });
+  }
+  return canonical;
+}
+
 function openAIInput(
   value: string | Readonly<Record<string, JsonValue>>,
 ): unknown {
@@ -85,17 +106,17 @@ function toolCallOptions(
 export function executeToolCalls(
   eyeball: Eyeball,
   calls: readonly AnthropicToolCall[],
-  options?: ExecuteToolCallsOptions,
+  options: ExecuteToolCallsOptions,
 ): Promise<AnthropicToolResultBlock[]>;
 export function executeToolCalls(
   eyeball: Eyeball,
   calls: readonly OpenAIToolCall[],
-  options?: ExecuteToolCallsOptions,
+  options: ExecuteToolCallsOptions,
 ): Promise<OpenAIToolResultMessage[]>;
 export function executeToolCalls(
   eyeball: Eyeball,
   calls: readonly (AnthropicToolCall | OpenAIToolCall)[],
-  options: ExecuteToolCallsOptions = {},
+  options: ExecuteToolCallsOptions,
 ): Promise<(AnthropicToolResultBlock | OpenAIToolResultMessage)[]> {
   const invocationOptions = runOptions(options);
   return Promise.all(
@@ -103,7 +124,7 @@ export function executeToolCalls(
       if (anthropicCall(call)) {
         try {
           const output = await eyeball.tools.run(
-            call.name,
+            mappedToolName(options, call.name),
             call.input,
             toolCallOptions(invocationOptions, "anthropic", call.id),
           );
@@ -123,8 +144,15 @@ export function executeToolCalls(
       }
 
       try {
+        if (!openAIFunctionCall(call)) {
+          throw new EyeballError({
+            code: TOOL_ERROR_CODES.NOT_SUPPORTED,
+            message: `OpenAI custom tool ${JSON.stringify(call.custom.name)} is not executable by Eyeball.`,
+            retryable: false,
+          });
+        }
         const output = await eyeball.tools.run(
-          call.function.name,
+          mappedToolName(options, call.function.name),
           openAIInput(call.function.arguments),
           toolCallOptions(invocationOptions, "openai", call.id),
         );

@@ -5,17 +5,21 @@ description: "Install the TypeScript SDK, query a mock mailbox, and inspect the 
 
 This quickstart proves the entire eyeball path without creating any third-party account.
 
-## Install
+## Run the source preview
 
 ```bash
-pnpm add @eyeball/sdk
+# From an eyeball source checkout:
+pnpm install
+pnpm --dir mocks install
+pnpm build
+pnpm dev:stack
 ```
 
-Point `EYEBALL_EXECUTOR_URL` at the mock executor supplied by your environment and use its project key:
+`@eyeball/sdk` is not published to npm yet. The source-preview stack starts Mockhouse, the executor, and the MCP gateway with this development identity:
 
 ```bash
-export EYEBALL_API_KEY="eyeball_test_project"
-export EYEBALL_EXECUTOR_URL="http://127.0.0.1:8787"
+export EYEBALL_API_KEY="eyeball_dev_project"
+export EYEBALL_EXECUTOR_URL="http://127.0.0.1:3000"
 ```
 
 ## Run one canonical tool
@@ -37,6 +41,12 @@ const result = await eyeball.tools.run(
 console.log(result);
 ```
 
+Save the snippet as `example.ts`, then run it from the repository root:
+
+```bash
+node --import tsx example.ts
+```
+
 Expected shape:
 
 ```json
@@ -52,7 +62,7 @@ Expected shape:
 ```
 
 <Note>
-  Mock mode is an endpoint choice, not a `mock: true` SDK option. This flow runs with zero third-party SaaS accounts.
+  Mock mode is an endpoint choice, not a `mock: true` SDK option. This source-preview flow runs with zero third-party SaaS accounts. A public package installation command will replace these workspace steps when `@eyeball/sdk` is published.
 </Note>
 
 Next, choose your model loop: [Anthropic](/getting-started/anthropic), [OpenAI](/getting-started/openai), [AI SDK](/getting-started/ai-sdk), or [MCP](/getting-started/mcp).

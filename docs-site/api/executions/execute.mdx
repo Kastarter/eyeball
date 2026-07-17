@@ -34,6 +34,8 @@ curl "$EYEBALL_EXECUTOR_URL/v1/execute" \
 
 The idempotency key is an HTTP header, not a JSON field.
 
+When the bearer key is user-pinned, `userId` must match that pin. The same rule applies to `X-Eyeball-User-Id` when that header is present.
+
 ## Succeeded response
 
 ```json
@@ -50,7 +52,27 @@ The idempotency key is an HTTP header, not a JSON field.
 }
 ```
 
-## Pending response
+## Failed response
+
+A synchronous tool failure is a terminal HTTP 200 response, not a transport error:
+
+```json
+{
+  "executionId": "exe_01JZ6WA0Q73ZQ5B51SRYB6M4Z8",
+  "tool": "gmail.send_email",
+  "toolVersion": "1.0.0",
+  "catalogVersion": "1.1",
+  "status": "failed",
+  "error": {
+    "code": "provider_unavailable",
+    "message": "The provider is temporarily unavailable.",
+    "retryable": true
+  },
+  "latencyMs": 84
+}
+```
+
+## Pending or running response
 
 ```json
 {
@@ -63,3 +85,5 @@ The idempotency key is an HTTP header, not a JSON field.
 ```
 
 Poll pending work at [`GET /v1/executions/:id`](/api/executions/get-execution).
+
+Async mode returns HTTP 202 with `pending`. Replaying the same async request while its execution is in flight returns HTTP 202 with the latest `pending` or `running` state. A synchronous replay waits for the original execution and returns its terminal HTTP 200 response.

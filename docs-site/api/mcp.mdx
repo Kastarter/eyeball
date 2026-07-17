@@ -40,11 +40,21 @@ Retain the `Mcp-Session-Id` response header and send it on later requests.
 }
 ```
 
-It returns compact cards with `name`, `description`, `capability`, `toolkit`, and an input-schema summary.
+It returns compact cards with `name`, `description`, `capability`, `toolkit`, and an input-schema summary. In search discovery mode, invoke the selected result through the always-listed `eyeball.execute_tool` descriptor:
+
+```json
+{
+  "name": "eyeball.execute_tool",
+  "arguments": {
+    "name": "hubspot.create_contact",
+    "input": {"email": "guest@example.com"}
+  }
+}
+```
 
 ## Call metadata
 
-User and connection overrides live under `params._meta`:
+User and connection selectors may live under `params._meta`:
 
 ```json
 {
@@ -54,7 +64,7 @@ User and connection overrides live under `params._meta`:
 }
 ```
 
-Without an override, mutations use `mcp:<session-id>:<json-rpc-id>`.
+User precedence is the gateway's configured `EYEBALL_USER_ID`, then `X-Eyeball-User-Id`, then `_meta["dev.eyeball/userId"]`. A user-pinned inbound API key rejects any different value at any of those surfaces. Connection and idempotency metadata remain per-call overrides. Without an explicit idempotency value, mutations use `mcp:<session-id>:<json-rpc-id>`.
 
 Terminal tool results include:
 
@@ -73,4 +83,4 @@ Terminal tool results include:
 }
 ```
 
-`tools/list` descriptors include `_meta["dev.eyeball/tool"]`. Async-by-nature tools are omitted because the gateway does not advertise MCP Tasks; it never returns a non-standard pending result.
+Provider-tool descriptors include `_meta["dev.eyeball/tool"]`; the built-in search and generic execute descriptors do not. Async-by-nature tools are omitted because the gateway does not advertise MCP Tasks; it never returns a non-standard pending result.

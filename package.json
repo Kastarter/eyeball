@@ -30,11 +30,15 @@
     "format": "biome format --write ."
   },
   "devDependencies": {
+    "@anthropic-ai/sdk": "0.112.1",
     "@biomejs/biome": "^2.1.2",
+    "@eyeball/sdk": "workspace:*",
     "@hono/node-server": "^1.16.0",
     "@types/node": "^24.0.15",
-    "turbo": "^2.5.5",
+    "ai": "7.0.30",
+    "openai": "6.48.0",
     "tsx": "^4.20.3",
+    "turbo": "^2.5.5",
     "typescript": "^5.8.3",
     "vitest": "^3.2.4"
   }

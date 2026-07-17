@@ -80,6 +80,10 @@ export interface ExecutionStore {
     executionId: ExecutionId,
   ): Promise<ExecutionDetailRecord | undefined>;
   update(projectId: string, record: ExecutionRecord): Promise<void>;
+  waitForTerminal(
+    projectId: string,
+    executionId: ExecutionId,
+  ): Promise<ExecutionRecord & { status: "succeeded" | "failed" }>;
   setResolvedConnection(
     projectId: string,
     executionId: ExecutionId,
@@ -123,11 +127,13 @@ function executionStorageKey(
   return JSON.stringify([projectId, executionId]);
 }
 
-function cursorForOffset(offset: number): string {
-  return Buffer.from(JSON.stringify({ offset }), "utf8").toString("base64url");
+function cursorAfter(executionId: ExecutionId): string {
+  return Buffer.from(JSON.stringify({ after: executionId }), "utf8").toString(
+    "base64url",
+  );
 }
 
-function offsetFromCursor(cursor: string): number {
+function executionIdFromCursor(cursor: string): ExecutionId {
   try {
     const parsed = JSON.parse(
       Buffer.from(cursor, "base64url").toString("utf8"),
@@ -135,13 +141,13 @@ function offsetFromCursor(cursor: string): number {
     if (
       typeof parsed !== "object" ||
       parsed === null ||
-      !("offset" in parsed) ||
-      !Number.isInteger(parsed.offset) ||
-      (parsed.offset as number) < 0
+      !("after" in parsed) ||
+      typeof parsed.after !== "string" ||
+      parsed.after.length === 0
     ) {
       throw new InvalidExecutionCursorError();
     }
-    return parsed.offset as number;
+    return parsed.after as ExecutionId;
   } catch (error) {
     if (error instanceof InvalidExecutionCursorError) {
       throw error;
@@ -183,6 +189,10 @@ export class InMemoryExecutionStore implements ExecutionStore {
   readonly #executions = new Map<string, Map<ExecutionId, StoredExecution>>();
   readonly #idempotency = new Map<string, StoredIdempotencyRecord>();
   readonly #idempotencyByExecution = new Map<string, string>();
+  readonly #terminalWaiters = new Map<
+    string,
+    Set<(record: ExecutionRecord & { status: "succeeded" | "failed" }) => void>
+  >();
 
   async allocate(
     allocation: ExecutionAllocation,
@@ -190,6 +200,8 @@ export class InMemoryExecutionStore implements ExecutionStore {
     const projectExecutions = this.#projectExecutions(allocation.projectId);
     const reservation = allocation.idempotency;
 
+    let idempotencyKey: string | undefined;
+    let expiredIdempotency: StoredIdempotencyRecord | undefined;
     if (reservation !== undefined) {
       const storageKey = idempotencyStorageKey(
         allocation.projectId,
@@ -209,13 +221,27 @@ export class InMemoryExecutionStore implements ExecutionStore {
         }
       }
 
-      if (existing !== undefined) {
-        this.#idempotency.delete(storageKey);
+      idempotencyKey = storageKey;
+      expiredIdempotency = existing;
+    }
+
+    if (projectExecutions.has(allocation.record.executionId)) {
+      throw new Error(
+        `Duplicate execution ID: ${allocation.record.executionId}`,
+      );
+    }
+
+    if (idempotencyKey !== undefined && reservation !== undefined) {
+      if (expiredIdempotency !== undefined) {
+        this.#idempotency.delete(idempotencyKey);
         this.#idempotencyByExecution.delete(
-          executionStorageKey(existing.projectId, existing.executionId),
+          executionStorageKey(
+            expiredIdempotency.projectId,
+            expiredIdempotency.executionId,
+          ),
         );
       }
-      this.#idempotency.set(storageKey, {
+      this.#idempotency.set(idempotencyKey, {
         projectId: allocation.projectId,
         executionId: allocation.record.executionId,
         ...clone(reservation),
@@ -225,13 +251,7 @@ export class InMemoryExecutionStore implements ExecutionStore {
           allocation.projectId,
           allocation.record.executionId,
         ),
-        storageKey,
-      );
-    }
-
-    if (projectExecutions.has(allocation.record.executionId)) {
-      throw new Error(
-        `Duplicate execution ID: ${allocation.record.executionId}`,
+        idempotencyKey,
       );
     }
     projectExecutions.set(allocation.record.executionId, {
@@ -285,6 +305,31 @@ export class InMemoryExecutionStore implements ExecutionStore {
     }
     assertTransition(stored.record, record);
     stored.record = clone(record);
+    if (record.status === "succeeded" || record.status === "failed") {
+      const key = executionStorageKey(projectId, record.executionId);
+      const waiters = this.#terminalWaiters.get(key);
+      this.#terminalWaiters.delete(key);
+      for (const resolve of waiters ?? []) resolve(clone(record));
+    }
+  }
+
+  async waitForTerminal(
+    projectId: string,
+    executionId: ExecutionId,
+  ): Promise<ExecutionRecord & { status: "succeeded" | "failed" }> {
+    const stored = this.#executions.get(projectId)?.get(executionId)?.record;
+    if (stored === undefined) {
+      throw new Error(`Unknown execution ID: ${executionId}`);
+    }
+    if (stored.status === "succeeded" || stored.status === "failed") {
+      return clone(stored);
+    }
+    const key = executionStorageKey(projectId, executionId);
+    return new Promise((resolve) => {
+      const waiters = this.#terminalWaiters.get(key) ?? new Set();
+      waiters.add(resolve);
+      this.#terminalWaiters.set(key, waiters);
+    });
   }
 
   async setResolvedConnection(
@@ -332,17 +377,23 @@ export class InMemoryExecutionStore implements ExecutionStore {
           (filters.tool === undefined || record.tool === filters.tool) &&
           (filters.userId === undefined || record.userId === filters.userId),
       );
-    const offset =
-      filters.cursor === undefined ? 0 : offsetFromCursor(filters.cursor);
+    let offset = 0;
+    if (filters.cursor !== undefined) {
+      const after = executionIdFromCursor(filters.cursor);
+      const index = all.findIndex((record) => record.executionId === after);
+      if (index === -1) throw new InvalidExecutionCursorError();
+      offset = index + 1;
+    }
     const executions = all
       .slice(offset, offset + filters.limit)
       .map((record) => clone(record));
     const nextOffset = offset + executions.length;
+    const last = executions.at(-1);
 
     return {
       executions,
-      ...(nextOffset < all.length
-        ? { nextCursor: cursorForOffset(nextOffset) }
+      ...(nextOffset < all.length && last !== undefined
+        ? { nextCursor: cursorAfter(last.executionId) }
         : {}),
     };
   }

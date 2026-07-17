@@ -9,7 +9,7 @@ Send caller-owned mutation identity in the HTTP header:
 Idempotency-Key: reservation:res_42:confirmation-email
 ```
 
-The request JSON does not accept `idempotencyKey`. Repeating the same project-scoped key replays the associated execution; changing it creates a distinct mutation attempt.
+The request JSON does not accept `idempotencyKey`. A reservation is scoped by project, canonical tool, user, caller-supplied connection (or the default sentinel), catalog major, and key. Repeating the same key and request within that complete scope replays the associated execution; changing the key creates a distinct mutation attempt.
 
 Good keys identify the business action, not a transport attempt:
 
@@ -19,6 +19,6 @@ reservation:<reservation-id>:confirmation-email
 model-turn:<turn-id>:tool:<tool-call-id>
 ```
 
-Keep the key stable across timeouts and retryable failures. Before retrying a timeout, fetch the original execution because the provider may have completed the side effect.
+Keep the key stable when retrying a transport interruption or timeout whose execution outcome is unknown. Fetch the original execution first because the provider may have completed the side effect. A terminal failed execution is also retained and replayed under its key, even when its normalized error is retryable; starting a new provider attempt requires a new key.
 
 MCP derives `mcp:<session-id>:<json-rpc-id>` unless `_meta["dev.eyeball/idempotencyKey"]` overrides it.

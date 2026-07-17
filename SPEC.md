@@ -4,7 +4,16 @@
 > tools — email, calling, messaging, ERPs, scraping, hundreds of SaaS apps — without
 > building a single integration themselves.
 
-Status: **specification baseline complete; implementation not started** · Last updated: 2026-07-16
+Status: **implementation `0.1.0` complete as a local source preview** · Last updated: 2026-07-17
+
+Implemented in `0.1.0`:
+
+- strict canonical contracts, JSON Schema validation, lossless Anthropic/OpenAI/AI SDK/MCP conversion bundles, and catalog `1.1` discovery;
+- 37 toolkit manifests, implemented native/provider adapters, and a 457-row contract matrix (218 smoke, 239 explicit `not_supported`);
+- the authenticated executor, project/user-scoped connections, idempotency, async queueing, public execution records, and encrypted local vault;
+- the TypeScript SDK, Streamable HTTP MCP gateway, Next.js admin dashboard, generated documentation, integrated Mockhouse stack, and deterministic MCP/restaurant demos.
+
+This completion claim covers the repository's local `0.1.0` scope. Hosted OAuth, production durability, real-provider certification, and the Activepieces breadth bridge are not represented as complete.
 
 ---
 
@@ -37,8 +46,9 @@ Generalist, competing head-on with Composio / Arcade / ACI.dev / Pipedream. We w
 
 1. **DX** — fewest lines from `npm install` to a working authenticated tool call.
 2. **Auth done right** — end-user connected accounts as a first-class primitive.
-3. **Breadth fast** — bridge Activepieces' MIT-licensed pieces (~280+ apps) into typed
-   agent tools instead of hand-building integrations.
+3. **Breadth fast** — the planned Activepieces bridge can turn MIT-licensed pieces (~280+
+   apps) into typed agent tools instead of hand-building integrations. The bridge spike is
+   the top post-`0.1.0` item and has not been run.
 4. **Tools the wrappers don't have** — first-class calling/telephony, social-data
    scraping (ScrapeCreators), and other "real world" actions beyond SaaS CRUD.
 5. **Smart tool selection** — semantic search over the catalog so agents with access to
@@ -104,7 +114,7 @@ Two planes, one catalog:
 │ EXECUTION PLANE                                            │
 │  Executor service: validate input → resolve connection →   │
 │  inject auth → run → normalize errors → log                │
-│  Piece runner (Node sandbox for Activepieces pieces)       │
+│  Planned piece runner (Activepieces spike not yet done)     │
 │  Long-running jobs (calls, big scrapes) via queue + poll   │
 ├────────────────────────────────────────────────────────────┤
 │ AUTH VAULT                                                 │
@@ -116,8 +126,10 @@ Postgres (catalog, projects, connections, executions) · Redis (queue, rate limi
 
 ### Key design decisions
 
-- **The Activepieces bridge is the breadth engine.** Pieces are MIT-licensed TypeScript
-  modules with declared actions, props, and auth. We build a transformer:
+- **The Activepieces bridge is the intended breadth engine and the top pending item.**
+  `packages/bridge` is still an empty stub: the five-piece compatibility spike, transformer,
+  runner shim, and per-piece rig have not been implemented. Pieces are MIT-licensed
+  TypeScript modules with declared actions, props, and auth. The planned transformer is:
   piece action props → JSON Schema tool definition; piece auth declaration → auth config;
   execution wraps the piece's `run()` with our vault-injected credentials. One bridge,
   ~280 toolkits. (Engineering risk: props are dynamic in places; some pieces assume the
@@ -163,20 +175,18 @@ executions(id, project_id, tool_id, connected_account_id, input, output,
 | Pipedream | Mature infra, many apps | Agent-native design; theirs is workflow-first |
 | Raw MCP servers | Free, everywhere | We solve multi-user auth, hosting, observability — the parts MCP leaves out |
 
-## 6. Delivery sequence
+## 6. Delivery status
 
 - **Specification baseline (complete).** The eight-document suite fixes catalog 1.0
   (20 capabilities, 187 capability-scoped tools, 157 providers, 34 P0), RFC 001 contracts,
   additive catalog 1.1 voice agents, mock architecture, testing, admin UI, and public docs.
-- **Foundation and mocks.** Scaffold all three repositories, compile the catalog and runtime
-  validators, then build `eyeball-mocks` and manifest-derived contracts before product runtime.
-- **Execution surfaces.** Implement the executor and P0 native/bridge toolkits against mocks.
-  Run the five-piece Activepieces spike before bridge generalization. Land the catalog 1.1
-  `voice-agents` toolkit and persistent voice worker here, not as a late differentiator.
-- **Developer and product surfaces.** Ship the TypeScript SDK, MCP gateway, admin UI, and
-  public docs in that order; Python SDK and P1/P2 breadth follow the proven core loop.
-- **Live integration last.** Add hosted auth/connect flows and real provider credentials only
-  after deterministic mock conformance, then run real-target certification before launch.
+- **Local `0.1.0` implementation (complete).** Core, catalog, adapters, executor, TypeScript
+  SDK, MCP gateway, dashboard, docs, local vault, Mockhouse integration, and deterministic
+  demos build and pass the repository gates.
+- **Activepieces breadth bridge (top pending).** Run the five-piece compatibility spike before
+  any breadth claim or bridge generalization; `packages/bridge` remains an empty stub.
+- **Hosted/live work (later).** Hosted auth/connect flows, production durability, Python/P1/P2
+  breadth, and real-provider certification follow the proven local core loop.
 
 ## 7. Decisions made (2026-07-16)
 
@@ -214,21 +224,24 @@ deploy to Vercel; the voice worker requires persistent container infrastructure.
 
 ### Order of work
 
-Implementation follows this dependency order:
+The original dependency order and current result are:
 
 1. **Specifications (complete)** — the eight-document suite and frozen contract hierarchy.
-2. **Repository scaffolds** — initialize the `eyeball` and `eyeball-mocks` monorepos plus
-   the private `eyeball-cloud` boundary.
-3. **Mocks and contracts** — mockhouse, fixtures, clock, scripted voice, and manifest-derived
-   suites for the 34 catalog 1.0 P0 providers plus catalog 1.1 `voice-agents` behavior.
-4. **Executor and toolkits** — core validators/catalog compiler, credential seam, execution
-   records, P0 adapters, and voice worker. The five-piece Activepieces compatibility spike is
-   the first bridge gate; generalize only if it passes.
-5. **TypeScript SDK** — discovery, conversion bundles, execution, polling, and mock mode.
-6. **MCP gateway and tool search** — thin adapters over the same catalog and executor.
-7. **Admin UI** — operational project, toolkit, connection, voice, and execution surfaces.
-8. **Public docs** — mock-first quickstarts, generated toolkit reference, and voice showcase.
-9. **Real auth and certification last** — cloud `CredentialProvider`, hosted connect flows,
+2. **Repository scaffolds (complete)** — initialize the main and nested mock monorepos.
+3. **Mocks and contracts (complete for local `0.1.0`)** — Mockhouse, fixtures, scripted
+   voice behavior, and manifest-derived suites.
+4. **Executor and toolkits (complete for implemented native/provider adapters)** — core
+   validators/catalog compiler, credential seam, execution records, adapters, and local voice
+   demo. **The five-piece Activepieces compatibility spike is still not done.**
+5. **TypeScript SDK (complete)** — discovery, lossless conversion bundles, execution, polling,
+   and model tool-call helpers.
+6. **MCP gateway and tool search (complete)** — catalog/search discovery and executor-backed
+   calls, including the generic search-mode dispatch tool.
+7. **Admin UI (complete for local operations)** — toolkit, connection, voice, and public
+   execution-record surfaces.
+8. **Public docs (complete as source-preview docs)** — mock-first quickstarts, generated
+   toolkit reference, and voice showcase.
+9. **Real auth and certification (pending)** — cloud `CredentialProvider`, hosted connect flows,
    then unchanged contract suites against dedicated vendor tenants.
 
 Deliberately deferred: triggers/inbound events, BYO OAuth apps, billing, dashboard
@@ -236,35 +249,14 @@ polish, security/compliance program.
 
 ## 9. Remaining open questions
 
-1. **Billing model.** Per-execution vs per-connected-account; free-tier shape drives
-   adoption for a DX-led product.
-2. **Vendor or track Activepieces.** Fork the pieces we use (own them, drift from
-   upstream) vs track upstream (absorb their breaking changes). Spike results will
-   inform this.
-3. **License finalization.** FSL-1.1 vs Elastic 2.0 vs custom attribution clause —
-   needs a legal pass before public launch.
-4. **Low-level voice-call agent reference.** RFC 001's catalog 1.0 `twilio.start_call`
-   example uses `voiceAgentId`, while RFC 002's catalog 1.1 resource tools use `agentId`
-   plus an optional revision. Before implementation, RFC 002 must state whether the
-   low-level field resolves the active revision, accepts a pinned revision, or is superseded
-   for agent-driven calls by `voice-agents.start_agent_call`.
-5. **AI SDK retry correlation.** Direct SDK calls, Anthropic/OpenAI dispatch helpers, and MCP
-   now have explicit idempotency mappings. Converter callbacks that do not receive a stable
-   framework call ID still generate one UUID per invocation, so cross-invocation mutation
-   retries need a companion contract before that quickstart is release-ready.
-6. **LangChain conversion contract.** Product and docs promise `format: "langchain"`, but
-   RFC 001 does not yet define its version-pinned descriptor, schema compatibility, name-map,
-   invocation, or error guarantees. Add that contract or remove LangChain from launch scope
-   before publishing its quickstart.
-7. **Voice transport activation and number bindings.** RFC 002 includes
-   `webrtc:livekit`, but its current tool set has no operation that allocates or joins a
-   WebRTC-backed agent session. It also lacks detach/reassignment/list semantics for inbound
-   number bindings and deterministic behavior when an outbound transport connection or
-   originating number is omitted. Complete these contracts before advertising transport parity.
-8. **Model-registry boundary.** Voice definitions contain an opaque project model reference,
-   but no companion contract yet defines model-binding lifecycle, provider/version pinning,
-   credential resolution, or deterministic mock behavior. Define that boundary before the P0
-   worker resolves a model reference in production.
+1. **Activepieces bridge and vendoring — TOP PENDING ITEM.** `packages/bridge` is an empty
+   stub. Run the five-piece compatibility/runner spike first, then decide whether to vendor or
+   fork the pieces we use (own them and accept drift) or track upstream (absorb breaking
+   changes). The original breadth strategy remains unproven until this is done.
+2. **Billing model.** Per-execution vs per-connected-account; free-tier shape drives adoption
+   for a DX-led product.
+3. **License finalization.** FSL-1.1 vs Elastic 2.0 vs a custom attribution clause needs a
+   legal pass before public launch.
 
 ## 10. Document map
 

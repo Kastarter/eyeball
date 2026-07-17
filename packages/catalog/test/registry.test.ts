@@ -138,7 +138,7 @@ describe("catalog registry materialization", () => {
 });
 
 describe("catalog registry build errors", () => {
-  it("rejects catalog 1.0 metadata and contract drift", () => {
+  it("rejects catalog-major provider metadata, auth, and 1.0 contract drift", () => {
     const driftedManifest = cloneManifest();
     driftedManifest.toolkit.displayName = "Not Gmail";
     expect(
@@ -147,7 +147,17 @@ describe("catalog registry build errors", () => {
           contracts: emailCapabilityContracts,
           manifests: [driftedManifest],
         }),
-    ).toThrow(/disagrees with its catalog 1\.0 provider metadata/);
+    ).toThrow(/disagrees with its catalog-major provider metadata/);
+
+    const driftedAuth = cloneManifest();
+    driftedAuth.auth = { class: "none" };
+    expect(
+      () =>
+        new CatalogRegistry({
+          contracts: emailCapabilityContracts,
+          manifests: [driftedAuth],
+        }),
+    ).toThrow(/disagrees with its catalog-major provider metadata/);
 
     const inventedContract = structuredClone(
       emailContractsByName.send_email,
@@ -221,6 +231,11 @@ describe("catalog registry build errors", () => {
     }
     const collision = cloneManifest();
     collision.catalogVersion = "1.1";
+    collision.toolkit = {
+      ...collision.toolkit,
+      slug: "collision-fixture",
+      displayName: "Collision Fixture",
+    };
     collision.implements = [
       defined(collision.implements[0]),
       {

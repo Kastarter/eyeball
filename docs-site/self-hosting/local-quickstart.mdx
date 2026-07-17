@@ -23,7 +23,8 @@ The stock server has no usable provider credential. For deterministic provider w
 In separate processes:
 
 ```bash
-EYEBALL_API_KEY="eyeball_local_key" \
+EYEBALL_API_KEYS="eyeball_local_key:proj_local:demo_user" \
+EYEBALL_EXECUTOR_API_KEY="eyeball_local_key" \
 EYEBALL_EXECUTOR_URL="http://127.0.0.1:3000" \
 EYEBALL_USER_ID="demo_user" \
 PORT=3001 \

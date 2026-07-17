@@ -3,6 +3,7 @@ import {
   JSON_SCHEMA_DRAFT_2020_12,
   type ToolDefinition,
   validateInput,
+  validateOutput,
 } from "../src/index.js";
 
 const tool: ToolDefinition = {
@@ -167,6 +168,79 @@ describe("input schema validation", () => {
         },
       ],
     });
+  });
+
+  it.each([
+    ["Map", new Map([["to", "buyer@example.com"]])],
+    ["Date", { to: "buyer@example.com", body: new Date(0) }],
+    ["BigInt", { to: "buyer@example.com", body: 1n }],
+    ["non-finite number", { to: "buyer@example.com", body: Infinity }],
+  ])("rejects non-JSON %s values before schema validation", (_label, input) => {
+    expect(validateInput(tool, input)).toMatchObject({
+      ok: false,
+      errors: [{ code: "invalid_input", keyword: "type" }],
+    });
+  });
+
+  it("rejects cyclic inputs", () => {
+    const cyclic: Record<string, unknown> = {
+      to: "buyer@example.com",
+      body: "Thanks",
+    };
+    cyclic.self = cyclic;
+
+    expect(validateInput(tool, cyclic)).toMatchObject({
+      ok: false,
+      errors: [{ message: expect.stringContaining("cycles") }],
+    });
+  });
+
+  it("invalidates an identity-cached validator when its schema mutates", () => {
+    const mutableSchema = structuredClone(tool.inputSchema);
+    const mutableTool = { inputSchema: mutableSchema };
+    expect(
+      validateInput(mutableTool, {
+        to: "buyer@example.com",
+        body: "First",
+      }).ok,
+    ).toBe(true);
+
+    mutableSchema.required = ["to", "body", "bodyFormat"];
+    expect(
+      validateInput(mutableTool, {
+        to: "buyer@example.com",
+        body: "Second",
+      }),
+    ).toMatchObject({
+      ok: false,
+      errors: [
+        {
+          keyword: "schema_profile",
+          message: expect.stringContaining("changed"),
+        },
+      ],
+    });
+  });
+
+  it("does not fabricate required adapter output from schema defaults", () => {
+    const outputTool = {
+      outputSchema: {
+        $schema: JSON_SCHEMA_DRAFT_2020_12,
+        type: "object" as const,
+        additionalProperties: false,
+        required: ["fabricated"],
+        properties: {
+          fabricated: { type: "boolean" as const, default: true },
+        },
+      },
+    };
+    const output = {};
+
+    expect(validateOutput(outputTool, output)).toMatchObject({
+      ok: false,
+      errors: [{ keyword: "required" }],
+    });
+    expect(output).toEqual({});
   });
 
   it("enforces the published-schema Draft 2020-12 profile", () => {

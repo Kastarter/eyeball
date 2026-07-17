@@ -1,3 +1,9 @@
+import {
+  type ApiKeyPrincipal,
+  type ApiKeyringInput,
+  materializeApiKeyring,
+  parseApiKeyring,
+} from "@eyeball/core";
 import { type Context, Hono } from "hono";
 import { HttpMcpExecutor, type McpExecutor } from "./executor.js";
 import {
@@ -17,6 +23,10 @@ export interface McpGatewayOptions {
   executorBaseUrl?: string;
   fetchImpl?: typeof globalThis.fetch;
   apiKey?: string;
+  /** Optional inbound keyring; values may pin a key to one end user. */
+  apiKeys?: ApiKeyringInput;
+  /** Separate executor credential used only after inbound authentication succeeds. */
+  executorApiKey?: string;
   userId?: string;
   discoveryMode?: ToolDiscoveryMode;
   env?: Readonly<Record<string, string | undefined>>;
@@ -59,6 +69,20 @@ function unauthorized(context: Context): Response {
   );
 }
 
+function forbidden(context: Context): Response {
+  return context.json(
+    {
+      jsonrpc: "2.0",
+      id: null,
+      error: {
+        code: -32003,
+        message: "This API key is pinned to a different end user.",
+      },
+    },
+    403,
+  );
+}
+
 function methodNotAllowed(context: Context): Response {
   context.header("Allow", "POST");
   return context.json(
@@ -77,6 +101,20 @@ function methodNotAllowed(context: Context): Response {
 export function createMcpGatewayApp(options: McpGatewayOptions = {}): Hono {
   const env = options.env ?? process.env;
   const configuredApiKey = options.apiKey ?? env.EYEBALL_API_KEY;
+  const executorApiKey = options.executorApiKey ?? env.EYEBALL_EXECUTOR_API_KEY;
+  const apiKeys =
+    options.apiKeys === undefined
+      ? parseApiKeyring(env.EYEBALL_API_KEYS)
+      : materializeApiKeyring(options.apiKeys);
+  if (
+    executorApiKey !== undefined &&
+    apiKeys.size === 0 &&
+    configuredApiKey === undefined
+  ) {
+    throw new Error(
+      "EYEBALL_EXECUTOR_API_KEY requires an inbound EYEBALL_API_KEYS policy.",
+    );
+  }
   const configuredUserId = options.userId ?? env.EYEBALL_USER_ID;
   const executor =
     options.executor ??
@@ -106,11 +144,21 @@ export function createMcpGatewayApp(options: McpGatewayOptions = {}): Hono {
   app.get("/mcp", methodNotAllowed);
   app.delete("/mcp", methodNotAllowed);
   app.post("/mcp", async (context) => {
-    const apiKey =
-      configuredApiKey ?? bearerToken(context.req.header("Authorization"));
-    if (apiKey === undefined || apiKey.trim().length === 0) {
+    const inboundApiKey = bearerToken(context.req.header("Authorization"));
+    if (inboundApiKey === undefined || inboundApiKey.trim().length === 0) {
       return unauthorized(context);
     }
+    let principal: ApiKeyPrincipal | undefined;
+    if (apiKeys.size > 0) {
+      principal = apiKeys.get(inboundApiKey);
+      if (principal === undefined) return unauthorized(context);
+    } else if (
+      configuredApiKey !== undefined &&
+      inboundApiKey !== configuredApiKey
+    ) {
+      return unauthorized(context);
+    }
+    const apiKey = executorApiKey ?? inboundApiKey;
 
     const protocolVersion = context.req.header(PROTOCOL_VERSION_HEADER);
     if (
@@ -136,10 +184,20 @@ export function createMcpGatewayApp(options: McpGatewayOptions = {}): Hono {
     }
     const requestUserId =
       configuredUserId ?? context.req.header(USER_ID_HEADER);
+    if (
+      principal?.userId !== undefined &&
+      requestUserId !== undefined &&
+      requestUserId !== principal.userId
+    ) {
+      return forbidden(context);
+    }
     const requestSessionId = context.req.header(SESSION_ID_HEADER);
     const result = await protocol.handle(parsed.value, {
       apiKey,
       ...(requestUserId === undefined ? {} : { userId: requestUserId }),
+      ...(principal?.userId === undefined
+        ? {}
+        : { pinnedUserId: principal.userId }),
       ...(requestSessionId === undefined
         ? {}
         : { sessionId: requestSessionId }),

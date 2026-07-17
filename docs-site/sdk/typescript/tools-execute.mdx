@@ -56,18 +56,23 @@ const eyeball = new Eyeball({
   apiKey: process.env.EYEBALL_API_KEY!,
   baseUrl: process.env.EYEBALL_EXECUTOR_URL!,
 });
+const bundle = await eyeball.tools.get({
+  toolkits: ["gmail"],
+  format: "openai",
+});
 const calls: OpenAIToolCall[] = [{
   id: "call_123",
   type: "function",
   function: {
-    name: "gmail.search_emails",
+    name: "gmail__search_emails",
     arguments: JSON.stringify({ query: "reservation" }),
   },
 }];
 const results = await executeToolCalls(eyeball, calls, {
   userId: "demo_user",
+  nameMap: bundle.nameMap,
 });
 console.log(results);
 ```
 
-Framework defaults are `anthropic:<tool-use-id>` and `openai:<tool-call-id>`.
+Framework defaults are `anthropic:<tool-use-id>` and `openai:<tool-call-id>`. Dispatch is constrained to the emitted bundle's `nameMap`; a model cannot invoke a valid catalog tool that was not advertised in that bundle.

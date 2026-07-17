@@ -100,15 +100,22 @@ export interface OAuthTokenSet {
 export class OAuthTokenRequestError extends Error {
   readonly status: number | undefined;
   readonly oauthCode: string | undefined;
+  readonly transient: boolean;
 
   constructor(
     message: string,
-    options: { status?: number; oauthCode?: string; cause?: unknown } = {},
+    options: {
+      status?: number;
+      oauthCode?: string;
+      transient?: boolean;
+      cause?: unknown;
+    } = {},
   ) {
     super(message, { cause: options.cause });
     this.name = "OAuthTokenRequestError";
     this.status = options.status;
     this.oauthCode = options.oauthCode;
+    this.transient = options.transient ?? false;
   }
 }
 
@@ -561,9 +568,17 @@ export async function requestOAuthToken(
       },
     );
   }
-  if (endpoint.protocol !== "https:" && endpoint.protocol !== "http:") {
+  const loopback =
+    endpoint.hostname === "localhost" ||
+    endpoint.hostname === "::1" ||
+    endpoint.hostname === "[::1]" ||
+    /^127(?:\.\d{1,3}){3}$/u.test(endpoint.hostname);
+  if (
+    endpoint.protocol !== "https:" &&
+    !(endpoint.protocol === "http:" && loopback)
+  ) {
     throw new OAuthTokenRequestError(
-      "The OAuth token endpoint must use HTTP or HTTPS.",
+      "The OAuth token endpoint must use HTTPS (HTTP is allowed only for loopback development).",
     );
   }
   const clientAuthentication = options.endpoint.clientAuthentication ?? "body";
@@ -604,12 +619,14 @@ export async function requestOAuthToken(
       method: "POST",
       headers,
       body,
+      redirect: "manual",
     });
   } catch (error) {
     throw new OAuthTokenRequestError(
       "The OAuth token endpoint could not be reached.",
       {
         cause: error,
+        transient: true,
       },
     );
   }
@@ -619,7 +636,11 @@ export async function requestOAuthToken(
   } catch (error) {
     throw new OAuthTokenRequestError(
       `The OAuth token endpoint returned HTTP ${response.status} with an invalid JSON body.`,
-      { status: response.status, cause: error },
+      {
+        status: response.status,
+        transient: response.status === 429 || response.status >= 500,
+        cause: error,
+      },
     );
   }
   if (!response.ok) {
@@ -628,6 +649,7 @@ export async function requestOAuthToken(
       `The OAuth token endpoint returned HTTP ${response.status}${oauthCode === undefined ? "." : ` (${oauthCode}).`}`,
       {
         status: response.status,
+        transient: response.status === 429 || response.status >= 500,
         ...(oauthCode === undefined ? {} : { oauthCode }),
       },
     );
@@ -970,6 +992,14 @@ export class LocalVaultCredentialProvider implements CredentialProvider {
           now: this.#now,
         });
       } catch (error) {
+        if (error instanceof OAuthTokenRequestError && error.transient) {
+          throw new CredentialProviderError({
+            code: "provider_unavailable",
+            message: `The ${record.key.toolkitSlug} OAuth token endpoint is temporarily unavailable.`,
+            retryable: true,
+            cause: error,
+          });
+        }
         throw new CredentialProviderError({
           code: "auth_expired",
           message: `Refreshing the stored ${record.key.toolkitSlug} OAuth credential failed. ${reconnectMessage(record.key)}`,

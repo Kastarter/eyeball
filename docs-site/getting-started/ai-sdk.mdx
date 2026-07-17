@@ -6,8 +6,7 @@ description: "Use eyeball's AI SDK tool export for a deterministic read-only age
 The AI SDK export bundles each canonical definition with an `execute` callback.
 
 ```ts
-import { anthropic } from "@ai-sdk/anthropic";
-import { generateText } from "ai";
+import { gateway, generateText, stepCountIs } from "ai";
 import { Eyeball } from "@eyeball/sdk";
 
 const eyeball = new Eyeball({
@@ -20,10 +19,10 @@ const bundle = await eyeball.tools.get({
   userId: "demo_user",
 });
 const result = await generateText({
-  model: anthropic(process.env.ANTHROPIC_MODEL!),
+  model: gateway(process.env.AI_GATEWAY_MODEL!),
   prompt: "Summarize the latest reservation email.",
   tools: bundle.tools,
-  maxSteps: 4,
+  stopWhen: stepCountIs(4),
 });
 console.log(result.text);
 ```
@@ -32,4 +31,4 @@ console.log(result.text);
   The current AI SDK callback surface does not expose a stable framework tool-call ID to eyeball. Use this adapter for reads. For mutations, call `tools.execute` with your own `idempotencyKey` or use the Anthropic/OpenAI helpers until the adapter contract is upgraded.
 </Warning>
 
-The mocked mailbox path runs with zero third-party SaaS accounts. A model-provider credential is only needed for `generateText`; the direct [SDK quickstart](/getting-started/quickstart) is account-free.
+The mocked mailbox path runs with zero third-party SaaS accounts. An AI Gateway credential is only needed for `generateText`; the direct [SDK quickstart](/getting-started/quickstart) is account-free.

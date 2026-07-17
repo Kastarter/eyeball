@@ -10,13 +10,15 @@ curl "$EYEBALL_EXECUTOR_URL/v1/executions?limit=10" \
   -H "Authorization: Bearer $EYEBALL_API_KEY"
 ```
 
-The authenticated project scopes every lookup. A missing or invalid bearer value returns a normalized auth error.
+The authenticated project scopes every lookup. A missing or invalid bearer value returns a normalized auth error. By default, a project key is authoritative for every end user in that project.
 
 End-user identity is separate:
 
 - Executor: `userId` in execute/connection bodies or query filters.
 - SDK: per-call `userId` or the client default.
 - MCP: `EYEBALL_USER_ID` server configuration, `X-Eyeball-User-Id`, or `_meta["dev.eyeball/userId"]`.
+
+Self-hosted keyrings accept `key:projectId:userId` in addition to the project-wide `key:projectId` form. A pinned key rejects a conflicting user at every supported identity surface. Use pinned keys when delegating access to a less-trusted MCP host.
 
 <Warning>
   Treat project keys as server credentials. Do not embed them in public browser bundles.

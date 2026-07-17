@@ -1,11 +1,17 @@
 import { buildNameMap, type ToolNameMap } from "../naming.js";
-import type { ObjectSchema202012, ToolDefinition } from "../types/tool.js";
-import { toolDescription, wireNameFor } from "./shared.js";
+import type { ToolDefinition } from "../types/tool.js";
+import {
+  immutableDefinitions,
+  type MutableObjectSchema,
+  mutableObjectSchema,
+  toolDescription,
+  wireNameFor,
+} from "./shared.js";
 
 export interface OpenAIFunctionDescriptor {
   name: string;
   description: string;
-  parameters: ObjectSchema202012;
+  parameters: MutableObjectSchema;
   strict?: boolean;
 }
 
@@ -17,6 +23,7 @@ export interface OpenAIFunctionToolDescriptor {
 export interface OpenAIToolsConversion {
   tools: OpenAIFunctionToolDescriptor[];
   nameMap: ToolNameMap;
+  definitions: readonly ToolDefinition[];
 }
 
 /**
@@ -34,9 +41,10 @@ export function toOpenAITools(
       function: {
         name: wireNameFor(nameMap, tool.name),
         description: toolDescription(tool),
-        parameters: tool.inputSchema,
+        parameters: mutableObjectSchema(tool.inputSchema),
       },
     })),
     nameMap,
+    definitions: immutableDefinitions(tools),
   };
 }

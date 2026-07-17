@@ -7,6 +7,7 @@ import {
   generateLocalVaultKey,
   initializeLocalVaultFile,
   LocalVaultCredentialProvider,
+  requestOAuthToken,
 } from "../src/index.js";
 
 const directories: string[] = [];
@@ -228,6 +229,61 @@ describe("LocalVaultCredentialProvider", () => {
       "pnpm eyeball-auth add gmail --user user-local",
     );
     expect((thrown as Error).message).not.toContain("invalid_grant");
+  });
+
+  it.each([
+    [
+      "HTTP 503",
+      vi.fn(async () => Response.json({ error: "down" }, { status: 503 })),
+    ],
+    [
+      "network failure",
+      vi.fn(async () => Promise.reject(new TypeError("offline"))),
+    ],
+  ])("maps transient refresh %s to retryable provider_unavailable", async (_label, fetchImpl) => {
+    const fixture = await vaultFixture();
+    const provider = new LocalVaultCredentialProvider({
+      filePath: fixture.filePath,
+      allowedProjectId: baseContext.projectId,
+      env: fixture.env,
+      oauth: { gmail: { tokenUrl: "https://oauth.example.test/token" } },
+      fetchImpl,
+      now: () => new Date("2026-07-17T12:00:00.000Z"),
+    });
+    await provider.put({
+      userId: baseContext.userId,
+      toolkitSlug: "gmail",
+      credential: {
+        type: "oauth2",
+        accessToken: "expired-access",
+        refreshToken: "refresh-still-valid",
+        clientId: "client-id",
+        clientSecret: "client-secret",
+        expiresAt: "2026-07-17T11:00:00.000Z",
+      },
+    });
+
+    await expect(provider.resolve(baseContext)).rejects.toMatchObject({
+      code: "provider_unavailable",
+      retryable: true,
+    });
+  });
+
+  it("refuses to post OAuth secrets over non-loopback HTTP", async () => {
+    const fetchImpl = vi.fn(async () =>
+      Response.json({ access_token: "unused" }),
+    );
+
+    await expect(
+      requestOAuthToken({
+        endpoint: { tokenUrl: "http://oauth.example.test/token" },
+        clientId: "client-id",
+        clientSecret: "client-secret",
+        parameters: { refresh_token: "refresh-secret" },
+        fetchImpl,
+      }),
+    ).rejects.toThrow("must use HTTPS");
+    expect(fetchImpl).not.toHaveBeenCalled();
   });
 
   it("deduplicates simultaneous refreshes and persists rotated tokens", async () => {

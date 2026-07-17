@@ -1,10 +1,10 @@
 import type { ToolDefinition } from "../types/tool.js";
-import { type AiSdkToolSet, toAiSdkTools } from "./aisdk.js";
+import { type AiSdkToolsConversion, toAiSdkTools } from "./aisdk.js";
 import {
   type AnthropicToolsConversion,
   toAnthropicTools,
 } from "./anthropic.js";
-import { type McpToolDescriptor, toMcpTools } from "./mcp.js";
+import { type McpToolsConversion, toMcpTools } from "./mcp.js";
 import { type OpenAIToolsConversion, toOpenAITools } from "./openai.js";
 
 export * from "./aisdk.js";
@@ -17,8 +17,8 @@ export type ToolFormat = "anthropic" | "openai" | "ai-sdk" | "mcp";
 export interface ToolFormatConversionMap {
   anthropic: AnthropicToolsConversion;
   openai: OpenAIToolsConversion;
-  "ai-sdk": AiSdkToolSet;
-  mcp: McpToolDescriptor[];
+  "ai-sdk": AiSdkToolsConversion;
+  mcp: McpToolsConversion;
 }
 
 export type ToolFormatConversion = ToolFormatConversionMap[ToolFormat];

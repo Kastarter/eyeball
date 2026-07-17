@@ -24,7 +24,6 @@ import {
 } from "@/src/components/ui";
 import {
   dashboardExecutorClient,
-  type ExecutionDetail,
   type ExecutionRecord,
   type ExecutionStatus,
   ExecutorApiError,
@@ -49,7 +48,7 @@ export interface ExecutionFilters {
 
 export interface ExecutionsScreenProps {
   initialExecution?: string;
-  initialExecutionDetail?: ExecutionDetail;
+  initialExecutionDetail?: ExecutionRecord;
   initialExecutions?: readonly ExecutionRecord[];
   initialFilters?: ExecutionFilters;
   initialNextCursor?: string;
@@ -96,34 +95,6 @@ function json(value: unknown): string {
   return JSON.stringify(value, null, 2);
 }
 
-function shellQuote(value: string): string {
-  return `'${value.replaceAll("'", `'"'"'`)}'`;
-}
-
-export function executionCurl(detail: ExecutionDetail): string {
-  const continued = " \\";
-  const body = {
-    tool: detail.tool,
-    userId: detail.userId,
-    input: detail.input,
-    mode: detail.mode,
-    ...(detail.connectionId === undefined
-      ? {}
-      : { connectionId: detail.connectionId }),
-  };
-  return [
-    `curl -X POST ${shellQuote("https://api.eyeball.dev/v1/execute")}${continued}`,
-    `  -H ${shellQuote("Authorization: Bearer <REDACTED>")}${continued}`,
-    `  -H ${shellQuote("Content-Type: application/json")}${continued}`,
-    ...(detail.idempotencyKey === undefined
-      ? []
-      : [
-          `  -H ${shellQuote(`Idempotency-Key: ${detail.idempotencyKey}`)}${continued}`,
-        ]),
-    `  --data ${shellQuote(JSON.stringify(body))}`,
-  ].join("\n");
-}
-
 function urlWithState(filters: ExecutionFilters, executionId?: string): string {
   const url = new URL(window.location.href);
   for (const key of ["status", "tool", "userId", "execution"] as const) {
@@ -157,7 +128,7 @@ function statusMessage(state: RequestState): { title: string; body: string } {
   };
 }
 
-function ExecutionTimeline({ detail }: { detail: ExecutionDetail }) {
+function ExecutionTimeline({ detail }: { detail: ExecutionRecord }) {
   const terminal = detail.status === "succeeded" || detail.status === "failed";
   const steps = [
     { label: "Created", timestamp: detail.createdAt, reached: true },
@@ -202,7 +173,7 @@ function ExecutionDrawer({
   onClose,
   state,
 }: {
-  detail: ExecutionDetail | undefined;
+  detail: ExecutionRecord | undefined;
   executionId: string;
   onClose: () => void;
   state: RequestState;
@@ -257,7 +228,7 @@ function ExecutionDrawer({
         {state === "loading" ? (
           <div aria-live="polite" className="execution-detail-state">
             <Icon name="activity" />
-            <p>Loading the canonical request and terminal envelope…</p>
+            <p>Loading the execution record…</p>
           </div>
         ) : detail === undefined ? (
           <div className="execution-detail-state execution-detail-state--error">
@@ -274,20 +245,6 @@ function ExecutionDrawer({
               </span>
             </div>
             <ExecutionTimeline detail={detail} />
-
-            <section className="execution-detail__section">
-              <div className="execution-detail__heading">
-                <div>
-                  <p className="eyebrow">Canonical request</p>
-                  <h3>Input</h3>
-                </div>
-              </div>
-              <CodeBlock
-                code={json(detail.input)}
-                label="Canonical input JSON"
-                language="json"
-              />
-            </section>
 
             <section className="execution-detail__section">
               <div className="execution-detail__heading">
@@ -343,19 +300,15 @@ function ExecutionDrawer({
             <section className="execution-detail__section">
               <div className="execution-detail__heading">
                 <div>
-                  <p className="eyebrow">Pinned context</p>
+                  <p className="eyebrow">Execution context</p>
                   <h3>Metadata</h3>
                 </div>
               </div>
               <dl className="execution-metadata">
                 {[
-                  ["Project", detail.projectId],
                   ["User", detail.userId],
-                  ["Connection", detail.connectionId ?? "default"],
                   ["Tool version", detail.toolVersion],
                   ["Catalog version", detail.catalogVersion],
-                  ["Mode", detail.mode],
-                  ["Idempotency key", detail.idempotencyKey ?? "—"],
                 ].map(([label, value]) => (
                   <div key={label}>
                     <dt>{label}</dt>
@@ -363,20 +316,6 @@ function ExecutionDrawer({
                   </div>
                 ))}
               </dl>
-            </section>
-
-            <section className="execution-detail__section">
-              <div className="execution-detail__heading">
-                <div>
-                  <p className="eyebrow">Replay safely</p>
-                  <h3>Copy as curl</h3>
-                </div>
-              </div>
-              <CodeBlock
-                code={executionCurl(detail)}
-                label="Reconstructed execute request"
-                language="shell"
-              />
             </section>
           </div>
         )}
@@ -405,7 +344,7 @@ export function ExecutionsScreen({
   const [loadingMore, setLoadingMore] = useState(false);
   const [live, setLive] = useState(false);
   const [selectedId, setSelectedId] = useState(initialExecution);
-  const [detail, setDetail] = useState<ExecutionDetail | undefined>(
+  const [detail, setDetail] = useState<ExecutionRecord | undefined>(
     initialExecutionDetail,
   );
   const [detailState, setDetailState] = useState<RequestState>(
@@ -586,7 +525,7 @@ export function ExecutionsScreen({
             </Button>
           </div>
         }
-        description="Inspect canonical requests, normalized responses, latency, and provider failures without leaving the project boundary."
+        description="Inspect normalized responses, latency, and provider failures without exposing canonical request inputs."
         eyebrow={`Project / ${project}`}
         title="Executions"
       />
@@ -685,7 +624,7 @@ export function ExecutionsScreen({
           ) : (
             <EmptyState
               code={`await eyeball.tools.execute("gmail.send_email", {\n  input: { to: ["sam@example.com"], subject: "Hello", body: "Hi" }\n});`}
-              description="Every synchronous and asynchronous tool call will appear here with its canonical request and normalized terminal envelope."
+              description="Every synchronous and asynchronous tool call will appear here with its normalized terminal envelope."
               title="No executions yet"
             />
           )

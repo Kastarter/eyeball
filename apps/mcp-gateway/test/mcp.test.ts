@@ -89,7 +89,7 @@ describe("MCP Streamable HTTP gateway", () => {
         capabilities: { tools: { listChanged: false } },
         serverInfo: { name: "eyeball-mcp-gateway", version: "0.1.0" },
         instructions:
-          "Use eyeball.search_tools to find canonical provider tools. Tool failures are returned as normalized MCP tool results.",
+          "Use eyeball.search_tools to find canonical provider tools. In search discovery mode, invoke a returned tool through eyeball.execute_tool. Tool failures are returned as normalized MCP tool results.",
       },
     });
   });
@@ -148,7 +148,12 @@ describe("MCP Streamable HTTP gateway", () => {
     const response = await request(app, rpc("tools/list"));
 
     await expect(response.json()).resolves.toMatchObject({
-      result: { tools: [{ name: "eyeball.search_tools" }] },
+      result: {
+        tools: [
+          { name: "eyeball.search_tools" },
+          { name: "eyeball.execute_tool" },
+        ],
+      },
     });
   });
 
@@ -180,6 +185,37 @@ describe("MCP Streamable HTTP gateway", () => {
       body.result.structuredContent,
     );
     expect(execution.execute).not.toHaveBeenCalled();
+  });
+
+  it("executes a discovered canonical tool through the search-mode dispatcher", async () => {
+    const execution = executor();
+    const app = createMcpGatewayApp({
+      executor: execution,
+      apiKey: API_KEY,
+      userId: USER_ID,
+      discoveryMode: "search",
+    });
+
+    const response = await request(
+      app,
+      rpc("tools/call", {
+        name: "eyeball.execute_tool",
+        arguments: {
+          name: "gmail.list_emails",
+          input: { query: "invoice" },
+        },
+      }),
+    );
+
+    expect(execution.execute).toHaveBeenCalledWith(
+      expect.objectContaining({
+        tool: "gmail.list_emails",
+        input: { query: "invoice" },
+      }),
+    );
+    await expect(response.json()).resolves.toMatchObject({
+      result: { structuredContent: { emails: [] } },
+    });
   });
 
   it("dispatches a terminal call with stable idempotency and execution metadata", async () => {
@@ -426,6 +462,69 @@ describe("MCP Streamable HTTP gateway", () => {
     expect(get.status).toBe(405);
     expect(get.headers.get("Allow")).toBe("POST");
   });
+
+  it("does not let a configured executor key authenticate inbound clients", async () => {
+    const app = createMcpGatewayApp({ executor: executor(), apiKey: API_KEY });
+    const missing = await app.request("/mcp", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(rpc("ping")),
+    });
+    const invalid = await app.request("/mcp", {
+      method: "POST",
+      headers: {
+        Authorization: "Bearer wrong-key",
+        "Content-Type": "application/json",
+      },
+      body: JSON.stringify(rpc("ping")),
+    });
+
+    expect(missing.status).toBe(401);
+    expect(invalid.status).toBe(401);
+  });
+
+  it("enforces a pinned MCP user across headers and tools/call metadata", async () => {
+    const execution = executor();
+    const app = createMcpGatewayApp({
+      executor: execution,
+      apiKeys: {
+        [API_KEY]: { projectId: "project_mcp", userId: USER_ID },
+      },
+    });
+    const accepted = await request(
+      app,
+      rpc("tools/call", {
+        name: "gmail.list_emails",
+        arguments: {},
+        _meta: { "dev.eyeball/userId": USER_ID },
+      }),
+      { "X-Eyeball-User-Id": USER_ID },
+    );
+    const wrongHeader = await request(app, rpc("ping"), {
+      "X-Eyeball-User-Id": "user_other",
+    });
+    const wrongMeta = await request(
+      app,
+      rpc("tools/call", {
+        name: "gmail.list_emails",
+        arguments: {},
+        _meta: { "dev.eyeball/userId": "user_other" },
+      }),
+    );
+
+    expect(accepted.status).toBe(200);
+    expect(execution.execute).toHaveBeenCalledWith(
+      expect.objectContaining({ userId: USER_ID }),
+    );
+    expect(wrongHeader.status).toBe(403);
+    await expect(wrongMeta.json()).resolves.toMatchObject({
+      result: {
+        isError: true,
+        content: [{ text: expect.stringContaining("auth_insufficient_scope") }],
+      },
+    });
+    expect(execution.execute).toHaveBeenCalledTimes(1);
+  });
 });
 
 describe("HTTP executor bridge", () => {
@@ -441,7 +540,7 @@ describe("HTTP executor bridge", () => {
       init?: Parameters<typeof fetch>[1],
     ) => executorApp.request(new Request(input, init))) as typeof fetch;
     const app = createMcpGatewayApp({
-      executorBaseUrl: "http://executor.test",
+      executorBaseUrl: "https://executor.test",
       fetchImpl,
       apiKey: API_KEY,
       userId: USER_ID,

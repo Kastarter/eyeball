@@ -45,14 +45,6 @@ export type ExecutionRecord = ExecutionRecordBase &
     | { error: NormalizedToolError; latencyMs: number; status: "failed" }
   );
 
-export type ExecutionDetail = ExecutionRecord & {
-  projectId: string;
-  input: Readonly<Record<string, JsonValue>>;
-  mode: "async" | "sync";
-  connectionId?: string;
-  idempotencyKey?: string;
-};
-
 export interface ExecutionPage {
   executions: readonly ExecutionRecord[];
   nextCursor?: string;
@@ -248,8 +240,8 @@ export class ExecutorClient {
   getExecution(
     executionId: string,
     signal?: AbortSignal,
-  ): Promise<ExecutionDetail> {
-    return this.#request<ExecutionDetail>(
+  ): Promise<ExecutionRecord> {
+    return this.#request<ExecutionRecord>(
       `/v1/executions/${encodeURIComponent(executionId)}`,
       signal === undefined ? {} : { signal },
     );

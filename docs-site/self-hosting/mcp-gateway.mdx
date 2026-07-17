@@ -5,7 +5,8 @@ description: "Point the Streamable HTTP gateway at an executor and choose catalo
 
 ```bash
 pnpm --filter @eyeball/mcp-gateway build
-EYEBALL_API_KEY="eyeball_local_key" \
+EYEBALL_API_KEYS="mcp_host_key:proj_local:demo_user" \
+EYEBALL_EXECUTOR_API_KEY="eyeball_local_key" \
 EYEBALL_EXECUTOR_URL="http://127.0.0.1:3000" \
 EYEBALL_USER_ID="demo_user" \
 EYEBALL_MCP_DISCOVERY="search" \
@@ -16,12 +17,13 @@ pnpm --filter @eyeball/mcp-gateway start
 
 | Variable | Meaning |
 | --- | --- |
-| `EYEBALL_API_KEY` | Key forwarded to the executor |
+| `EYEBALL_API_KEYS` | Inbound `key:projectId[:userId]` policy; pin keys delegated to less-trusted hosts |
+| `EYEBALL_EXECUTOR_API_KEY` | Separate server-side key forwarded to the executor after inbound authentication |
 | `EYEBALL_EXECUTOR_URL` | Executor origin; defaults to `http://127.0.0.1:3000` |
 | `EYEBALL_USER_ID` | Optional default external user |
 | `EYEBALL_MCP_DISCOVERY` | `catalog` or `search` |
 | `HOST` / `PORT` | Listener; defaults to `127.0.0.1:3001` |
 
-`search` discovery keeps `eyeball.search_tools` small and defers provider descriptors. `catalog` lists the full eligible catalog. Async-by-nature tools remain omitted until MCP Tasks is implemented.
+`search` discovery lists `eyeball.search_tools` plus `eyeball.execute_tool`, allowing standard MCP hosts to execute a returned canonical tool without receiving a new descriptor. `catalog` lists the full eligible catalog. Async-by-nature tools remain omitted until MCP Tasks is implemented.
 
-Put the gateway behind TLS for remote clients. If you accept per-request user headers, authenticate the caller before trusting that identity.
+Put the gateway behind TLS for remote clients. The inbound bearer key is always required and is distinct from the executor key. If you accept per-request user headers, use a user-pinned inbound key or otherwise authenticate the caller before trusting that identity.

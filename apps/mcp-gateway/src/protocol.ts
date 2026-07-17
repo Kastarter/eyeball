@@ -14,6 +14,8 @@ import {
 } from "@eyeball/core";
 import type { McpExecutor, TerminalExecution } from "./executor.js";
 import {
+  EXECUTE_TOOL_NAME,
+  executeToolDescriptor,
   SEARCH_TOOL_NAME,
   SearchToolInputError,
   searchToolDescriptor,
@@ -69,6 +71,8 @@ export interface McpRequestContext {
   apiKey: string;
   /** Trusted server binding or transport-provided end-user identity. */
   userId?: string;
+  /** Authenticated key claim; transport and tool metadata may not override it. */
+  pinnedUserId?: string;
   sessionId?: string;
 }
 
@@ -322,10 +326,10 @@ function listedTools(
   discoveryMode: ToolDiscoveryMode,
 ): readonly (McpToolDescriptor | (McpToolDescriptor & { _meta: unknown }))[] {
   if (discoveryMode === "search") {
-    return [searchToolDescriptor];
+    return [searchToolDescriptor, executeToolDescriptor];
   }
   const raw = visibleTools(catalog);
-  const converted = toMcpTools(raw);
+  const converted = toMcpTools(raw).tools;
   return [
     searchToolDescriptor,
     ...converted.map((descriptor, index) => {
@@ -406,7 +410,7 @@ export class McpProtocol {
             capabilities: { tools: { listChanged: false } },
             serverInfo: { name: MCP_SERVER_NAME, version: this.#serverVersion },
             instructions:
-              "Use eyeball.search_tools to find canonical provider tools. Tool failures are returned as normalized MCP tool results.",
+              "Use eyeball.search_tools to find canonical provider tools. In search discovery mode, invoke a returned tool through eyeball.execute_tool. Tool failures are returned as normalized MCP tool results.",
           }),
         };
       }
@@ -486,6 +490,28 @@ export class McpProtocol {
       }
     }
 
+    if (params.name === EXECUTE_TOOL_NAME) {
+      const nestedName = params.input.name;
+      const nestedInput = params.input.input;
+      if (
+        typeof nestedName !== "string" ||
+        nestedName.length === 0 ||
+        !isRecord(nestedInput)
+      ) {
+        return failedToolResult({
+          code: TOOL_ERROR_CODES.INVALID_INPUT,
+          message:
+            "eyeball.execute_tool requires a canonical tool name and an input object.",
+          retryable: false,
+        });
+      }
+      params = {
+        name: nestedName,
+        input: nestedInput as Readonly<Record<string, JsonValue>>,
+        meta: params.meta,
+      };
+    }
+
     const tool = this.#catalog.getTool(params.name);
     if (tool === undefined) {
       return failedToolResult({
@@ -503,8 +529,20 @@ export class McpProtocol {
     }
 
     try {
-      const userId =
-        context.userId ?? optionalString(params.meta, USER_ID_META_KEY);
+      const metaUserId = optionalString(params.meta, USER_ID_META_KEY);
+      if (
+        context.pinnedUserId !== undefined &&
+        ((context.userId !== undefined &&
+          context.userId !== context.pinnedUserId) ||
+          (metaUserId !== undefined && metaUserId !== context.pinnedUserId))
+      ) {
+        return failedToolResult({
+          code: TOOL_ERROR_CODES.AUTH_INSUFFICIENT_SCOPE,
+          message: "This API key is pinned to a different end user.",
+          retryable: false,
+        });
+      }
+      const userId = context.pinnedUserId ?? context.userId ?? metaUserId;
       if (userId === undefined || userId.trim().length === 0) {
         return failedToolResult({
           code: TOOL_ERROR_CODES.INVALID_INPUT,

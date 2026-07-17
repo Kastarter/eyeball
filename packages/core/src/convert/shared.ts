@@ -1,6 +1,40 @@
 import type { ToolNameMap } from "../naming.js";
 import type { QualifiedToolName, ToolDefinition } from "../types/tool.js";
 
+export interface ToolConversionBundle<TTools> {
+  tools: TTools;
+  nameMap: ToolNameMap;
+  /** Complete, detached, deeply frozen definitions corresponding to emitted tools. */
+  definitions: readonly ToolDefinition[];
+}
+
+function deepFreeze<T>(value: T): T {
+  if (typeof value !== "object" || value === null || Object.isFrozen(value)) {
+    return value;
+  }
+  Object.freeze(value);
+  for (const child of Object.values(value)) deepFreeze(child);
+  return value;
+}
+
+export function immutableDefinitions(
+  tools: readonly ToolDefinition[],
+): readonly ToolDefinition[] {
+  return deepFreeze(structuredClone(tools));
+}
+
+export interface MutableObjectSchema extends Record<string, unknown> {
+  type: "object";
+  properties?: unknown | null;
+  required?: string[] | null;
+}
+
+export function mutableObjectSchema(
+  schema: ToolDefinition["inputSchema"],
+): MutableObjectSchema {
+  return structuredClone(schema) as MutableObjectSchema;
+}
+
 export function wireNameFor(
   nameMap: ToolNameMap,
   canonicalName: QualifiedToolName,
