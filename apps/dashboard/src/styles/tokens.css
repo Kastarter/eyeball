@@ -1,0 +1,159 @@
+/*
+ * eyeball admin semantic tokens. Components consume only these roles.
+ * Deploy-time font note: add checked-in Geist Sans and Geist Mono files through
+ * next/font/local when the font assets are available; this scaffold makes no
+ * build-time or runtime font download.
+ */
+:root {
+  color-scheme: dark;
+
+  --bg-canvas: #07070a;
+  --bg-subtle: #0b0b10;
+  --bg-panel: #101016;
+  --bg-raised: #17171f;
+  --bg-code: #0a0a0f;
+
+  --border-subtle: #24242e;
+  --border-strong: #393946;
+  --border-control: #5d5d6e;
+
+  --text-primary: #f4f4f7;
+  --text-secondary: #a7a7b2;
+  --text-tertiary: #71717d;
+  /* Derived UI role: AA at 12px while the authority's tertiary token stays exact. */
+  --text-muted-readable: #7b7b86;
+
+  --accent: #7c5cff;
+  --accent-hover: #8d73ff;
+  --accent-active: #6c4deb;
+  --accent-soft: rgb(124 92 255 / 14%);
+  --accent-glow: rgb(124 92 255 / 28%);
+  --accent-contrast: #07070a;
+
+  --success: #38d996;
+  --success-soft: rgb(56 217 150 / 12%);
+  --warning: #f2b84b;
+  --warning-soft: rgb(242 184 75 / 12%);
+  --error: #ff667d;
+  --error-soft: rgb(255 102 125 / 12%);
+
+  --radius-sm: 6px;
+  --radius-md: 10px;
+  --radius-lg: 14px;
+
+  --space-unit: 4px;
+  --space-1: 4px;
+  --space-2: 8px;
+  --space-3: 12px;
+  --space-4: 16px;
+  --space-5: 24px;
+  --space-6: 32px;
+  --space-7: 48px;
+  --space-8: 64px;
+
+  --font-ui:
+    "Geist Sans", "Geist", -apple-system, BlinkMacSystemFont, "Segoe UI",
+    sans-serif;
+  --font-code:
+    "Geist Mono", "SFMono-Regular", Consolas, "Liberation Mono", monospace;
+
+  --duration-fast: 150ms;
+  --duration-drawer: 220ms;
+  --ease-out: cubic-bezier(0.16, 1, 0.3, 1);
+  --focus-ring: 0 0 0 2px var(--bg-canvas), 0 0 0 4px var(--accent);
+  --live-glow: 0 0 0 4px var(--accent-soft), 0 0 18px var(--accent-glow);
+  --floating-shadow: 0 18px 50px rgb(0 0 0 / 28%);
+}
+
+:root[data-theme="light"] {
+  color-scheme: light;
+
+  --bg-canvas: #f7f7fa;
+  --bg-subtle: #f1f1f5;
+  --bg-panel: #ffffff;
+  --bg-raised: #ffffff;
+  --bg-code: #f4f4f8;
+
+  --border-subtle: #e4e4ea;
+  --border-strong: #c9c9d2;
+  --border-control: #898995;
+
+  --text-primary: #16161b;
+  --text-secondary: #5e5e69;
+  --text-tertiary: #7c7c87;
+  --text-muted-readable: #6e6e78;
+
+  --accent: #6847e8;
+  --accent-hover: #5a3bd0;
+  --accent-active: #4e32b9;
+  --accent-soft: rgb(104 71 232 / 10%);
+  --accent-glow: rgb(104 71 232 / 18%);
+  --accent-contrast: #ffffff;
+
+  --success: #087a55;
+  --success-soft: rgb(8 122 85 / 9%);
+  --warning: #996200;
+  --warning-soft: rgb(153 98 0 / 9%);
+  --error: #c8324a;
+  --error-soft: rgb(200 50 74 / 9%);
+
+  --focus-ring: 0 0 0 2px var(--bg-canvas), 0 0 0 4px var(--accent);
+  --floating-shadow: 0 18px 50px rgb(22 22 27 / 12%);
+}
+
+@media (prefers-color-scheme: light) {
+  :root:not([data-theme]) {
+    color-scheme: light;
+
+    --bg-canvas: #f7f7fa;
+    --bg-subtle: #f1f1f5;
+    --bg-panel: #ffffff;
+    --bg-raised: #ffffff;
+    --bg-code: #f4f4f8;
+    --border-subtle: #e4e4ea;
+    --border-strong: #c9c9d2;
+    --border-control: #898995;
+    --text-primary: #16161b;
+    --text-secondary: #5e5e69;
+    --text-tertiary: #7c7c87;
+    --text-muted-readable: #6e6e78;
+    --accent: #6847e8;
+    --accent-hover: #5a3bd0;
+    --accent-active: #4e32b9;
+    --accent-soft: rgb(104 71 232 / 10%);
+    --accent-glow: rgb(104 71 232 / 18%);
+    --accent-contrast: #ffffff;
+    --success: #087a55;
+    --success-soft: rgb(8 122 85 / 9%);
+    --warning: #996200;
+    --warning-soft: rgb(153 98 0 / 9%);
+    --error: #c8324a;
+    --error-soft: rgb(200 50 74 / 9%);
+    --focus-ring: 0 0 0 2px var(--bg-canvas), 0 0 0 4px var(--accent);
+    --floating-shadow: 0 18px 50px rgb(22 22 27 / 12%);
+  }
+}
+
+@theme inline {
+  --color-canvas: var(--bg-canvas);
+  --color-subtle: var(--bg-subtle);
+  --color-panel: var(--bg-panel);
+  --color-raised: var(--bg-raised);
+  --color-code: var(--bg-code);
+  --color-border: var(--border-subtle);
+  --color-border-strong: var(--border-strong);
+  --color-border-control: var(--border-control);
+  --color-ink: var(--text-primary);
+  --color-ink-secondary: var(--text-secondary);
+  --color-ink-tertiary: var(--text-tertiary);
+  --color-ink-muted: var(--text-muted-readable);
+  --color-iris: var(--accent);
+  --color-success: var(--success);
+  --color-warning: var(--warning);
+  --color-error: var(--error);
+  --font-sans: var(--font-ui);
+  --font-mono: var(--font-code);
+  --radius-control: var(--radius-sm);
+  --radius-panel: var(--radius-md);
+  --radius-feature: var(--radius-lg);
+}

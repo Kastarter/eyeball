@@ -1,0 +1,29 @@
+{
+  "name": "@eyeball/dashboard",
+  "version": "0.0.1",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "dev": "next dev",
+    "build": "next build --webpack",
+    "start": "next start",
+    "test": "vitest run",
+    "typecheck": "tsc --noEmit",
+    "lint": "biome check app src next.config.ts postcss.config.mjs vitest.config.ts"
+  },
+  "dependencies": {
+    "@eyeball/catalog": "workspace:*",
+    "@tailwindcss/postcss": "^4.3.2",
+    "next": "^16.2.10",
+    "react": "^19.2.7",
+    "react-dom": "^19.2.7",
+    "tailwindcss": "^4.3.2"
+  },
+  "devDependencies": {
+    "@biomejs/biome": "^2.1.2",
+    "@types/react": "^19.0.0",
+    "@types/react-dom": "^19.0.0",
+    "typescript": "^5.8.3",
+    "vitest": "^3.2.4"
+  }
+}
