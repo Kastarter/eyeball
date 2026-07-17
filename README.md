@@ -58,8 +58,9 @@ The main monorepo and `mocks/` are separate Git repositories checked out togethe
 | `apps/executor` | Authenticated execution API, records, queues, and development connections |
 | `apps/mcp-gateway` | Streamable HTTP MCP discovery and execution gateway |
 | `apps/dashboard` | Next.js admin panel and local voice-agent testing surfaces |
+| `apps/docs` | Self-hosted Next.js renderer for the authored public documentation |
 | `docs/` | Product contracts, RFCs, testing policy, and certification guidance |
-| `docs-site/` | Public Mintlify documentation source |
+| `docs-site/` | Authored public MDX content and navigation source |
 | `scripts/` | Documentation checks, auth CLI, and the integrated local stack |
 | `mocks/` | Nested mock-provider repository: Mockhouse plus capability packages |
 
@@ -112,6 +113,16 @@ node --import tsx example.ts
 
 The listener ports and development identity can be changed with `EYEBALL_MOCKHOUSE_PORT`, `EYEBALL_EXECUTOR_PORT`, `EYEBALL_MCP_GATEWAY_PORT`, `EYEBALL_DEV_API_KEY`, `EYEBALL_DEV_PROJECT_ID`, and `EYEBALL_DEV_USER_ID`.
 
+## Docs site
+
+The repository renders `docs-site/docs.json` and all authored MDX through its own static Next.js app; no hosted documentation platform is required. Start it on the reserved documentation port with:
+
+```sh
+pnpm --filter @eyeball/docs dev
+```
+
+The site is available at `http://localhost:3003`. Use `pnpm --filter @eyeball/docs build` for a production build with all documentation routes statically generated.
+
 ## Demos
 
 ```sh
@@ -132,7 +143,7 @@ ANTHROPIC_API_KEY=... pnpm demo:anthropic
 | 37 toolkits/provider manifests | Built in catalog `1.1` with canonical schemas and discovery |
 | 457-row contract matrix | Built: 218 smoke rows and 239 explicit `not_supported` rows |
 | Admin panel | Built as the local Next.js dashboard |
-| Documentation | Built in `docs/` and the 100-page `docs-site/` source |
+| Documentation | Built in `docs/`, the 100-page `docs-site/` source, and the self-hosted `apps/docs` renderer |
 | Local credential vault | Built with encrypted single-tenant storage and development fixtures |
 | Hosted OAuth vault | Cloud work pending |
 | Real-provider certification | Pending provider credentials and certification runs |
@@ -143,6 +154,6 @@ ANTHROPIC_API_KEY=... pnpm demo:anthropic
 
 - [Product specification](./SPEC.md)
 - [Engineering and product documentation](./docs/)
-- [Public documentation source](./docs-site/)
+- [Authored public documentation source](./docs-site/)
 - [Real-provider certification guide](./docs/CERTIFICATION.md)
 - [Mock-provider repository](./mocks/README.md)

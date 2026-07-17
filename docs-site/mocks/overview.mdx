@@ -1,0 +1,24 @@
+---
+title: "Testing with eyeball-mocks"
+description: "Run deterministic provider behavior with no SaaS accounts, network, or wall-clock sleeps."
+---
+
+`eyeball-mocks` supplies vendor-shaped HTTP apps for the catalog providers. The normal adapter, executor, schema validation, credential selection, and error normalization remain in the test path.
+
+## The promise
+
+- zero third-party SaaS accounts;
+- zero outbound provider network calls;
+- deterministic IDs, timestamps, pagination, and state;
+- vendor-specific success and error envelopes;
+- controllable time for expiry, limits, calls, and voice sessions;
+- the same canonical input and adapter code used live.
+
+Mocks prove your integration contract. They do not prove provider consent UI, DNS, carrier delivery, public webhook reachability, or live credentials.
+
+<CardGroup cols={2}>
+  <Card title="Quickstart" href="/mocks/quickstart">Source checkout and Mockhouse</Card>
+  <Card title="Fixtures" href="/mocks/fixtures-and-scenarios">Seed, reset, and control time</Card>
+  <Card title="Normalized failures" href="/mocks/normalized-failures">Portable auth failure tokens</Card>
+  <Card title="Voice sessions" href="/mocks/voice-sessions">Scripted L3 interaction</Card>
+</CardGroup>

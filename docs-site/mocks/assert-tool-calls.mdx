@@ -1,0 +1,41 @@
+---
+title: "Assert tool calls"
+description: "Prove canonical mapping, side effects, child execution identity, and idempotent replay."
+---
+
+Assert at both sides of the adapter:
+
+1. Call `POST /v1/execute` or the SDK with canonical input.
+2. Assert the execution's tool, tool version, catalog version, and terminal state.
+3. Read the provider mock's state or vendor-shaped response to prove mapping.
+4. Repeat the mutation with the same idempotency key and assert one side effect.
+5. Verify an omitted manifest capability returns `not_supported`.
+
+For a send-email mutation, assert recipient, subject, body, generated provider message ID, and the single persisted message. For voice tools, also assert each child execution keeps its canonical tool identity.
+
+Scripted voice callers declare exact expected calls:
+
+```json
+[
+  {
+    "expect_tool_call": "google-calendar.create_event",
+    "input": {
+      "calendarId": "primary",
+      "title": "Table for four — Sam",
+      "startTime": "2026-07-18T16:00:00.000Z",
+      "endTime": "2026-07-18T17:30:00.000Z",
+      "timeZone": "Asia/Riyadh"
+    }
+  },
+  {
+    "expect_tool_call": "gmail.send_email",
+    "input": {
+      "to": ["sam@example.com"],
+      "subject": "Your table is confirmed",
+      "body": "Tomorrow at 7 PM for four guests."
+    }
+  }
+]
+```
+
+An unexpected tool, input mismatch, wrong order, or allowlist violation fails the scenario instead of being ignored.

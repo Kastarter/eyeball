@@ -1,0 +1,41 @@
+---
+title: "Fixtures and scenarios"
+description: "Seed stable state, reset selected providers, and advance deterministic time without sleeps."
+---
+
+Provider fixtures are typed constants such as `gmailFixtures.default` and `googleCalendarFixtures.default`. IDs like `msg_default_000001`, timestamps, ordering, and pagination are deterministic.
+
+## Reset and seed
+
+```bash
+curl -X POST "http://127.0.0.1:4010/_mock/reset" \
+  -H "Content-Type: application/json" \
+  --data '{"providers":["gmail","slack"]}'
+
+curl -X POST "http://127.0.0.1:4010/_mock/seed" \
+  -H "Content-Type: application/json" \
+  --data '{"bundle":"default"}'
+```
+
+Omit reset `providers` to clear every mounted app. Seed accepts exactly one named `bundle` or inline `providers` map and applies atomically.
+
+## Advance time
+
+```bash
+curl -X POST "http://127.0.0.1:4010/_mock/clock/advance" \
+  -H "Content-Type: application/json" \
+  --data '{"milliseconds":30000}'
+```
+
+The response reports `now` and `transitions` only after all due consequences are visible.
+
+```js
+import { createMockClock } from "@eyeball-mocks/kit";
+
+const clock = createMockClock("2026-01-01T00:00:00.000Z");
+clock.scheduleIn(5_000, () => console.log("call connected"));
+clock.advance(5_000);
+console.log(clock.nowIso());
+```
+
+No L2 scenario should wait on wall-clock sleep. Advance the clock, then assert OAuth expiry, quota reset, call state, or scheduled provider work.

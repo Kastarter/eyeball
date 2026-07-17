@@ -1,0 +1,25 @@
+---
+title: "Mock voice sessions"
+description: "Drive deterministic multi-turn calls with Pipecat, STT, TTS, transport, and child tool assertions."
+---
+
+Voice mocks add L3 interaction on top of provider-shaped L1 routes and L2 time-based state.
+
+A scripted caller can define:
+
+- ordered utterances and delays;
+- interruption and barge-in;
+- DTMF, silence, hangup, and abandonment;
+- expected agent prompts;
+- allowlisted canonical tool calls and exact input;
+- normalized success or failure results.
+
+Deepgram maps fixture audio IDs to timed text. ElevenLabs maps text to stable audio IDs. Pipecat emits ordered lifecycle, turn, tool-call, tool-result, and transcript events. A text-in/text-out fast path keeps CI small.
+
+The harness uses `MockCredentialProvider`, the normal executor, real schema validation, and real allowlist enforcement. It does not add a test-only field to the production agent definition.
+
+Use the full [restaurant reservation tutorial](/capabilities/voice-agents) to create the agent, start a scripted call, poll events, and inspect the transcript artifact.
+
+<Tip>
+  Advance the controllable clock for ringing, connection, silence, maximum duration, wrap-up, failure, and abandonment. Never sleep in a voice contract test.
+</Tip>

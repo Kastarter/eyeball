@@ -1,0 +1,41 @@
+---
+title: "Mocks quickstart"
+description: "Build the separate mock workspace and compose provider apps under one loopback origin."
+---
+
+`eyeball-mocks` is a separate, private workspace in the current source distribution. Its packages are not claimed as published npm releases.
+
+```bash
+pnpm --dir mocks install
+pnpm --dir mocks build
+pnpm --dir mocks mockhouse
+```
+
+Mockhouse mounts provider-shaped apps under stable prefixes:
+
+```text
+http://127.0.0.1:<port>/gmail/...
+http://127.0.0.1:<port>/slack/...
+http://127.0.0.1:<port>/twilio/...
+```
+
+For focused tests, compose only what you need:
+
+```js
+import { startMockServer } from "@eyeball-mocks/kit";
+import { createGmailMock } from "@eyeball-mocks/email";
+import { createSlackMock } from "@eyeball-mocks/messaging";
+
+const server = await startMockServer({
+  providers: [createGmailMock(), createSlackMock()],
+  port: 0,
+});
+
+process.env.EYEBALL_GMAIL_BASE_URL = server.baseUrls.gmail;
+process.env.EYEBALL_SLACK_BASE_URL = server.baseUrls.slack;
+
+// Run the normal executor and adapter assertions here.
+await server.close();
+```
+
+Use each manifest's declared base-URL variable; there is no aggregate request-controlled provider origin. The `/_mock` control plane is loopback-only and never called by an adapter.

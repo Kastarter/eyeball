@@ -1,0 +1,32 @@
+---
+title: "Mocks in CI"
+description: "Structure deterministic contract tests and keep the live-provider swap small."
+---
+
+A launch-grade contract test should:
+
+1. Start only the provider apps it needs on port 0.
+2. Seed a named deterministic scenario.
+3. Configure manifest-declared adapter base URLs.
+4. Resolve `fixture:*` credentials through `MockCredentialProvider`.
+5. Call the normal executor with canonical input.
+6. Assert output, execution state, provider-side state, and sanitized errors.
+7. Advance the mock clock for asynchronous transitions.
+8. Reset or close the server in teardown.
+
+Run the separate workspace checks:
+
+```bash
+pnpm --dir mocks build
+pnpm --dir mocks typecheck
+pnpm --dir mocks lint
+pnpm --dir mocks test
+```
+
+## Real-auth swap invariant
+
+The live smoke test changes only provider base URLs and credential resolution. Canonical inputs, adapter code, executor configuration, schemas, assertions, and the core contract-test body stay the same.
+
+<Warning>
+  Keep live smoke tests outside ordinary CI. Mocks are deterministic; live quotas, consent, carrier networks, and provider availability are not.
+</Warning>

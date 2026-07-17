@@ -1,0 +1,27 @@
+---
+title: "Normalized failures"
+description: "Trigger vendor-specific errors and assert the closed eyeball taxonomy."
+---
+
+Reserved fixture access tokens force portable scenarios while each provider keeps its own error envelope:
+
+| Token | Vendor response | Expected normalized code |
+| --- | --- | --- |
+| `fixture:EXPIRED_TOKEN` | 401 | `auth_expired` |
+| `fixture:INSUFFICIENT_SCOPE_TOKEN` | 403 | `auth_insufficient_scope` |
+| `fixture:RATE_LIMITED_TOKEN` | 429 plus retry metadata | `rate_limited` |
+
+Configure the token through `MockCredentialProvider` and call the normal executor. The provider mock must not return a `NormalizedToolError` itself; the adapter proves the mapping.
+
+```json
+{
+  "code": "rate_limited",
+  "message": "The provider rate limit was reached.",
+  "retryable": true,
+  "retryAfter": 1
+}
+```
+
+Scenarios also cover missing resources, provider outages, malformed provider payloads, timeouts before side effect, unsupported operations, and refresh rejection. Assert that no fixture secret, authorization header, or raw unsafe provider body escapes into error details.
+
+Use the [error taxonomy](/concepts/errors) as the assertion checklist.
