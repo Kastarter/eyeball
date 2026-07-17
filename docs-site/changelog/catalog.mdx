@@ -1,0 +1,17 @@
+---
+title: "Catalog changelog"
+description: "Track capability contracts, provider manifests, generated references, and catalog versions."
+---
+
+## Catalog 1.1 — 2026-07-17
+
+- 37 provider manifests in `defaultCatalog`.
+- Native `voice-agents` toolkit with 11 tools and immutable agent/session contracts.
+- Eight public social-data platform toolkits backed by a shared ScrapeCreators adapter surface.
+- Generated toolkit reference includes auth, exact tool tables, schemas, provider extensions, modes, mocks, limitations, and versions.
+
+Catalog pages are regenerated with `pnpm docs:generate`. A deterministic checksum is written into each page, the generator merges navigation, and CI rejects drift.
+
+<Warning>
+  Capability membership does not imply provider parity. The manifest's implemented-tool table is authoritative.
+</Warning>

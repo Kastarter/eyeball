@@ -1,0 +1,55 @@
+---
+title: "Social data"
+description: "Read documented public social surfaces through ScrapeCreators-backed platform toolkits."
+---
+
+The social-data adapters normalize documented public ScrapeCreators surfaces. They do not imply that every platform supports every action.
+
+## Canonical tools
+
+| Tool | Surface |
+| --- | --- |
+| `get_profile` | One creator or account profile |
+| `get_posts` / `get_post` | A creator's posts or one known post |
+| `get_comments` | Comments on one known post |
+| `search_posts` / `search_creators` | Provider-supported discovery |
+| `get_transcript` | Transcript for supported media |
+| `get_trending_content` | Current provider trend surface |
+| `get_live_content` | Current live content |
+| `get_audience_metrics` | Public audience aggregates |
+| `get_channel` / `get_channel_videos` | YouTube channel-specific reads |
+
+## Honest surface matrix
+
+| Platform toolkit | Profile/entity | Posts/item | Comments | Search | Transcript | Trending/live/audience |
+| --- | --- | --- | --- | --- | --- | --- |
+| Instagram | Profile | Both | Yes | Posts + creators | Yes | Trending |
+| TikTok | Profile | Both | Yes | Posts + creators | Yes | Trending + live + audience |
+| YouTube | Channel | Both + channel videos | Yes | Posts + creators | Yes | Trending |
+| X | Profile | Both | No | No | Yes | No |
+| LinkedIn | Profile | Both | No | Posts | Yes | No |
+| Reddit | Profile | Both | Yes | Posts | Yes | No |
+| Twitch | Profile | Both | No | No | No | Live |
+| Snapchat | Profile only | No | No | No | No | No |
+
+## Worked example
+
+```ts
+import { Eyeball } from "@eyeball/sdk";
+
+const eyeball = new Eyeball({
+  apiKey: process.env.EYEBALL_API_KEY!,
+  baseUrl: process.env.EYEBALL_EXECUTOR_URL!,
+});
+
+const posts = await eyeball.tools.run(
+  "instagram-data.search_posts",
+  { query: "Riyadh restaurants", pageSize: 10 },
+  { userId: "demo_user" },
+);
+console.log(posts);
+```
+
+Search syntax, public visibility, regional availability, and freshness remain provider-dependent. Use `x_provider` only where the generated manifest declares it.
+
+See [Instagram data](/toolkits/generated/instagram-data) and the other generated platform pages for exact schemas.

@@ -1,0 +1,50 @@
+---
+title: "SDK errors"
+description: "Catch EyeballError, inspect normalized fields, and use the public error constants and types."
+---
+
+HTTP failures and failed `tools.run` calls throw `EyeballError`.
+
+```ts
+import { Eyeball, EyeballError } from "@eyeball/sdk";
+
+const eyeball = new Eyeball({
+  apiKey: process.env.EYEBALL_API_KEY!,
+  baseUrl: process.env.EYEBALL_EXECUTOR_URL!,
+});
+
+try {
+  await eyeball.tools.run(
+    "gmail.get_email",
+    { messageId: "missing_message" },
+    { userId: "demo_user" },
+  );
+} catch (error) {
+  if (error instanceof EyeballError) {
+    console.log(
+      error.code,
+      error.retryable,
+      error.retryAfter,
+      error.providerDetail,
+    );
+  }
+}
+```
+
+The package exports `TOOL_ERROR_CODES` and `NormalizedToolError` plus execution, tool, ID, and client option types. Only `rate_limited` and `provider_unavailable` retry by default.
+
+```ts
+import {
+  TOOL_ERROR_CODES,
+  type NormalizedToolError,
+} from "@eyeball/sdk";
+
+const error: NormalizedToolError = {
+  code: TOOL_ERROR_CODES.RATE_LIMITED,
+  message: "Try again later.",
+  retryable: true,
+};
+console.log(error);
+```
+
+See the [complete taxonomy](/concepts/errors) for remediation.

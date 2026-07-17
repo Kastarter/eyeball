@@ -1,0 +1,73 @@
+---
+title: "tools.execute and tools.run"
+description: "Execute canonical inputs, retain envelopes, wait for async work, and handle model tool calls."
+---
+
+## `tools.execute`
+
+```ts
+import { Eyeball } from "@eyeball/sdk";
+
+const eyeball = new Eyeball({
+  apiKey: process.env.EYEBALL_API_KEY!,
+  baseUrl: process.env.EYEBALL_EXECUTOR_URL!,
+});
+const execution = await eyeball.tools.execute("gmail.create_draft", {
+  userId: "demo_user",
+  input: {
+    to: ["guest@example.com"],
+    subject: "Draft confirmation",
+    body: "Please review before sending.",
+  },
+  idempotencyKey: "draft:reservation:42",
+});
+console.log(execution.executionId, execution.status);
+```
+
+`input` is required. Optional fields are `userId`, `mode`, `idempotencyKey`, and `connectionId`. Mode defaults from the canonical tool annotation.
+
+## `tools.run`
+
+`tools.run` waits when necessary, returns only the output, and throws `EyeballError` when the terminal execution failed.
+
+```ts
+import { Eyeball } from "@eyeball/sdk";
+
+const eyeball = new Eyeball({
+  apiKey: process.env.EYEBALL_API_KEY!,
+  baseUrl: process.env.EYEBALL_EXECUTOR_URL!,
+});
+const output = await eyeball.tools.run(
+  "gmail.search_emails",
+  { query: "reservation", pageSize: 5 },
+  { userId: "demo_user", pollMs: 250, timeoutMs: 30_000 },
+);
+console.log(output);
+```
+
+## `executeToolCalls`
+
+The helper is overloaded for Anthropic `tool_use` blocks and OpenAI function calls. It returns model-native result blocks/messages, derives mutation idempotency from the framework call ID, and converts execution failures into safe tool results.
+
+```ts
+import { Eyeball, executeToolCalls, type OpenAIToolCall } from "@eyeball/sdk";
+
+const eyeball = new Eyeball({
+  apiKey: process.env.EYEBALL_API_KEY!,
+  baseUrl: process.env.EYEBALL_EXECUTOR_URL!,
+});
+const calls: OpenAIToolCall[] = [{
+  id: "call_123",
+  type: "function",
+  function: {
+    name: "gmail.search_emails",
+    arguments: JSON.stringify({ query: "reservation" }),
+  },
+}];
+const results = await executeToolCalls(eyeball, calls, {
+  userId: "demo_user",
+});
+console.log(results);
+```
+
+Framework defaults are `anthropic:<tool-use-id>` and `openai:<tool-call-id>`.

@@ -1,0 +1,65 @@
+---
+title: "Execute a tool"
+description: "POST /v1/execute with the real request fields and synchronous or asynchronous envelopes."
+---
+
+`POST /v1/execute` validates the canonical schema, resolves a connection, invokes the adapter, and records the execution.
+
+## Request
+
+```bash
+curl "$EYEBALL_EXECUTOR_URL/v1/execute" \
+  -H "Authorization: Bearer $EYEBALL_API_KEY" \
+  -H "Content-Type: application/json" \
+  -H "Idempotency-Key: reservation:res_42:email" \
+  --data '{
+    "tool": "gmail.send_email",
+    "userId": "demo_user",
+    "input": {
+      "to": ["guest@example.com"],
+      "subject": "Reservation confirmed",
+      "body": "Friday at 7 PM for four guests."
+    },
+    "mode": "sync"
+  }'
+```
+
+| Field | Required | Meaning |
+| --- | --- | --- |
+| `tool` | Yes | Canonical dotted or reversible restricted name |
+| `userId` | Yes | External user whose connection is selected |
+| `input` | Yes | Canonical JSON object |
+| `mode` | No | `sync` or `async`; defaults from tool annotations |
+| `connectionId` | No | Explicit scoped connection |
+
+The idempotency key is an HTTP header, not a JSON field.
+
+## Succeeded response
+
+```json
+{
+  "executionId": "exe_01JZ6WA0Q73ZQ5B51SRYB6M4Z8",
+  "tool": "gmail.send_email",
+  "toolVersion": "1.0.0",
+  "catalogVersion": "1.1",
+  "status": "succeeded",
+  "output": {
+    "messageId": "msg_123"
+  },
+  "latencyMs": 84
+}
+```
+
+## Pending response
+
+```json
+{
+  "executionId": "exe_01JZ6WA0Q73ZQ5B51SRYB6M4Z8",
+  "tool": "voice-agents.start_agent_call",
+  "toolVersion": "1.0.0",
+  "catalogVersion": "1.1",
+  "status": "pending"
+}
+```
+
+Poll pending work at [`GET /v1/executions/:id`](/api/executions/get-execution).

@@ -1,0 +1,38 @@
+---
+title: "Toolkits and canonical tools"
+description: "Learn how capability contracts keep agent inputs portable while preserving provider-specific escape hatches."
+---
+
+A **capability contract** defines the portable meaning, input schema, output schema, safety annotations, and error behavior of an action. A **toolkit** implements those contracts for one provider.
+
+For example, Gmail and Microsoft Outlook both implement email capabilities, but the model receives provider-qualified canonical names such as `gmail.send_email` and `microsoft-outlook.send_email`. Their portable fields keep the same meaning.
+
+## Contract before adapter
+
+| Layer | Owns |
+| --- | --- |
+| Capability | Portable semantics and schema |
+| Toolkit manifest | Auth, scopes, provider mapping |
+| Adapter | HTTP calls and normalization |
+| Catalog | Materialized tools and version lookup |
+
+## Provider extensions
+
+Portable fields live at the top level. A toolkit may declare an explicit extension under its own namespace:
+
+```json
+{
+  "to": [{ "email": "guest@example.com" }],
+  "subject": "Reservation confirmed",
+  "body": { "text": "Your table is booked." },
+  "x_provider": {
+    "gmail": {
+      "threadId": "thread_123"
+    }
+  }
+}
+```
+
+Undeclared extension fields fail validation. This makes provider-specific behavior visible instead of silently weakening portability.
+
+The generated [Toolkit Reference](/toolkits/index) lists every schema and declared extension.

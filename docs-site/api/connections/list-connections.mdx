@@ -1,0 +1,27 @@
+---
+title: "List development connections"
+description: "GET /v1/connections for the authenticated project's process-local fixtures."
+---
+
+```bash
+curl "$EYEBALL_EXECUTOR_URL/v1/connections" \
+  -H "Authorization: Bearer $EYEBALL_API_KEY"
+```
+
+Response:
+
+```json
+{
+  "connections": [
+    {
+      "connectionId": "conn_01JZ6WCPX7X67K7NYYKAPX62T0",
+      "createdAt": "2026-07-17T12:00:00.000Z",
+      "userId": "demo_user",
+      "toolkit": "gmail",
+      "status": "connected"
+    }
+  ]
+}
+```
+
+Rows are sorted newest first and scoped to the authenticated project. Status can be `connected`, `expired`, or `revoked`, though the in-memory route creates connected fixtures and delete transitions them to revoked.

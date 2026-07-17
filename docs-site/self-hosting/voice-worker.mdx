@@ -1,0 +1,29 @@
+---
+title: "Voice worker"
+description: "Run the portable voice-agent control plane with a deployment-provided durable worker."
+---
+
+The `voice-agents` toolkit owns immutable agent revisions, sessions, events, allowlists, and transcript artifacts. A worker owns the live turn loop:
+
+```text
+Twilio or LiveKit transport
+  → Deepgram STT
+  → model turn
+  → allowlisted child tool execution
+  → ElevenLabs TTS
+  → ordered session events and transcript
+```
+
+The repository includes Pipecat adapter/driver code and a deterministic mock pipeline used by the restaurant demo. It does not ship a managed durable voice-worker deployment or a hosted model registry.
+
+A production worker must:
+
+- pin one immutable agent revision per session;
+- preserve project/user/session identity on child executions;
+- enforce the agent tool allowlist before dispatch;
+- resume from durable ordered history without duplicating tool calls;
+- reuse pending execution identity after recovery;
+- enforce recording, consent, retention, DTMF redaction, and duration policy;
+- write gap-free sequence numbers and transcript artifacts.
+
+Use `voice-agents.get_agent_session` for incremental event polling and `get_session_transcript` for the normalized artifact. The [flagship tutorial](/capabilities/voice-agents) exercises this contract against mocks.

@@ -1,0 +1,194 @@
+---
+title: "Build a restaurant reservation phone agent"
+description: "Create a policy-complete, tool-allowlisted agent and prove a scripted mock call through its final transcript."
+---
+
+This catalog 1.1 tutorial creates an immutable agent revision, starts an asynchronous restaurant call, and proves that only the allowlisted calendar and email tools run. It assumes Mockhouse and an executor configured with `DevVoiceSessionRuntime` are listening; use the [mocks quickstart](/mocks/quickstart) and [voice worker guide](/self-hosting/voice-worker) for that source-workspace setup.
+
+## Canonical tools
+
+| Lifecycle | Tools |
+| --- | --- |
+| Agent revisions | `create_voice_agent`, `get_voice_agent`, `list_voice_agents`, `update_voice_agent`, `delete_voice_agent` |
+| Calls and bindings | `start_agent_call`, `attach_agent_to_number` |
+| Sessions | `get_agent_session`, `list_agent_sessions`, `get_session_transcript`, `send_session_message` |
+
+## Provider matrix
+
+| Toolkit | Role in this tutorial | Honest boundary |
+| --- | --- | --- |
+| Voice Agents | Immutable definitions, policy, sessions, allowlists, transcript | Native eyeball control plane |
+| Pipecat | Scripted caller and ordered runtime events | Deterministic mock/runtime adapter, not a hosted SaaS API |
+| Twilio | PSTN transport | Mocked here; live mode needs a connected account |
+| Deepgram / ElevenLabs | STT / TTS references | Mocked here; live worker integration is deployment-owned |
+| Google Calendar / Gmail | Allowlisted child actions | Execute through their normal canonical adapters |
+
+## Run the scripted call
+
+```ts
+import { Eyeball } from "@eyeball/sdk";
+
+const eyeball = new Eyeball({
+  apiKey: process.env.EYEBALL_API_KEY!,
+  baseUrl: process.env.EYEBALL_EXECUTOR_URL!,
+});
+const executorUrl = process.env.EYEBALL_EXECUTOR_URL!.replace(/\/$/u, "");
+const userId = "diner_restaurant_demo";
+const object = (value: unknown): Record<string, unknown> => {
+  if (typeof value !== "object" || value === null || Array.isArray(value)) {
+    throw new Error("Expected an object");
+  }
+  return value as Record<string, unknown>;
+};
+
+const created = object(
+  await eyeball.tools.run(
+    "voice-agents.create_voice_agent",
+    {
+      agent: {
+        name: "Table Host",
+        systemPrompt:
+          "Confirm date, time, party size, name, and email before booking.",
+        llm: { model: "model:fixture:restaurant-concierge" },
+        voice: {
+          tts: { provider: "elevenlabs", voiceId: "voice_fixture_warm_host" },
+          stt: { provider: "deepgram", model: "nova-3", language: "en" },
+        },
+        transport: "pstn:twilio",
+        tools: ["google-calendar.create_event", "gmail.send_email"],
+        guardrails: {
+          maxDurationSeconds: 600,
+          handoffToHuman: { enabled: false },
+        },
+        webhooks: {
+          endpointIds: [],
+          transcript: true,
+          events: ["session.lifecycle", "turn.transcript", "tool_call", "tool_result"],
+        },
+        recordingPolicy: {
+          mode: "disabled",
+          consent: "external",
+          retentionDays: 0,
+          redactDtmf: true,
+        },
+      },
+    },
+    { userId, idempotencyKey: "restaurant:create-agent" },
+  ),
+);
+const agent = object(created.agent);
+
+const pending = await eyeball.tools.execute("voice-agents.start_agent_call", {
+  userId,
+  mode: "async",
+  idempotencyKey: "restaurant:start-call:1",
+  input: {
+    agentId: String(agent.id),
+    revision: Number(agent.revision),
+    to: "+966500000111",
+    from: "+966500000222",
+    transportConnectionId: "conn_twilio_restaurant_demo",
+    script: [
+      { caller: "Tomorrow at 7, a table for four under Sam." },
+      {
+        expect_tool_call: "google-calendar.create_event",
+        input: {
+          calendarId: "primary",
+          title: "Table for four — Sam",
+          startTime: "2026-07-18T16:00:00.000Z",
+          endTime: "2026-07-18T17:30:00.000Z",
+          timeZone: "Asia/Riyadh",
+        },
+      },
+      { caller: "Email sam@example.com with the confirmation." },
+      {
+        expect_tool_call: "gmail.send_email",
+        input: {
+          to: ["sam@example.com"],
+          subject: "Your table is confirmed",
+          body: "Tomorrow at 7 PM for four guests.",
+        },
+      },
+    ],
+  },
+});
+const started = await eyeball.executions.wait(pending.executionId);
+if (started.status !== "succeeded") throw new Error("Call failed to start");
+const sessionId = String(object(object(started.output).session).id);
+
+let afterSequence = 0;
+let state = "created";
+while (!["completed", "failed", "abandoned"].includes(state)) {
+  const advanced = await fetch(
+    `${executorUrl}/v1/dev/voice-sessions/${sessionId}/advance`,
+    {
+      method: "POST",
+      headers: {
+        authorization: `Bearer ${process.env.EYEBALL_API_KEY!}`,
+        "content-type": "application/json",
+      },
+      body: JSON.stringify({ userId, milliseconds: 1_000 }),
+    },
+  );
+  if (!advanced.ok) throw new Error(`Voice worker returned ${advanced.status}`);
+  const page = object(
+    await eyeball.tools.run(
+      "voice-agents.get_agent_session",
+      { sessionId, afterSequence, eventLimit: 100 },
+      { userId },
+    ),
+  );
+  const session = object(page.session);
+  state = String(session.state);
+  afterSequence = Number(page.nextSequence);
+  console.log(page.events);
+}
+
+const transcript = object(
+  await eyeball.tools.run(
+    "voice-agents.get_session_transcript",
+    { sessionId },
+    { userId },
+  ),
+);
+const artifact = object(transcript.artifact);
+const turns = Array.isArray(artifact.turns) ? artifact.turns.map(object) : [];
+const toolTurns = turns.filter((turn) => turn.speaker === "tool");
+if (
+  toolTurns.length !== 2 ||
+  toolTurns.some((turn) => typeof turn.executionId !== "string")
+) {
+  throw new Error("Expected two child execution IDs in the transcript");
+}
+console.log(toolTurns.map((turn) => turn.executionId));
+```
+
+The `script` is runtime-only Pipecat mock input; it never enters `VoiceAgentDefinition`. The development worker advances deterministic time, emits gap-free ordered session events, and dispatches child executions through the same executor as any other tool. This path uses no Twilio, Deepgram, ElevenLabs, Gmail, or Google Calendar account.
+
+## Expected transcript excerpt
+
+<Frame>
+  **Caller:** Tomorrow at 7, a table for four under Sam.
+
+  **Table Host:** I’ll reserve the table and send your confirmation.
+
+  <Badge color="purple">google-calendar.create_event</Badge> `succeeded · exe_…`
+
+  **Caller:** Email sam@example.com with the confirmation.
+
+  <Badge color="purple">gmail.send_email</Badge> `succeeded · exe_…`
+
+  **Table Host:** Your table is confirmed and the email is on its way.
+</Frame>
+
+The transcript artifact surfaces tool calls and child execution IDs; it does not flatten them into untraceable prose.
+
+## Move from mock to real
+
+Keep the agent draft, policy, allowlist, and canonical tool inputs. Replace the mock executor/worker endpoints, connect Twilio, Deepgram, ElevenLabs, Google Calendar, and Gmail for the same `userId`, remove `script`, and stop calling the development-only `/v1/dev/voice-sessions/:id/advance` route. The mock path requires zero third-party accounts.
+
+<Warning>
+  Production model-registry resolution and durable voice-worker deployment remain deployment contracts, not a hosted service implemented by this repository. Verify those pieces before treating `start_agent_call` as production-ready.
+</Warning>
+
+See [Voice Agents toolkit](/toolkits/generated/voice-agents) for all 11 tools and schemas.

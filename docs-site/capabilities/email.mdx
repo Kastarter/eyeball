@@ -1,0 +1,59 @@
+---
+title: "Email"
+description: "Search, read, organize, draft, reply to, and send email through portable contracts."
+---
+
+Email workflows use eight canonical actions. Provider parity is explicit, never assumed.
+
+## Canonical tools
+
+| Action | Use it for |
+| --- | --- |
+| `list_emails` | Browse a mailbox, folder, or label |
+| `search_emails` | Use a provider-supported query expression |
+| `get_email` | Fetch a known message and normalized body |
+| `list_threads` | Browse conversation-grouped mail |
+| `create_draft` | Stage an unsent message |
+| `send_email` | Start a new external conversation |
+| `reply_to_email` | Preserve reply/thread context |
+| `add_email_label` | Add a label or move a message |
+
+## Provider matrix
+
+| Toolkit | Read/search | Draft/reply/send | Organize |
+| --- | --- | --- | --- |
+| Gmail | Full | Full | Yes |
+| Microsoft Outlook | Full | Full | Yes |
+| Mailgun | List only | Send only | No |
+| SMTP | No | Send only | No |
+| Resend | No | Send only | No |
+| SendGrid | No | Send only | No |
+
+## Worked example
+
+```ts
+import { Eyeball } from "@eyeball/sdk";
+
+const eyeball = new Eyeball({
+  apiKey: process.env.EYEBALL_API_KEY!,
+  baseUrl: process.env.EYEBALL_EXECUTOR_URL!,
+});
+
+const sent = await eyeball.tools.run(
+  "gmail.send_email",
+  {
+    to: ["guest@example.com"],
+    subject: "Your table is confirmed",
+    body: "Friday at 7 PM for four guests.",
+  },
+  {
+    userId: "demo_user",
+    idempotencyKey: "reservation:res_42:email",
+  },
+);
+console.log(sent);
+```
+
+This mutation runs deterministically against Gmail mocks with zero Gmail accounts. Verify recipients and preserve the idempotency key before moving live.
+
+See the generated [Gmail reference](/toolkits/generated/gmail).

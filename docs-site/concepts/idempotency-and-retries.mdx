@@ -1,0 +1,38 @@
+---
+title: "Idempotency and retries"
+description: "Retry reads freely and mutations safely with stable caller-owned keys."
+---
+
+Reads are naturally repeatable. Mutations need a stable `Idempotency-Key` so a network retry replays the original execution rather than creating a second side effect.
+
+```ts
+import { Eyeball } from "@eyeball/sdk";
+
+const eyeball = new Eyeball({
+  apiKey: process.env.EYEBALL_API_KEY!,
+  baseUrl: process.env.EYEBALL_EXECUTOR_URL!,
+});
+
+const result = await eyeball.tools.execute("gmail.send_email", {
+  userId: "demo_user",
+  input: {
+    to: ["guest@example.com"],
+    subject: "Reservation confirmed",
+    body: "Your table is booked for Friday at 7 PM.",
+  },
+  idempotencyKey: "reservation:res_42:confirmation-email",
+});
+console.log(result.executionId);
+```
+
+If you omit a mutation key, the SDK creates a fresh UUID for that invocation. That prevents an accidental key collision but cannot correlate a later retry. Persist your own semantic key before the first attempt.
+
+Framework helpers derive keys from model call IDs:
+
+| Surface | Default key |
+| --- | --- |
+| Anthropic | `anthropic:<tool-use-id>` |
+| OpenAI | `openai:<tool-call-id>` |
+| MCP | `mcp:<session-id>:<json-rpc-id>` |
+
+Retry only errors marked `retryable: true`, honor `retryAfter` seconds, and reuse the same key.

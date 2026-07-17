@@ -1,0 +1,32 @@
+---
+title: "Run the executor"
+description: "Build the Hono executor, configure its project-key ring, and understand its credential default."
+---
+
+Build and start:
+
+```bash
+pnpm --filter @eyeball/executor build
+EYEBALL_API_KEYS="eyeball_local_key:proj_local" \
+  PORT=3000 \
+  pnpm --filter @eyeball/executor start
+```
+
+Check health:
+
+```bash
+curl http://127.0.0.1:3000/health
+```
+
+`EYEBALL_API_KEYS` is a comma-separated `key:projectId` keyring. Duplicate keys and malformed entries fail startup.
+
+The stock `src/server.ts` creates `createExecutorApp()` with:
+
+- the default catalog and adapters;
+- an in-memory execution store and async queue;
+- an empty `MockCredentialProvider`;
+- no development connection routes.
+
+To add credentials or durability, create your own server entry point and pass a configured `ExecutionEngine` and optional `devVault` to `createExecutorApp`. Do not expose the development vault in a production multi-tenant service.
+
+Provider base-URL overrides use the manifest-declared environment variable for that adapter. Keep those variables trusted; requests cannot supply an arbitrary origin.

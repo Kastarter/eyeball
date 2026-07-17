@@ -1,0 +1,61 @@
+---
+title: "Executions"
+description: "Follow synchronous and asynchronous tool work through immutable execution records."
+---
+
+Every call creates or replays an execution with one of four states:
+
+```text
+pending → running → succeeded
+                  ↘ failed
+pending ──────────→ failed
+```
+
+Terminal records are immutable.
+
+## Synchronous tools
+
+`tools.execute` returns the execution envelope. `tools.run` waits when necessary and returns only the output:
+
+```ts
+import { Eyeball } from "@eyeball/sdk";
+
+const eyeball = new Eyeball({
+  apiKey: process.env.EYEBALL_API_KEY!,
+  baseUrl: process.env.EYEBALL_EXECUTOR_URL!,
+});
+
+const output = await eyeball.tools.run(
+  "gmail.get_email",
+  { messageId: "msg_123" },
+  { userId: "demo_user" },
+);
+console.log(output);
+```
+
+## Asynchronous tools
+
+Tools annotated `async: true` return a pending envelope. Poll explicitly when you need progress:
+
+```ts
+import { Eyeball } from "@eyeball/sdk";
+
+const eyeball = new Eyeball({
+  apiKey: process.env.EYEBALL_API_KEY!,
+  baseUrl: process.env.EYEBALL_EXECUTOR_URL!,
+});
+
+const started = await eyeball.tools.execute("twilio.start_call", {
+  userId: "demo_user",
+  input: { to: "+12025550123", from: "+12025550124" },
+  mode: "async",
+  idempotencyKey: "call:reservation:42",
+});
+const terminal = await eyeball.executions.wait(started.executionId, {
+  pollMs: 500,
+  timeoutMs: 60_000,
+});
+console.log(terminal.status);
+```
+
+Use [`GET /v1/executions/:id`](/api/executions/get-execution) to poll outside the SDK.

@@ -1,0 +1,41 @@
+---
+title: "Connections client"
+description: "Create a development fixture connection and understand the private cloud boundary."
+---
+
+The released TypeScript SDK exposes one connection method:
+
+```ts
+import { Eyeball } from "@eyeball/sdk";
+
+const eyeball = new Eyeball({
+  apiKey: process.env.EYEBALL_API_KEY!,
+  baseUrl: process.env.EYEBALL_EXECUTOR_URL!,
+  userId: "demo_user",
+});
+const connection = await eyeball.connections.create({
+  toolkit: "gmail",
+});
+console.log(connection.connectionId, connection.status, connection.redirectUrl);
+```
+
+Input:
+
+| Field | Required | Meaning |
+| --- | --- | --- |
+| `toolkit` | Yes | Provider toolkit slug |
+| `userId` | Unless set on the client | External user binding |
+
+Development response:
+
+```json
+{
+  "connectionId": "conn_...",
+  "redirectUrl": null,
+  "status": "connected"
+}
+```
+
+The SDK does not expose `list` or `delete` methods. The optional dev-vault REST API does; use its [list](/api/connections/list-connections) and [delete](/api/connections/delete-connection) endpoints for local fixture administration.
+
+If `POST /v1/connections` is absent, the SDK converts the route's `not_found` into `not_supported` and identifies eyeball Cloud as the hosted OAuth boundary.

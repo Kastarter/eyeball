@@ -1,0 +1,24 @@
+---
+title: "API idempotency"
+description: "Correlate mutation retries with the Idempotency-Key header."
+---
+
+Send caller-owned mutation identity in the HTTP header:
+
+```http
+Idempotency-Key: reservation:res_42:confirmation-email
+```
+
+The request JSON does not accept `idempotencyKey`. Repeating the same project-scoped key replays the associated execution; changing it creates a distinct mutation attempt.
+
+Good keys identify the business action, not a transport attempt:
+
+```text
+order:<order-id>:refund:<refund-revision>
+reservation:<reservation-id>:confirmation-email
+model-turn:<turn-id>:tool:<tool-call-id>
+```
+
+Keep the key stable across timeouts and retryable failures. Before retrying a timeout, fetch the original execution because the provider may have completed the side effect.
+
+MCP derives `mcp:<session-id>:<json-rpc-id>` unless `_meta["dev.eyeball/idempotencyKey"]` overrides it.

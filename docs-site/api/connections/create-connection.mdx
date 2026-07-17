@@ -1,0 +1,27 @@
+---
+title: "Create a development connection"
+description: "POST /v1/connections against the optional process-local fixture vault."
+---
+
+<Warning>
+  This is a development-only OSS route. It is not the hosted OAuth connect API and stores no production secret.
+</Warning>
+
+```bash
+curl "$EYEBALL_EXECUTOR_URL/v1/connections" \
+  -H "Authorization: Bearer $EYEBALL_API_KEY" \
+  -H "Content-Type: application/json" \
+  --data '{"userId":"demo_user","toolkit":"gmail"}'
+```
+
+The body accepts exactly `userId` and `toolkit`. Unknown fields fail validation.
+
+```json
+{
+  "connectionId": "conn_01JZ6WCPX7X67K7NYYKAPX62T0",
+  "redirectUrl": null,
+  "status": "connected"
+}
+```
+
+The route returns `201`. The toolkit must have a fixture credential configured when the in-memory vault is created. Without the route, use eyeball Cloud for hosted OAuth.

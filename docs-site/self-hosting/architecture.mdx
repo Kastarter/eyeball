@@ -1,0 +1,28 @@
+---
+title: "Self-hosted architecture"
+description: "Place trust, model protocol, execution, credentials, adapters, and provider APIs on clear boundaries."
+---
+
+```text
+Agent / MCP client
+        │
+        ▼
+MCP gateway ──────► Executor API ──────► Adapter ──────► Provider
+                         │                   ▲
+                         ▼                   │
+                Execution store/queue   CredentialProvider
+
+Dashboard ─────────────► Executor API
+Mocks replace only the provider side of the adapter boundary.
+```
+
+| Boundary | Trust |
+| --- | --- |
+| Gateway | Authenticates project, resolves end-user identity, maps MCP calls |
+| Executor | Validates schemas, enforces catalog/allowlists, records executions |
+| Credential provider | Selects a credential by project, user, toolkit, connection |
+| Adapter | Translates canonical JSON to provider HTTP and normalizes results |
+
+The default execution store and queue are in-memory. For durable production work, implement the exported store/queue interfaces and preserve terminal immutability and idempotency semantics.
+
+Expose the gateway and dashboard through your own TLS, authentication, rate limiting, and observability layer.

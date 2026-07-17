@@ -1,0 +1,41 @@
+---
+title: "Local self-hosting quickstart"
+description: "Build the workspace and run the executor, MCP gateway, dashboard, and optional provider mocks."
+---
+
+Build all main-workspace packages:
+
+```bash
+pnpm install
+pnpm build
+```
+
+Start the executor with one local project key:
+
+```bash
+EYEBALL_API_KEYS="eyeball_local_key:proj_local" \
+  PORT=3000 \
+  pnpm --filter @eyeball/executor start
+```
+
+The stock server has no usable provider credential. For deterministic provider work, construct an executor with the [development vault](/self-hosting/credential-provider) and point adapters at [Mockhouse](/mocks/quickstart). For a controlled service identity, use `EnvCredentialProvider`.
+
+In separate processes:
+
+```bash
+EYEBALL_API_KEY="eyeball_local_key" \
+EYEBALL_EXECUTOR_URL="http://127.0.0.1:3000" \
+EYEBALL_USER_ID="demo_user" \
+PORT=3001 \
+pnpm --filter @eyeball/mcp-gateway start
+
+EYEBALL_API_KEY="eyeball_local_key" \
+EYEBALL_EXECUTOR_URL="http://127.0.0.1:3000" \
+pnpm --filter @eyeball/dashboard start
+```
+
+Health-check the executor at `GET /health`, then use the [SDK quickstart](/getting-started/quickstart) or connect an MCP client to `http://127.0.0.1:3001/mcp`.
+
+<Warning>
+  This setup is for local evaluation. The defaults use process-local execution state, queue, and MCP sessions.
+</Warning>

@@ -1,0 +1,36 @@
+---
+title: "tools.get"
+description: "Filter the packaged catalog and export model-native tool definitions without a network request."
+---
+
+`tools.get` filters `defaultCatalog` by `toolkits` or one `capability` and returns definitions in `canonical`, `anthropic`, `openai`, `ai-sdk`, or `mcp` format.
+
+```ts
+import { Eyeball } from "@eyeball/sdk";
+
+const eyeball = new Eyeball({
+  apiKey: process.env.EYEBALL_API_KEY!,
+  baseUrl: process.env.EYEBALL_EXECUTOR_URL!,
+});
+const bundle = await eyeball.tools.get({
+  toolkits: ["gmail", "google-calendar"],
+  format: "anthropic",
+});
+console.log(bundle.tools, bundle.raw, bundle.nameMap);
+```
+
+| Option | Type | Meaning |
+| --- | --- | --- |
+| `toolkits` | `readonly string[]` | Provider slugs to include |
+| `capability` | `CapabilitySlug` | One capability to include |
+| `format` | `EyeballToolFormat` | Output adapter; defaults to `canonical` |
+| `userId` | `string` | Binds AI SDK execute callbacks |
+| `includeAsync` | `boolean` | MCP-only opt-in after Tasks support is negotiated |
+
+Return fields:
+
+- `tools`: definitions in the requested format;
+- `raw`: canonical `ToolDefinition[]`;
+- `nameMap`: reversible canonical/wire-name mapping.
+
+The method is async for API stability but does not call a hosted catalog.

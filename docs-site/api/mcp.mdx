@@ -1,0 +1,76 @@
+---
+title: "MCP endpoint"
+description: "Use the Streamable HTTP gateway, built-in catalog search, session idempotency, and execution metadata."
+---
+
+The gateway serves MCP protocol `2025-11-25` at `POST /mcp`.
+
+## Initialize
+
+```bash
+curl "$EYEBALL_MCP_URL/mcp" \
+  -H "Authorization: Bearer $EYEBALL_API_KEY" \
+  -H "Content-Type: application/json" \
+  -H "Accept: application/json, text/event-stream" \
+  --data '{
+    "jsonrpc": "2.0",
+    "id": 1,
+    "method": "initialize",
+    "params": {
+      "protocolVersion": "2025-11-25",
+      "capabilities": {},
+      "clientInfo": {"name": "docs-example", "version": "1.0.0"}
+    }
+  }'
+```
+
+Retain the `Mcp-Session-Id` response header and send it on later requests.
+
+## Search the catalog
+
+`eyeball.search_tools` is always present and accepts only `query` plus optional `limit`:
+
+```json
+{
+  "name": "eyeball.search_tools",
+  "arguments": {
+    "query": "add a note to a CRM contact",
+    "limit": 5
+  }
+}
+```
+
+It returns compact cards with `name`, `description`, `capability`, `toolkit`, and an input-schema summary.
+
+## Call metadata
+
+User and connection overrides live under `params._meta`:
+
+```json
+{
+  "dev.eyeball/userId": "demo_user",
+  "dev.eyeball/connectionId": "conn_01JZ6WCPX7X67K7NYYKAPX62T0",
+  "dev.eyeball/idempotencyKey": "agent-turn:42:tool:1"
+}
+```
+
+Without an override, mutations use `mcp:<session-id>:<json-rpc-id>`.
+
+Terminal tool results include:
+
+```json
+{
+  "_meta": {
+    "dev.eyeball/execution": {
+      "executionId": "exe_01JZ6WA0Q73ZQ5B51SRYB6M4Z8",
+      "tool": "gmail.search_emails",
+      "toolVersion": "1.0.0",
+      "catalogVersion": "1.1",
+      "status": "succeeded",
+      "latencyMs": 31
+    }
+  }
+}
+```
+
+`tools/list` descriptors include `_meta["dev.eyeball/tool"]`. Async-by-nature tools are omitted because the gateway does not advertise MCP Tasks; it never returns a non-standard pending result.

@@ -1,0 +1,58 @@
+---
+title: "Quickstart"
+description: "Install the TypeScript SDK, query a mock mailbox, and inspect the normalized result."
+---
+
+This quickstart proves the entire eyeball path without creating any third-party account.
+
+## Install
+
+```bash
+pnpm add @eyeball/sdk
+```
+
+Point `EYEBALL_EXECUTOR_URL` at the mock executor supplied by your environment and use its project key:
+
+```bash
+export EYEBALL_API_KEY="eyeball_test_project"
+export EYEBALL_EXECUTOR_URL="http://127.0.0.1:8787"
+```
+
+## Run one canonical tool
+
+```ts
+import { Eyeball } from "@eyeball/sdk";
+
+const eyeball = new Eyeball({
+  apiKey: process.env.EYEBALL_API_KEY!,
+  baseUrl: process.env.EYEBALL_EXECUTOR_URL!,
+});
+
+const result = await eyeball.tools.run(
+  "gmail.search_emails",
+  { query: "reservation", pageSize: 5 },
+  { userId: "demo_user" },
+);
+
+console.log(result);
+```
+
+Expected shape:
+
+```json
+{
+  "emails": [
+    {
+      "messageId": "msg_...",
+      "subject": "Reservation confirmed"
+    }
+  ],
+  "nextPageToken": "page_..."
+}
+```
+
+<Note>
+  Mock mode is an endpoint choice, not a `mock: true` SDK option. This flow runs with zero third-party SaaS accounts.
+</Note>
+
+Next, choose your model loop: [Anthropic](/getting-started/anthropic), [OpenAI](/getting-started/openai), [AI SDK](/getting-started/ai-sdk), or [MCP](/getting-started/mcp).

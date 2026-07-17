@@ -1,0 +1,21 @@
+---
+title: "Revoke a development connection"
+description: "DELETE /v1/connections/:id and stop its fixture credential from resolving."
+---
+
+```bash
+curl -X DELETE \
+  "$EYEBALL_EXECUTOR_URL/v1/connections/conn_01JZ6WCPX7X67K7NYYKAPX62T0" \
+  -H "Authorization: Bearer $EYEBALL_API_KEY"
+```
+
+Response:
+
+```json
+{
+  "connectionId": "conn_01JZ6WCPX7X67K7NYYKAPX62T0",
+  "status": "revoked"
+}
+```
+
+The ID must be a valid `conn_*` identifier. Missing and cross-project connections return `not_found`. Revocation is process-local and cannot be undone through this API.

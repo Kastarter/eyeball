@@ -1,0 +1,20 @@
+---
+title: "Toolkit Reference"
+description: "Browse the 37 provider manifests generated directly from eyeball's default catalog."
+---
+
+This reference is generated from `defaultCatalog`. Every provider page includes auth fields and scopes, the exact implemented tool set, full input/output schemas, execution behavior, REST and SDK examples, mock notes, and limitations.
+
+## What a page guarantees
+
+- Omitted tools are not supported by that toolkit.
+- Canonical fields come from the capability contract.
+- `x_provider` fields appear only when the manifest declares them.
+- Versions and checksums match the catalog used at generation time.
+- Mock notes describe fixture behavior, not live-provider promises.
+
+The 37 pages are grouped by the first capability implemented by each manifest. Run `pnpm docs:generate` after changing a capability contract or manifest.
+
+<Card title="Choose a toolkit" icon="table-list" href="/toolkits/choose-a-toolkit">
+  Compare by capability, auth model, and exact surface instead of provider name alone.
+</Card>

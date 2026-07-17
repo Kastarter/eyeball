@@ -1,0 +1,58 @@
+---
+title: "MCP quickstart"
+description: "Connect Claude Code or Cursor to eyeball's Streamable HTTP gateway and search the catalog."
+---
+
+eyeball exposes Streamable HTTP MCP at `/mcp`. Configure a project key and a stable external user ID.
+
+## Claude Code
+
+```json
+{
+  "mcpServers": {
+    "eyeball": {
+      "type": "http",
+      "url": "http://127.0.0.1:3001/mcp",
+      "headers": {
+        "Authorization": "Bearer eyeball_test_project",
+        "X-Eyeball-User-Id": "demo_user"
+      }
+    }
+  }
+}
+```
+
+## Cursor
+
+```json
+{
+  "mcpServers": {
+    "eyeball": {
+      "url": "http://127.0.0.1:3001/mcp",
+      "headers": {
+        "Authorization": "Bearer eyeball_test_project",
+        "X-Eyeball-User-Id": "demo_user"
+      }
+    }
+  }
+}
+```
+
+## Search before loading
+
+Ask the client to call `eyeball.search_tools` when the full catalog is too large:
+
+```json
+{
+  "query": "find a recent reservation email and inspect it",
+  "limit": 5
+}
+```
+
+Then call the returned canonical tool name. Mutations use `mcp:<session-id>:<json-rpc-id>` as their default idempotency key, and terminal responses include `_meta["dev.eyeball/execution"]`.
+
+<Note>
+  When the gateway and executor target mocks, the complete MCP tool path runs with zero third-party SaaS accounts.
+</Note>
+
+See the [MCP endpoint contract](/api/mcp) for session headers and metadata.

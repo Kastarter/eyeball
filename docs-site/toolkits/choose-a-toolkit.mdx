@@ -1,0 +1,32 @@
+---
+title: "Choose a toolkit"
+description: "Select a provider by capability coverage, account model, and operational constraints."
+---
+
+Start with the capability, then compare only the providers that implement the required canonical actions.
+
+| Need | Start with |
+| --- | --- |
+| Full mailbox reads and writes | Gmail or Microsoft Outlook |
+| Transactional send only | SMTP, Resend, SendGrid, or Mailgun |
+| Full workspace messaging | Slack or Discord |
+| Calendar events | Google Calendar |
+| CRM | HubSpot |
+| ERP/accounting | Odoo or QuickBooks |
+| Payments | Stripe |
+| Commerce | Shopify |
+| Support | Zendesk |
+| Public social data | A `*-data` platform toolkit |
+| Portable voice orchestration | Voice Agents plus transport/STT/TTS toolkits |
+
+Then check:
+
+1. Does the generated tool table contain every action in your workflow?
+2. Can your deployment provide the listed auth type and scopes?
+3. Do you need a declared `x_provider` extension?
+4. Is the tool read-only, mutating, destructive, or async?
+5. Does the mock cover the success and failure cases you will ship?
+
+<Warning>
+  Capability membership is not parity. For example, Snapchat data currently exposes only `get_profile`, while TikTok data exposes ten public-data actions.
+</Warning>

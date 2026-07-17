@@ -1,0 +1,49 @@
+---
+title: "Anthropic quickstart"
+description: "Export Anthropic tool definitions, run a Messages API tool loop, and execute calls through eyeball."
+---
+
+Export `format: "anthropic"`, pass the definitions to Messages, and hand every `tool_use` block to `executeToolCalls`.
+
+```ts
+import Anthropic from "@anthropic-ai/sdk";
+import { Eyeball, executeToolCalls } from "@eyeball/sdk";
+
+const anthropic = new Anthropic();
+const eyeball = new Eyeball({
+  apiKey: process.env.EYEBALL_API_KEY!,
+  baseUrl: process.env.EYEBALL_EXECUTOR_URL!,
+});
+const bundle = await eyeball.tools.get({
+  toolkits: ["gmail", "google-calendar"],
+  format: "anthropic",
+});
+const messages: Anthropic.MessageParam[] = [
+  { role: "user", content: "Find Friday openings and draft a confirmation." },
+];
+for (;;) {
+  const reply = await anthropic.messages.create({
+    model: process.env.ANTHROPIC_MODEL!,
+    max_tokens: 1024,
+    messages,
+    tools: bundle.tools,
+  });
+  messages.push({ role: "assistant", content: reply.content });
+  const calls = reply.content.filter(
+    (block): block is Anthropic.ToolUseBlock => block.type === "tool_use",
+  );
+  if (calls.length === 0) break;
+  messages.push({
+    role: "user",
+    content: await executeToolCalls(eyeball, calls, { userId: "demo_user" }),
+  });
+}
+```
+
+`executeToolCalls` derives idempotency from each Anthropic tool-use ID, preserves model-native `tool_result` blocks, and converts executor failures into safe tool results so the model can recover.
+
+<Note>
+  With `EYEBALL_EXECUTOR_URL` pointed at the mock executor, the tool path runs with zero third-party SaaS accounts. An Anthropic API credential is only needed for the model loop itself.
+</Note>
+
+For a direct SDK-only proof with no model account, run the [base quickstart](/getting-started/quickstart).

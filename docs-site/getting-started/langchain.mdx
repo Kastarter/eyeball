@@ -1,0 +1,21 @@
+---
+title: "LangChain quickstart"
+description: "Preview status and the safe integration path while the native LangChain contract remains open."
+---
+
+<Badge color="yellow">Draft / preview</Badge>
+
+eyeball does not currently expose a `format: "langchain"` bundle. The native LangChain contract—especially propagation of a stable tool-call ID for mutation idempotency—is still open.
+
+Today, keep LangChain responsible for model orchestration and invoke eyeball from your application boundary:
+
+```text
+LangChain tool call
+  → validate canonical JSON input
+  → eyeball.tools.execute(name, { input, userId, idempotencyKey })
+  → return execution output to the LangChain message loop
+```
+
+Do not copy examples that use `format: "langchain"`; that value is not implemented by the SDK. For an executable model-native loop, use [Anthropic](/getting-started/anthropic) or [OpenAI](/getting-started/openai).
+
+The underlying eyeball tool execution can still target mocks and runs with zero third-party SaaS accounts. Only the chosen model runtime may require its own credential.

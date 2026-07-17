@@ -1,0 +1,25 @@
+---
+title: "API Reference"
+description: "Call the executor and MCP gateway over their implemented HTTP surfaces."
+---
+
+The open-source runtime has two public HTTP boundaries:
+
+| Service | Base path | Purpose |
+| --- | --- | --- |
+| Executor | `/v1` | Tool execution, execution history, optional dev connections |
+| MCP gateway | `/mcp` | Streamable HTTP discovery and tool calls |
+
+All executor examples use:
+
+```http
+Authorization: Bearer eyeball_project_key
+Content-Type: application/json
+```
+
+<CardGroup cols={2}>
+  <Card title="Execute a tool" href="/api/executions/execute">POST /v1/execute</Card>
+  <Card title="Get an execution" href="/api/executions/get-execution">GET /v1/executions/:id</Card>
+  <Card title="Development connections" href="/api/connections/create-connection">Opt-in fixture vault</Card>
+  <Card title="MCP endpoint" href="/api/mcp">Sessions, metadata, and search</Card>
+</CardGroup>

@@ -1,0 +1,39 @@
+---
+title: "Connect your first account"
+description: "Understand the cloud connect handoff and the intentionally narrow development-vault API."
+---
+
+In eyeball Cloud, your application starts a hosted OAuth connect flow and later executes tools using the same `external_user_id`. The hosted vault owns refresh tokens and provider-specific consent state.
+
+The open-source executor does not implement hosted OAuth. Its optional development vault accepts prebuilt, non-secret fixtures for local testing:
+
+```ts
+import { Eyeball } from "@eyeball/sdk";
+
+const eyeball = new Eyeball({
+  apiKey: process.env.EYEBALL_API_KEY!,
+  baseUrl: process.env.EYEBALL_EXECUTOR_URL!,
+});
+
+const connection = await eyeball.connections.create({
+  toolkit: "gmail",
+  userId: "demo_user",
+});
+console.log(connection.connectionId);
+```
+
+Expected development response:
+
+```json
+{
+  "connectionId": "conn_...",
+  "redirectUrl": null,
+  "status": "connected"
+}
+```
+
+<Warning>
+  The development vault is process-local and its `data` object is not a secret store. When the route is not installed, the SDK returns `not_supported` and points you to the private-cloud connect flow.
+</Warning>
+
+Read [Connected accounts](/concepts/connected-accounts) for lifecycle and isolation rules.

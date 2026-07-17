@@ -1,0 +1,28 @@
+---
+title: "tools.search"
+description: "Rank the local catalog by intent with toolkit and capability filters."
+---
+
+`tools.search` uses local BM25F ranking.
+
+```ts
+import { Eyeball } from "@eyeball/sdk";
+
+const eyeball = new Eyeball({
+  apiKey: process.env.EYEBALL_API_KEY!,
+  baseUrl: process.env.EYEBALL_EXECUTOR_URL!,
+});
+const found = await eyeball.tools.search({
+  query: "find a customer by email and add a CRM note",
+  capability: "crm",
+  toolkits: ["hubspot"],
+  limit: 5,
+});
+console.log(found.tools.map((tool) => tool.name));
+```
+
+`query` is required. Optional fields are `limit`, `toolkits`, `capability`, and `userId`. The user field is accepted for parity with a future hosted project-scoped surface; local ranking itself is not user-specific.
+
+The result is `{ tools: readonly ToolDefinition[] }`. To send those tools to a model, call `tools.get` with the corresponding toolkit and framework format.
+
+MCP exposes a compact equivalent as `eyeball.search_tools`, whose wire input accepts only `query` and optional `limit`.

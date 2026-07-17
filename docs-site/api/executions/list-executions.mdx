@@ -1,0 +1,46 @@
+---
+title: "List executions"
+description: "GET /v1/executions with project-scoped filters and cursor pagination."
+---
+
+```bash
+curl "$EYEBALL_EXECUTOR_URL/v1/executions?status=failed&tool=gmail.send_email&userId=demo_user&limit=25" \
+  -H "Authorization: Bearer $EYEBALL_API_KEY"
+```
+
+Query fields:
+
+| Field | Values |
+| --- | --- |
+| `status` | `pending`, `running`, `succeeded`, `failed` |
+| `tool` | Canonical dotted or restricted wire name |
+| `userId` | Exact external user ID |
+| `cursor` | Opaque cursor from the prior page |
+| `limit` | Integer 1–100 |
+
+Response:
+
+```json
+{
+  "executions": [
+    {
+      "executionId": "exe_01JZ6WA0Q73ZQ5B51SRYB6M4Z8",
+      "tool": "gmail.send_email",
+      "toolVersion": "1.0.0",
+      "catalogVersion": "1.1",
+      "status": "failed",
+      "userId": "demo_user",
+      "createdAt": "2026-07-17T12:00:00.000Z",
+      "error": {
+        "code": "provider_unavailable",
+        "message": "The provider is temporarily unavailable.",
+        "retryable": true
+      },
+      "latencyMs": 120
+    }
+  ],
+  "nextCursor": "eyJvZmZzZXQiOjI1fQ"
+}
+```
+
+The list is authenticated-project scoped. Invalid filters return `invalid_input`.

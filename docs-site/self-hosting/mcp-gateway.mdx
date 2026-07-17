@@ -1,0 +1,27 @@
+---
+title: "Run the MCP gateway"
+description: "Point the Streamable HTTP gateway at an executor and choose catalog or search discovery."
+---
+
+```bash
+pnpm --filter @eyeball/mcp-gateway build
+EYEBALL_API_KEY="eyeball_local_key" \
+EYEBALL_EXECUTOR_URL="http://127.0.0.1:3000" \
+EYEBALL_USER_ID="demo_user" \
+EYEBALL_MCP_DISCOVERY="search" \
+HOST="127.0.0.1" \
+PORT=3001 \
+pnpm --filter @eyeball/mcp-gateway start
+```
+
+| Variable | Meaning |
+| --- | --- |
+| `EYEBALL_API_KEY` | Key forwarded to the executor |
+| `EYEBALL_EXECUTOR_URL` | Executor origin; defaults to `http://127.0.0.1:3000` |
+| `EYEBALL_USER_ID` | Optional default external user |
+| `EYEBALL_MCP_DISCOVERY` | `catalog` or `search` |
+| `HOST` / `PORT` | Listener; defaults to `127.0.0.1:3001` |
+
+`search` discovery keeps `eyeball.search_tools` small and defers provider descriptors. `catalog` lists the full eligible catalog. Async-by-nature tools remain omitted until MCP Tasks is implemented.
+
+Put the gateway behind TLS for remote clients. If you accept per-request user headers, authenticate the caller before trusting that identity.

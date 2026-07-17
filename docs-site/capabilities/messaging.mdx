@@ -1,0 +1,56 @@
+---
+title: "Messaging"
+description: "Discover conversations and members, then send, reply, react, or create channels."
+---
+
+Messaging contracts preserve conversation and reply relationships across workspace providers.
+
+## Canonical tools
+
+| Action | Purpose |
+| --- | --- |
+| `list_channels` | Discover visible conversations |
+| `list_members` | Discover visible participants |
+| `list_messages` | Page recent messages |
+| `get_message` | Retrieve one known message |
+| `send_message` | Send a top-level message |
+| `reply_to_message` | Preserve a thread or reply |
+| `add_reaction` | Add an emoji reaction |
+| `create_channel` | Create shared workspace state |
+
+## Provider matrix
+
+| Toolkit | Discovery/read | Send | Reply | React/create |
+| --- | --- | --- | --- | --- |
+| Slack | Full | Yes | Yes | Both |
+| Discord | Full | Yes | Yes | Both |
+| Telegram | Messages only | Yes | Yes | No |
+| WhatsApp Business | Get one | Yes | No | No |
+
+## Worked example
+
+```ts
+import { Eyeball } from "@eyeball/sdk";
+
+const eyeball = new Eyeball({
+  apiKey: process.env.EYEBALL_API_KEY!,
+  baseUrl: process.env.EYEBALL_EXECUTOR_URL!,
+});
+
+const message = await eyeball.tools.run(
+  "slack.send_message",
+  {
+    conversationId: "C_RESTAURANT_TEAM",
+    text: "Reservation res_42 is confirmed for Friday at 7 PM.",
+  },
+  {
+    userId: "demo_user",
+    idempotencyKey: "reservation:res_42:slack",
+  },
+);
+console.log(message);
+```
+
+Use mocks to test the visible side effect and thread behavior before connecting a workspace.
+
+See the generated [Slack reference](/toolkits/generated/slack).

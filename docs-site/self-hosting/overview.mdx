@@ -1,0 +1,27 @@
+---
+title: "Self-hosting"
+description: "Run the open-source executor, MCP gateway, dashboard, and deterministic mocks."
+---
+
+The repository contains runnable open-source services, not a drop-in clone of eyeball Cloud.
+
+## What you can run
+
+| Component | Open source | Default persistence |
+| --- | --- | --- |
+| Executor and provider adapters | Yes | In memory |
+| MCP Streamable HTTP gateway | Yes | Process-local sessions |
+| Dashboard | Yes | Reads executor APIs |
+| Provider mocks and Mockhouse | Separate source workspace | In memory |
+| Environment credential provider | Yes | Process environment |
+| Development fixture vault | Yes, opt in | Process-local |
+
+## What Cloud adds
+
+Hosted OAuth redirects and callbacks, encrypted refresh-token storage, reconnect/consent repair, managed connect UI, and hosted operations are not implemented by these OSS services.
+
+<Warning>
+  The default executor server uses an empty mock credential provider. A real self-hosted deployment must construct an engine with `EnvCredentialProvider`, a development vault, or its own `CredentialProvider`.
+</Warning>
+
+Start with the [architecture](/self-hosting/architecture), then configure each process.

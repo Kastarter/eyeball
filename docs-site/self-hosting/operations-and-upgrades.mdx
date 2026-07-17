@@ -1,0 +1,28 @@
+---
+title: "Operations and upgrades"
+description: "Replace in-memory defaults, protect public edges, and deploy compatible packages together."
+---
+
+Before production:
+
+- implement durable `ExecutionStore` and queue boundaries;
+- persist idempotency correlation and immutable terminal records;
+- run the executor, gateway, and dashboard behind TLS and authentication;
+- rate-limit bearer keys and MCP sessions;
+- keep provider credentials out of logs, traces, errors, and client bundles;
+- provide metrics for queue age, execution latency, retry codes, and provider saturation;
+- back up execution/voice history according to retention policy;
+- decide how webhook delivery is signed, retried, and observed.
+
+The dashboard uses a server-side proxy; keep `EYEBALL_API_KEY` server-only. Mockhouse and `/_mock` must stay on loopback or an isolated test network.
+
+## Upgrade order
+
+1. Update compatible core, catalog, toolkits, executor, gateway, SDK, and dashboard revisions.
+2. Regenerate toolkit docs and review schema/version diffs.
+3. Replay mock contract tests, including mutation idempotency and worker recovery.
+4. Deploy executor support for additive contracts.
+5. Deploy gateway/dashboard and then SDK clients.
+6. Monitor normalized error shifts and queue state.
+
+Tool and catalog versions in each execution provide the audit trail; do not discard them during migration.

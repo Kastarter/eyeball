@@ -1,0 +1,39 @@
+---
+title: "Connected accounts"
+description: "Map external users to provider accounts and understand the development-vault and cloud-vault boundary."
+---
+
+`external_user_id`—`userId` in the SDK—is your stable application identity. The connection resolver combines it with project and toolkit to select a provider account.
+
+```text
+project + external user + toolkit + optional connectionId
+  → authorized provider credential
+```
+
+## Lifecycle
+
+The hosted connect flow is conceptually:
+
+1. Your server requests a connection for a toolkit and external user.
+2. The user completes provider consent at a hosted redirect.
+3. The hosted vault marks the connection connected and refreshes credentials.
+4. Revocation, expired consent, or missing scopes surface as normalized auth errors and require reconnection.
+
+The released SDK's `connections.create` response currently models only a connected development fixture: `{ connectionId, redirectUrl: null, status: "connected" }`. Hosted redirect and lifecycle types belong to eyeball Cloud and are not claimed by the open-source API.
+
+## Development vault
+
+The optional OSS development vault is:
+
+- process-local and reset on restart;
+- intended for non-secret mock fixture data;
+- available only when explicitly mounted by the executor;
+- scoped by project and user like normal connections.
+
+## Cloud vault
+
+eyeball Cloud owns hosted OAuth callbacks, encrypted refresh-token storage, consent repair, and connect UI. Those services are outside the open-source repository.
+
+<Warning>
+  `EnvCredentialProvider` is suitable for service credentials in controlled deployments, not multi-tenant end-user OAuth.
+</Warning>

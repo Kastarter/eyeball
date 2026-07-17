@@ -1,0 +1,45 @@
+---
+title: "Tool discovery and search"
+description: "Select tools by toolkit or capability, or rank a large catalog with local search."
+---
+
+Load a small, known surface with `tools.get`:
+
+```ts
+import { Eyeball } from "@eyeball/sdk";
+
+const eyeball = new Eyeball({
+  apiKey: process.env.EYEBALL_API_KEY!,
+  baseUrl: process.env.EYEBALL_EXECUTOR_URL!,
+});
+
+const bundle = await eyeball.tools.get({
+  capability: "email",
+  format: "anthropic",
+});
+console.log(bundle.nameMap);
+```
+
+When an agent has a broad catalog, rank it first:
+
+```ts
+import { Eyeball } from "@eyeball/sdk";
+
+const eyeball = new Eyeball({
+  apiKey: process.env.EYEBALL_API_KEY!,
+  baseUrl: process.env.EYEBALL_EXECUTOR_URL!,
+});
+
+const result = await eyeball.tools.search({
+  query: "find a customer by email and add a CRM note",
+  capability: "crm",
+  limit: 5,
+});
+console.log(result.tools.map((tool) => tool.name));
+```
+
+Discovery and search run against the SDK's local `defaultCatalog`; they do not make a hosted catalog request. MCP exposes the same pattern as `eyeball.search_tools`.
+
+<Tip>
+  Give the model only the tools needed for the current turn. Smaller surfaces reduce prompt cost and accidental tool selection.
+</Tip>

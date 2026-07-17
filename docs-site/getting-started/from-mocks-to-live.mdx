@@ -1,0 +1,34 @@
+---
+title: "Move from mocks to live"
+description: "Keep canonical code unchanged while replacing deterministic fixtures with connected provider accounts."
+---
+
+Your tool names and inputs should not change when you move live.
+
+| Concern | Mock environment | Live environment |
+| --- | --- | --- |
+| `baseUrl` | Mock-backed executor | Hosted or self-hosted executor |
+| Project key | Test project key | Environment-scoped project key |
+| Account | Deterministic fixture selected by `userId` | Provider connection owned by the same external user |
+| Time | Frozen and controllable | Wall-clock time |
+| Failures | Trigger tokens | Real normalized provider failures |
+
+```ts
+import { Eyeball } from "@eyeball/sdk";
+
+const eyeball = new Eyeball({
+  apiKey: process.env.EYEBALL_API_KEY!,
+  baseUrl: process.env.EYEBALL_EXECUTOR_URL!,
+});
+
+const output = await eyeball.tools.run(
+  "gmail.search_emails",
+  { query: "reservation", pageSize: 10 },
+  { userId: "user_42" },
+);
+console.log(output);
+```
+
+Only configuration and connected-account state differ. Before enabling mutations, replay the same scenario against mocks, preserve idempotency keys across retries, and verify the provider scopes listed in the generated toolkit page.
+
+Next: [connect an account](/getting-started/connect-your-first-account).

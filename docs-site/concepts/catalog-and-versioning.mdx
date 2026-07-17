@@ -1,0 +1,22 @@
+---
+title: "Catalog and versioning"
+description: "Understand catalog snapshots, tool versions, aliases, and generated-reference drift."
+---
+
+The default catalog is an immutable runtime snapshot built from capability contracts and provider manifests.
+
+Each execution records:
+
+- canonical tool name;
+- tool version;
+- catalog version;
+- resolved provider and connection context;
+- terminal status and latency.
+
+Tool versions describe the individual input/output contract. The catalog version identifies the snapshot that selected it. Restricted wire aliases are reversible through the `nameMap` returned by `tools.get`.
+
+Generated toolkit pages are not a second source of truth. `pnpm docs:generate` reads `defaultCatalog`, emits all 37 pages, writes a checksum into every header, and merges its navigation fragment into `docs.json`. CI regenerates and rejects drift.
+
+<Tip>
+  Pin deployed package versions together. A stored execution remains interpretable because it records both tool and catalog versions.
+</Tip>

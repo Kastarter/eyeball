@@ -1,0 +1,26 @@
+---
+title: "Projects and keys"
+description: "Understand project isolation, bearer authentication, and the separate end-user boundary."
+---
+
+A project is the trusted isolation boundary for catalog policy, executions, connections, and idempotency. Every executor request authenticates one project key:
+
+```http
+Authorization: Bearer eyeball_project_key
+```
+
+The key selects the project. It does **not** identify the human whose provider account should be used. Bind that separately with `userId` in the SDK or `userId` in the REST body.
+
+| Identity | Supplied by | Purpose |
+| --- | --- | --- |
+| Project | Bearer key | Trust, policy, execution isolation |
+| External user | Your application | Connection and data isolation inside the project |
+| Provider account | Connection resolver | Concrete Gmail, Slack, Stripe, or other account |
+
+Use opaque, stable external user IDs. Never put provider tokens in tool input. A connection for `user_42` cannot be selected by `user_84`, even if both users belong to the same project.
+
+<Warning>
+  Browser clients should not hold project keys. Call eyeball from a trusted server or an authenticated MCP gateway.
+</Warning>
+
+Next: [Connected accounts](/concepts/connected-accounts).

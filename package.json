@@ -2,6 +2,7 @@
   "name": "eyeball",
   "version": "0.0.1",
   "private": true,
+  "type": "module",
   "packageManager": "pnpm@11.9.0",
   "engines": {
     "node": ">=24"
@@ -12,6 +13,10 @@
   ],
   "scripts": {
     "build": "turbo run build",
+    "docs:generate": "node --import tsx scripts/generate-docs.ts",
+    "docs:check": "node --import tsx scripts/check-docs.ts",
+    "docs:snippets": "node --import tsx scripts/check-docs-snippets.ts",
+    "docs:typecheck": "tsc -p tsconfig.docs.json",
     "test": "turbo run test",
     "test:contract": "pnpm --filter @eyeball/executor test:contract",
     "typecheck": "turbo run typecheck",

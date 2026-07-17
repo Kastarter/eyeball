@@ -1,0 +1,241 @@
+{
+  "$schema": "https://mintlify.com/docs.json",
+  "theme": "mint",
+  "name": "eyeball",
+  "description": "Typed, authenticated tools for production AI agents",
+  "colors": {
+    "primary": "#7C5CFF",
+    "light": "#7C5CFF",
+    "dark": "#7C5CFF"
+  },
+  "appearance": {
+    "default": "dark"
+  },
+  "navigation": [
+    {
+      "group": "Getting Started",
+      "pages": [
+        "index",
+        "getting-started/quickstart",
+        {
+          "group": "Framework quickstarts",
+          "pages": [
+            "getting-started/anthropic",
+            "getting-started/openai",
+            "getting-started/ai-sdk",
+            "getting-started/langchain",
+            "getting-started/mcp"
+          ]
+        },
+        "getting-started/from-mocks-to-live",
+        "getting-started/connect-your-first-account"
+      ]
+    },
+    {
+      "group": "Concepts",
+      "pages": [
+        "concepts/projects-and-keys",
+        "concepts/toolkits-and-canonical-tools",
+        "concepts/tool-discovery-and-search",
+        "concepts/connected-accounts",
+        "concepts/executions",
+        "concepts/idempotency-and-retries",
+        "concepts/errors",
+        "concepts/catalog-and-versioning"
+      ]
+    },
+    {
+      "group": "Capability Guides",
+      "pages": [
+        "capabilities/email",
+        "capabilities/messaging",
+        "capabilities/social-data",
+        "capabilities/business",
+        "capabilities/voice-agents"
+      ]
+    },
+    {
+      "group": "SDK Reference",
+      "pages": [
+        "sdk/typescript/client",
+        "sdk/typescript/tools-get",
+        "sdk/typescript/tools-search",
+        "sdk/typescript/tools-execute",
+        "sdk/typescript/connections",
+        "sdk/typescript/executions",
+        "sdk/typescript/errors"
+      ]
+    },
+    {
+      "group": "Toolkit Reference",
+      "pages": [
+        "toolkits/index",
+        "toolkits/choose-a-toolkit",
+        {
+          "group": "Email",
+          "pages": [
+            "toolkits/generated/gmail",
+            "toolkits/generated/mailgun",
+            "toolkits/generated/microsoft-outlook",
+            "toolkits/generated/resend",
+            "toolkits/generated/sendgrid",
+            "toolkits/generated/smtp"
+          ]
+        },
+        {
+          "group": "Calendar and scheduling",
+          "pages": [
+            "toolkits/generated/google-calendar"
+          ]
+        },
+        {
+          "group": "Messaging and chat",
+          "pages": [
+            "toolkits/generated/discord",
+            "toolkits/generated/slack",
+            "toolkits/generated/telegram",
+            "toolkits/generated/whatsapp-business"
+          ]
+        },
+        {
+          "group": "Voice and telephony",
+          "pages": [
+            "toolkits/generated/deepgram",
+            "toolkits/generated/elevenlabs",
+            "toolkits/generated/livekit",
+            "toolkits/generated/pipecat",
+            "toolkits/generated/twilio",
+            "toolkits/generated/voice-agents"
+          ]
+        },
+        {
+          "group": "CRM",
+          "pages": [
+            "toolkits/generated/hubspot"
+          ]
+        },
+        {
+          "group": "ERP and accounting",
+          "pages": [
+            "toolkits/generated/odoo",
+            "toolkits/generated/quickbooks"
+          ]
+        },
+        {
+          "group": "Payments and billing",
+          "pages": [
+            "toolkits/generated/stripe"
+          ]
+        },
+        {
+          "group": "E-commerce",
+          "pages": [
+            "toolkits/generated/shopify"
+          ]
+        },
+        {
+          "group": "Customer support",
+          "pages": [
+            "toolkits/generated/zendesk"
+          ]
+        },
+        {
+          "group": "Social media data",
+          "pages": [
+            "toolkits/generated/instagram-data",
+            "toolkits/generated/linkedin-data",
+            "toolkits/generated/reddit-data",
+            "toolkits/generated/snapchat-data",
+            "toolkits/generated/tiktok-data",
+            "toolkits/generated/twitch-data",
+            "toolkits/generated/x-data",
+            "toolkits/generated/youtube-data"
+          ]
+        },
+        {
+          "group": "Files and documents",
+          "pages": [
+            "toolkits/generated/google-drive"
+          ]
+        },
+        {
+          "group": "Spreadsheets and databases",
+          "pages": [
+            "toolkits/generated/airtable",
+            "toolkits/generated/google-sheets",
+            "toolkits/generated/notion"
+          ]
+        },
+        {
+          "group": "Project and developer tools",
+          "pages": [
+            "toolkits/generated/github",
+            "toolkits/generated/linear"
+          ]
+        }
+      ]
+    },
+    {
+      "group": "API Reference",
+      "pages": [
+        "api/overview",
+        "api/authentication",
+        {
+          "group": "Executions",
+          "pages": [
+            "api/executions/execute",
+            "api/executions/list-executions",
+            "api/executions/get-execution"
+          ]
+        },
+        {
+          "group": "Connections dev API",
+          "pages": [
+            "api/connections/create-connection",
+            "api/connections/list-connections",
+            "api/connections/delete-connection"
+          ]
+        },
+        "api/mcp",
+        "api/webhooks",
+        "api/idempotency",
+        "api/errors"
+      ]
+    },
+    {
+      "group": "Testing with Mocks",
+      "pages": [
+        "mocks/overview",
+        "mocks/quickstart",
+        "mocks/fixtures-and-scenarios",
+        "mocks/assert-tool-calls",
+        "mocks/normalized-failures",
+        "mocks/voice-sessions",
+        "mocks/ci"
+      ]
+    },
+    {
+      "group": "Self-hosting",
+      "pages": [
+        "self-hosting/overview",
+        "self-hosting/local-quickstart",
+        "self-hosting/architecture",
+        "self-hosting/credential-provider",
+        "self-hosting/mcp-gateway",
+        "self-hosting/executor",
+        "self-hosting/voice-worker",
+        "self-hosting/cloud-boundary",
+        "self-hosting/operations-and-upgrades"
+      ]
+    },
+    {
+      "group": "Changelog",
+      "pages": [
+        "changelog/index",
+        "changelog/sdk-api",
+        "changelog/catalog",
+        "changelog/deprecations"
+      ]
+    }
+  ]
+}

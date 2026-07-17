@@ -1,0 +1,25 @@
+---
+title: "Webhooks"
+description: "Current webhook configuration surface and the boundary that is not implemented by the OSS HTTP API."
+---
+
+Voice-agent drafts can reference pre-provisioned webhook endpoint IDs and select event classes:
+
+```json
+{
+  "webhooks": {
+    "endpointIds": ["endpoint_restaurant_ops"],
+    "transcript": true,
+    "events": [
+      "session.lifecycle",
+      "turn.transcript",
+      "tool_call",
+      "tool_result"
+    ]
+  }
+}
+```
+
+The open-source executor and gateway do **not** expose a generic endpoint-registration or webhook-delivery REST API. Endpoint provisioning, signing secrets, retries, and hosted delivery are deployment/cloud responsibilities.
+
+For OSS applications, poll [execution records](/api/executions/get-execution) and `voice-agents.get_agent_session`, or implement a deployment-specific dispatcher around the durable session events. Do not invent an `/v1/webhooks` route.

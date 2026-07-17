@@ -1,0 +1,30 @@
+---
+title: "Open source and Cloud boundary"
+description: "Know exactly which capabilities ship in the repository and which require eyeball Cloud or your own implementation."
+---
+
+## Open source
+
+- canonical capability contracts and 37-toolkit default catalog;
+- provider adapters and execution engine;
+- validation, normalized errors, idempotency, in-memory records and queue;
+- TypeScript SDK;
+- Streamable HTTP MCP gateway and `eyeball.search_tools`;
+- Next.js dashboard;
+- `EnvCredentialProvider`, `MockCredentialProvider`, and opt-in development vault;
+- separate deterministic provider-mock workspace.
+
+## eyeball Cloud
+
+- hosted OAuth authorization and callback endpoints;
+- encrypted end-user token vault and refresh lifecycle;
+- hosted connect/reconnect UI and consent repair;
+- managed runtime, persistence, scaling, and operations.
+
+## Bring your own
+
+Self-hosters can implement the exported credential, store, and queue boundaries, plus their own TLS, identity, authorization, persistence, observability, webhook delivery, and secret management.
+
+<Note>
+  “Open core” here is a product boundary, not an API fiction. The OSS `connections.create` route is a fixture seam; it never pretends to return a hosted OAuth redirect.
+</Note>

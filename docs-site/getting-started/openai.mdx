@@ -1,0 +1,44 @@
+---
+title: "OpenAI quickstart"
+description: "Export Chat Completions tools and execute model tool calls through eyeball."
+---
+
+Use the OpenAI export format and feed the assistant's `tool_calls` back through `executeToolCalls`.
+
+```ts
+import OpenAI from "openai";
+import { Eyeball, executeToolCalls } from "@eyeball/sdk";
+
+const openai = new OpenAI();
+const eyeball = new Eyeball({
+  apiKey: process.env.EYEBALL_API_KEY!,
+  baseUrl: process.env.EYEBALL_EXECUTOR_URL!,
+});
+const bundle = await eyeball.tools.get({
+  toolkits: ["gmail"],
+  format: "openai",
+});
+const messages: OpenAI.Chat.Completions.ChatCompletionMessageParam[] = [
+  { role: "user", content: "Find my latest reservation email." },
+];
+for (;;) {
+  const response = await openai.chat.completions.create({
+    model: process.env.OPENAI_MODEL!,
+    messages,
+    tools: bundle.tools,
+  });
+  const message = response.choices[0]!.message;
+  messages.push(message);
+  const calls = message.tool_calls ?? [];
+  if (calls.length === 0) break;
+  messages.push(
+    ...(await executeToolCalls(eyeball, calls, { userId: "demo_user" })),
+  );
+}
+```
+
+The helper parses each function argument JSON string, uses the model call ID for idempotency, and returns one `role: "tool"` message per call.
+
+<Note>
+  Pointing eyeball at the mock executor makes every tool call run with zero third-party SaaS accounts. The OpenAI credential is only for the model request; the [SDK-only quickstart](/getting-started/quickstart) needs no model account.
+</Note>

@@ -1,0 +1,47 @@
+---
+title: "eyeball documentation"
+description: "Give any agent a consistent tool surface across providers, then move from deterministic mocks to connected accounts."
+---
+
+eyeball is an open-core execution layer for agent tools. Your model sees one stable capability contract; eyeball handles provider adapters, account selection, idempotency, normalized errors, and execution records.
+
+<CardGroup cols={3}>
+  <Card title="1. Discover" icon="magnifying-glass" href="/concepts/tool-discovery-and-search">
+    Select a toolkit or search the catalog for the capability the agent needs.
+  </Card>
+  <Card title="2. Give tools to the model" icon="brackets-curly" href="/getting-started/anthropic">
+    Export canonical tools in Anthropic, OpenAI, AI SDK, or MCP format.
+  </Card>
+  <Card title="3. Execute safely" icon="bolt" href="/concepts/executions">
+    Run the returned tool calls through one executor with stable retries and audit state.
+  </Card>
+</CardGroup>
+
+## The three-step developer experience
+
+```ts
+import { Eyeball } from "@eyeball/sdk";
+
+const eyeball = new Eyeball({
+  apiKey: process.env.EYEBALL_API_KEY!,
+  baseUrl: process.env.EYEBALL_EXECUTOR_URL!,
+});
+
+const tools = await eyeball.tools.get({
+  toolkits: ["gmail"],
+  format: "anthropic",
+});
+
+const result = await eyeball.tools.run(
+  "gmail.search_emails",
+  { query: "from:reservations@example.com", pageSize: 5 },
+  { userId: "demo_user" },
+);
+console.log({ modelTools: tools.tools.length, result });
+```
+
+The same code runs against the mock executor with zero third-party SaaS accounts. Moving live changes the executor URL and connected-account state, not the canonical tool call.
+
+<Card title="Start the quickstart" icon="rocket" href="/getting-started/quickstart">
+  Install the SDK and make a deterministic first call.
+</Card>

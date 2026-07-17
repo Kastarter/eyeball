@@ -1,0 +1,77 @@
+---
+title: "Errors"
+description: "All normalized eyeball error codes, their meaning, retry behavior, and remediation."
+---
+
+Provider and platform failures use one safe envelope:
+
+```json
+{
+  "code": "rate_limited",
+  "message": "The provider rate limit was reached.",
+  "retryable": true,
+  "retryAfter": 2,
+  "provider": {
+    "toolkit": "gmail",
+    "status": 429
+  }
+}
+```
+
+Raw provider bodies and credentials are never part of the public error.
+
+<a id="invalid_input"></a>
+## `invalid_input`
+
+The tool name, JSON body, canonical schema, or provider extension is invalid. Do not retry unchanged. Validate required fields, formats, enum values, and `x_provider` namespaces.
+
+<a id="auth_missing"></a>
+## `auth_missing`
+
+No usable credential or connection exists for this project, user, and toolkit. Do not retry unchanged. Connect the account, supply the correct `connectionId`, or configure the service credential.
+
+<a id="auth_expired"></a>
+## `auth_expired`
+
+The provider credential expired or was revoked. Do not loop retries. Refresh or reconnect the account, then start a new attempt.
+
+<a id="auth_insufficient_scope"></a>
+## `auth_insufficient_scope`
+
+The credential lacks a required provider scope. Do not retry unchanged. Reauthorize with the scopes listed on the generated toolkit page.
+
+<a id="not_found"></a>
+## `not_found`
+
+The requested tool, execution, provider object, or scoped route does not exist. Confirm the canonical name and identifier. A resource may also be intentionally invisible across project or user boundaries.
+
+<a id="rate_limited"></a>
+## `rate_limited`
+
+eyeball or the provider rejected excess traffic. This code is retryable. Honor `retryAfter` seconds when present, use exponential backoff with jitter, and preserve mutation idempotency keys.
+
+<a id="provider_unavailable"></a>
+## `provider_unavailable`
+
+The provider is temporarily unavailable or returned a transient upstream failure. This code is retryable. Back off, keep the same mutation key, and cap the attempt window.
+
+<a id="provider_error"></a>
+## `provider_error`
+
+The provider rejected the operation in a way eyeball could not map more narrowly. It is not retryable by default. Inspect the sanitized `provider` detail, confirm provider constraints, and change the request or account state.
+
+<a id="timeout"></a>
+## `timeout`
+
+The request or local wait deadline elapsed. It is not retryable by default because the provider may still have accepted a mutation. Look up the execution first; retry only with the original idempotency key.
+
+<a id="not_supported"></a>
+## `not_supported`
+
+The selected adapter, deployment, or protocol cannot perform the operation. Examples include the OSS executor without hosted OAuth and MCP async tools before Tasks negotiation. Choose a supported surface; retrying unchanged will not help.
+
+## Default retry policy
+
+Only `rate_limited` and `provider_unavailable` default to `retryable: true`. Every other code defaults to false. Treat the envelope—not HTTP status guesses—as authoritative.
+
+See [API error envelopes](/api/errors) for HTTP mapping.

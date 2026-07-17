@@ -1,0 +1,23 @@
+---
+title: "API authentication"
+description: "Authenticate the trusted project and bind an external user separately."
+---
+
+Executor and MCP requests use a bearer project key:
+
+```bash
+curl "$EYEBALL_EXECUTOR_URL/v1/executions?limit=10" \
+  -H "Authorization: Bearer $EYEBALL_API_KEY"
+```
+
+The authenticated project scopes every lookup. A missing or invalid bearer value returns a normalized auth error.
+
+End-user identity is separate:
+
+- Executor: `userId` in execute/connection bodies or query filters.
+- SDK: per-call `userId` or the client default.
+- MCP: `EYEBALL_USER_ID` server configuration, `X-Eyeball-User-Id`, or `_meta["dev.eyeball/userId"]`.
+
+<Warning>
+  Treat project keys as server credentials. Do not embed them in public browser bundles.
+</Warning>

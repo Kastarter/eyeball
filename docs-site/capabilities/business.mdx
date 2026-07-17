@@ -1,0 +1,62 @@
+---
+title: "Business systems"
+description: "Combine CRM, ERP, billing, commerce, and support capabilities without pretending they are interchangeable."
+---
+
+Business toolkits share execution, error, and idempotency behavior while keeping distinct domain contracts.
+
+## Canonical tool groups
+
+| Domain | Read tools | Mutation tools |
+| --- | --- | --- |
+| CRM | `get_contact`, `search_contacts` | Create/update contacts, companies, and deals; `add_note` |
+| ERP/accounting | List/get customers, invoices, bills, and restricted records | Create customers/invoices/bills, send invoices, record payments |
+| Payments/billing | Get/list payments, customers, invoices, and subscriptions | Create customers/invoices/payment links/refunds; cancel subscriptions |
+| E-commerce | List/get products, orders, and customers | Create/update products, inventory, orders, and fulfillments |
+| Customer support | List/get tickets and conversations | Create/update/assign tickets and add/send replies |
+
+Each generated toolkit page gives the exact supported subset and dotted name.
+
+## Provider matrix
+
+| Toolkit | Domain | Representative canonical tools |
+| --- | --- | --- |
+| HubSpot | CRM | `search_contacts`, `create_contact`, `add_note` |
+| Odoo | ERP/accounting | `search_erp_records`, `create_bill`, `send_invoice` |
+| QuickBooks | ERP/accounting | `list_invoices`, `record_payment`, `send_invoice` |
+| Stripe | Payments/billing | `list_payments`, `create_refund`, `cancel_subscription` |
+| Shopify | E-commerce | `list_products`, `update_inventory`, `create_fulfillment` |
+| Zendesk | Customer support | `list_tickets`, `assign_ticket`, `add_ticket_reply` |
+
+## Mutation safety
+
+Refunds and subscription cancellation are destructive. Inventory setters overwrite quantities. Sending an invoice or public support reply can notify a customer. Put approval checks before those calls and reuse caller-owned idempotency keys.
+
+## Worked example
+
+```ts
+import { Eyeball } from "@eyeball/sdk";
+
+const eyeball = new Eyeball({
+  apiKey: process.env.EYEBALL_API_KEY!,
+  baseUrl: process.env.EYEBALL_EXECUTOR_URL!,
+});
+
+const contact = await eyeball.tools.run(
+  "hubspot.create_contact",
+  {
+    email: "sam@example.com",
+    firstName: "Sam",
+    companyName: "Example Restaurant Group",
+  },
+  {
+    userId: "demo_user",
+    idempotencyKey: "crm:lead:sam@example.com",
+  },
+);
+console.log(contact);
+```
+
+Check for an existing contact before creating one when provider-side uniqueness is not guaranteed.
+
+See the generated [HubSpot reference](/toolkits/generated/hubspot).

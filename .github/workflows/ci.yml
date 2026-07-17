@@ -27,6 +27,21 @@ jobs:
       - name: Install dependencies
         run: pnpm install --frozen-lockfile
 
+      - name: Generate toolkit reference
+        run: pnpm docs:generate
+
+      - name: Check generated documentation drift
+        run: git diff --exit-code -- docs-site/docs.json docs-site/toolkits/generated
+
+      - name: Validate documentation structure
+        run: pnpm docs:check
+
+      - name: Typecheck documentation snippets
+        run: pnpm docs:snippets
+
+      - name: Typecheck documentation tooling
+        run: pnpm docs:typecheck
+
       - name: Build
         run: pnpm turbo build
 

@@ -1,0 +1,55 @@
+---
+title: "Executions client"
+description: "Get one execution, list scoped history, or wait for terminal state."
+---
+
+## Get
+
+```ts
+import { Eyeball } from "@eyeball/sdk";
+
+const eyeball = new Eyeball({
+  apiKey: process.env.EYEBALL_API_KEY!,
+  baseUrl: process.env.EYEBALL_EXECUTOR_URL!,
+});
+const execution = await eyeball.executions.get("exe_01JZ6WA0Q73ZQ5B51SRYB6M4Z8");
+console.log(execution.status);
+```
+
+## List
+
+```ts
+import { Eyeball } from "@eyeball/sdk";
+
+const eyeball = new Eyeball({
+  apiKey: process.env.EYEBALL_API_KEY!,
+  baseUrl: process.env.EYEBALL_EXECUTOR_URL!,
+});
+const page = await eyeball.executions.list({
+  status: "failed",
+  tool: "gmail.send_email",
+  userId: "demo_user",
+  limit: 25,
+});
+console.log(page.executions, page.nextCursor);
+```
+
+Filters are `status`, `tool`, `userId`, `cursor`, and `limit`.
+
+## Wait
+
+```ts
+import { Eyeball } from "@eyeball/sdk";
+
+const eyeball = new Eyeball({
+  apiKey: process.env.EYEBALL_API_KEY!,
+  baseUrl: process.env.EYEBALL_EXECUTOR_URL!,
+});
+const terminal = await eyeball.executions.wait(
+  "exe_01JZ6WA0Q73ZQ5B51SRYB6M4Z8",
+  { pollMs: 500, timeoutMs: 60_000 },
+);
+console.log(terminal.status);
+```
+
+`wait` polls until `succeeded` or `failed` and throws a normalized `timeout` error when its local deadline expires.

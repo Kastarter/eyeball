@@ -14,6 +14,7 @@ authenticated tools across SaaS, messaging, voice, social data, and business sys
 - Execution detail reads retain canonical input, mode, project, resolved connection, and idempotency metadata while execution-list payloads stay compact.
 - The contract suite generates 457 provider/tool rows from 37 manifests: 218 smoke and 239 `not_supported`; 35 auth-expiry assertions pass and two auth-class-none assertions skip.
 - `@eyeball/toolkits` implements P0 email, messaging, voice, business, productivity, and ScrapeCreators social-data adapters, including the native `voice-agents` adapter.
+- Public Mintlify docs live in `docs-site`: 100 navigable MDX pages, including 37 generated toolkit references for catalog 1.1.
 - The eight-document spec suite is:
   - `SPEC.md` — product, architecture, repos, delivery order, open questions, document map.
   - `docs/PROVIDERS.md` — definitive catalog 1.0 provider and canonical-tool inventory.
@@ -44,6 +45,9 @@ authenticated tools across SaaS, messaging, voice, social data, and business sys
 - Telegram Bot requests put the API key in the `bot{token}` path and also retain Bearer auth for the shared mock-kit triggers; Telegram ignores the extra header in production.
 - ScrapeCreators manifests mirror the provider matrix exactly; unsupported platform operations remain absent from the catalog and fail before credential resolution or provider fetch.
 - Tool search uses a deterministic BM25F index with 50 catalog-grounded agent-intent synonyms; SDK and MCP searches retain their existing interfaces.
+- SDK mock mode is endpoint configuration: construct `Eyeball` with the dedicated mock executor `baseUrl`; there is no `mock` request field or released `mock: true` constructor option.
+- `scripts/generate-docs.ts` owns `docs-site/toolkits/generated` and its Toolkit Reference nav; never hand-edit generated pages.
+- After docs or catalog changes, run `pnpm docs:generate`, `pnpm docs:check`, `pnpm docs:snippets`, and `pnpm docs:typecheck`.
 - Dashboard styling consumes semantic roles from `apps/dashboard/src/styles/tokens.css`; the committed ADMIN-UI token values remain exact, with derived AA-safe muted-text and control-boundary roles.
 - Configure browser health checks with `NEXT_PUBLIC_EYEBALL_EXECUTOR_URL`; authenticated execution-list calls require a server-injected API key and must not expose secrets through public environment variables.
 
@@ -96,6 +100,7 @@ authenticated tools across SaaS, messaging, voice, social data, and business sys
   converter-owned execution, and MCP surfaces.
 - Open contract item: specify a version-pinned LangChain converter contract or remove it from
   the launch quickstarts.
+- The separate `mocks/` source workspace is not part of this repository's package release; docs must not claim its packages are currently published.
 - Open contract item: define WebRTC agent-session activation, number-binding lifecycle, and
   outbound transport defaults for RFC 002.
 - Open contract item: define how opaque voice-agent model references are versioned, resolved,

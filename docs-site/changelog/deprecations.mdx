@@ -1,0 +1,17 @@
+---
+title: "Deprecations"
+description: "Document retired contracts and preview surfaces that are not yet supported."
+---
+
+There are no deprecated released APIs in the `0.0.1` source preview.
+
+## Not implemented, not deprecated
+
+- `format: "langchain"` is not an SDK option; the LangChain contract remains preview work.
+- The current AI SDK callback does not propagate a stable framework call ID, so mutation use is not launch-safe.
+- MCP async-by-nature tools are omitted until Tasks negotiation is implemented.
+- Generic OSS webhook registration and hosted OAuth routes do not exist.
+
+These are gaps, not old APIs that callers should continue using.
+
+When a future deprecation is introduced, this page will name the replacement, compatibility window, affected versions, migration steps, and removal version.

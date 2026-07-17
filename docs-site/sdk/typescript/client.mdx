@@ -1,0 +1,33 @@
+---
+title: "Eyeball client"
+description: "Configure project auth, executor base URL, default user identity, and test seams."
+---
+
+`Eyeball` requires `apiKey` and `baseUrl`.
+
+```ts
+import { Eyeball } from "@eyeball/sdk";
+
+const eyeball = new Eyeball({
+  apiKey: process.env.EYEBALL_API_KEY!,
+  baseUrl: process.env.EYEBALL_EXECUTOR_URL!,
+  userId: "user_42",
+});
+
+console.log(eyeball.tools, eyeball.executions, eyeball.connections);
+```
+
+| Option | Type | Required | Meaning |
+| --- | --- | --- | --- |
+| `apiKey` | `string` | Yes | Bearer project credential |
+| `baseUrl` | `string` | Yes | Executor origin; trailing slashes are normalized |
+| `userId` | `string` | No | Default external user for user-scoped methods |
+| `fetch` | `typeof fetch` | No | Custom transport/test seam |
+| `clock` | `{ now(): number }` | No | Polling timeout clock |
+| `sleep` | `(ms) => Promise<void>` | No | Polling delay seam |
+
+An empty `userId` throws locally. The SDK uses global `fetch` unless one is supplied.
+
+<Note>
+  There is no `mock` constructor flag. Select mocks by setting `baseUrl` to a mock-backed executor.
+</Note>
