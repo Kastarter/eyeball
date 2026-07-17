@@ -2,11 +2,13 @@ services:
   postgres:
     image: postgres:17-alpine
     environment:
-      POSTGRES_DB: eyeball
-      POSTGRES_USER: eyeball
-      POSTGRES_PASSWORD: eyeball_dev
+      POSTGRES_DB: ${EYEBALL_PG_DB:-eyeball}
+      POSTGRES_USER: ${EYEBALL_PG_USER:-eyeball}
+      # Local development only — set EYEBALL_PG_PASSWORD for anything shared.
+      POSTGRES_PASSWORD: ${EYEBALL_PG_PASSWORD:-eyeball_dev}
     ports:
-      - "5432:5432"
+      # Loopback-only: never expose the dev database on the network.
+      - "127.0.0.1:5432:5432"
     volumes:
       - eyeball-postgres:/var/lib/postgresql/data
     healthcheck:
