@@ -1,10 +1,14 @@
-import { defineCapabilityFixtures } from "../fixtures.js";
+import { defineCapabilityFixtures, type FixtureContext } from "../fixtures.js";
 
 function quickBooksExtension(
-  provider: string,
+  context: FixtureContext,
 ): Readonly<Record<string, unknown>> {
-  return provider === "quickbooks"
-    ? { x_provider: { quickbooks: { realmId: "realm_fixture" } } }
+  return context.provider === "quickbooks"
+    ? {
+        x_provider: {
+          quickbooks: { realmId: context.value("REALM_ID", "realm_fixture") },
+        },
+      }
     : {};
 }
 
@@ -32,7 +36,7 @@ export const erpFixtures = defineCapabilityFixtures("erp_accounting", {
     input: (context) => ({
       name: "Contract Fixture Customer",
       email: "contract-books@example.com",
-      ...quickBooksExtension(context.provider),
+      ...quickBooksExtension(context),
     }),
   },
   create_invoice: {
@@ -46,7 +50,7 @@ export const erpFixtures = defineCapabilityFixtures("erp_accounting", {
           unitAmount: 75,
         },
       ],
-      ...quickBooksExtension(context.provider),
+      ...quickBooksExtension(context),
     }),
   },
   create_journal_entry: {
@@ -61,7 +65,7 @@ export const erpFixtures = defineCapabilityFixtures("erp_accounting", {
   get_invoice: {
     input: (context) => ({
       invoiceId: context.value("INVOICE_ID", invoiceId(context.provider)),
-      ...quickBooksExtension(context.provider),
+      ...quickBooksExtension(context),
     }),
   },
   list_accounts: { input: { pageSize: 10 } },
@@ -69,13 +73,13 @@ export const erpFixtures = defineCapabilityFixtures("erp_accounting", {
   list_customers: {
     input: (context) => ({
       pageSize: 10,
-      ...quickBooksExtension(context.provider),
+      ...quickBooksExtension(context),
     }),
   },
   list_invoices: {
     input: (context) => ({
       pageSize: 10,
-      ...quickBooksExtension(context.provider),
+      ...quickBooksExtension(context),
     }),
   },
   record_payment: {
@@ -83,7 +87,7 @@ export const erpFixtures = defineCapabilityFixtures("erp_accounting", {
       invoiceId: context.value("INVOICE_ID", invoiceId(context.provider)),
       amount: 50,
       currency: "USD",
-      ...quickBooksExtension(context.provider),
+      ...quickBooksExtension(context),
     }),
   },
   search_erp_records: {
@@ -97,7 +101,7 @@ export const erpFixtures = defineCapabilityFixtures("erp_accounting", {
     input: (context) => ({
       invoiceId: context.value("INVOICE_ID", invoiceId(context.provider)),
       email: "contract-books@example.com",
-      ...quickBooksExtension(context.provider),
+      ...quickBooksExtension(context),
     }),
   },
 });

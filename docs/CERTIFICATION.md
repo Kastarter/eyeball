@@ -1,11 +1,13 @@
 # Real-provider certification
 
-Real-provider certification follows [TESTING.md §5](./TESTING.md#5-real-auth-certification-process). A row stays
+Real-provider certification follows [TESTING.md §5](./TESTING.md#5-real-auth-certification-process) and the executable
+[real-auth runbook](./REAL-AUTH.md). A row stays
 `not yet certified` until the manifest-derived contract suite passes with `target=real` in a dedicated vendor tenant,
 created resources are cleaned up, and sanitized evidence is retained. Certification evidence must link the run and
 record suite, manifest/mock, and exposed vendor API versions without including credentials or customer data.
 
-Run the suite with `EYEBALL_CONTRACT_TARGET=real pnpm test:contract`. Each selected provider requires
+Run a filtered batch with `EYEBALL_CONTRACT_TARGET=real EYEBALL_CONTRACT_PROVIDERS='<comma-separated-slugs>' pnpm
+test:contract`. Each selected provider requires
 `EYEBALL_REAL_<TOOLKIT>_BASE_URL`, the auth-class-specific `EYEBALL_CRED_<TOOLKIT>_*` credential fields, and any
 tenant fixture values named in the suite's skip reason. Missing configuration remains an explicit skipped row; it is
 never interpreted as a certification pass.

@@ -1,0 +1,244 @@
+name: Real provider contracts
+
+on:
+  workflow_dispatch:
+    inputs:
+      provider-batch:
+        description: Credential-isolated provider batch to certify
+        required: true
+        type: choice
+        options:
+          - google
+          - microsoft
+          - slack
+          - business
+          - productivity
+          - commerce
+
+permissions:
+  contents: read
+
+concurrency:
+  group: contract-real-${{ inputs['provider-batch'] }}
+  cancel-in-progress: false
+
+jobs:
+  contract-real:
+    runs-on: ubuntu-latest
+    environment: real-auth-${{ inputs['provider-batch'] }}
+    timeout-minutes: 45
+    env:
+      EYEBALL_CRED_GMAIL_ACCESS_TOKEN: ${{ secrets.EYEBALL_CRED_GMAIL_ACCESS_TOKEN }}
+      EYEBALL_CRED_GMAIL_EXPIRES_AT: ${{ secrets.EYEBALL_CRED_GMAIL_EXPIRES_AT }}
+      EYEBALL_CRED_GMAIL_SCOPES: ${{ secrets.EYEBALL_CRED_GMAIL_SCOPES }}
+      EYEBALL_REAL_GMAIL_MESSAGE_ID: ${{ secrets.EYEBALL_REAL_GMAIL_MESSAGE_ID }}
+      EYEBALL_CRED_GOOGLE_CALENDAR_ACCESS_TOKEN: ${{ secrets.EYEBALL_CRED_GOOGLE_CALENDAR_ACCESS_TOKEN }}
+      EYEBALL_CRED_GOOGLE_CALENDAR_EXPIRES_AT: ${{ secrets.EYEBALL_CRED_GOOGLE_CALENDAR_EXPIRES_AT }}
+      EYEBALL_CRED_GOOGLE_CALENDAR_SCOPES: ${{ secrets.EYEBALL_CRED_GOOGLE_CALENDAR_SCOPES }}
+      EYEBALL_REAL_GOOGLE_CALENDAR_CALENDAR_ID: ${{ secrets.EYEBALL_REAL_GOOGLE_CALENDAR_CALENDAR_ID }}
+      EYEBALL_REAL_GOOGLE_CALENDAR_EVENT_ID: ${{ secrets.EYEBALL_REAL_GOOGLE_CALENDAR_EVENT_ID }}
+      EYEBALL_REAL_GOOGLE_CALENDAR_ATTENDEE_EMAIL: ${{ secrets.EYEBALL_REAL_GOOGLE_CALENDAR_ATTENDEE_EMAIL }}
+      EYEBALL_CRED_GOOGLE_DRIVE_ACCESS_TOKEN: ${{ secrets.EYEBALL_CRED_GOOGLE_DRIVE_ACCESS_TOKEN }}
+      EYEBALL_CRED_GOOGLE_DRIVE_EXPIRES_AT: ${{ secrets.EYEBALL_CRED_GOOGLE_DRIVE_EXPIRES_AT }}
+      EYEBALL_CRED_GOOGLE_DRIVE_SCOPES: ${{ secrets.EYEBALL_CRED_GOOGLE_DRIVE_SCOPES }}
+      EYEBALL_REAL_GOOGLE_DRIVE_DELETE_FILE_ID: ${{ secrets.EYEBALL_REAL_GOOGLE_DRIVE_DELETE_FILE_ID }}
+      EYEBALL_REAL_GOOGLE_DRIVE_FILE_ID: ${{ secrets.EYEBALL_REAL_GOOGLE_DRIVE_FILE_ID }}
+      EYEBALL_REAL_GOOGLE_DRIVE_DOCUMENT_ID: ${{ secrets.EYEBALL_REAL_GOOGLE_DRIVE_DOCUMENT_ID }}
+      EYEBALL_REAL_GOOGLE_DRIVE_MOVE_FILE_ID: ${{ secrets.EYEBALL_REAL_GOOGLE_DRIVE_MOVE_FILE_ID }}
+      EYEBALL_REAL_GOOGLE_DRIVE_FOLDER_ID: ${{ secrets.EYEBALL_REAL_GOOGLE_DRIVE_FOLDER_ID }}
+      EYEBALL_CRED_GOOGLE_SHEETS_ACCESS_TOKEN: ${{ secrets.EYEBALL_CRED_GOOGLE_SHEETS_ACCESS_TOKEN }}
+      EYEBALL_CRED_GOOGLE_SHEETS_EXPIRES_AT: ${{ secrets.EYEBALL_CRED_GOOGLE_SHEETS_EXPIRES_AT }}
+      EYEBALL_CRED_GOOGLE_SHEETS_SCOPES: ${{ secrets.EYEBALL_CRED_GOOGLE_SHEETS_SCOPES }}
+      EYEBALL_REAL_GOOGLE_SHEETS_DOCUMENT_ID: ${{ secrets.EYEBALL_REAL_GOOGLE_SHEETS_DOCUMENT_ID }}
+      EYEBALL_REAL_GOOGLE_SHEETS_RANGE: ${{ secrets.EYEBALL_REAL_GOOGLE_SHEETS_RANGE }}
+      EYEBALL_REAL_GOOGLE_SHEETS_ROW_ID: ${{ secrets.EYEBALL_REAL_GOOGLE_SHEETS_ROW_ID }}
+      EYEBALL_REAL_GOOGLE_SHEETS_UPDATE_RANGE: ${{ secrets.EYEBALL_REAL_GOOGLE_SHEETS_UPDATE_RANGE }}
+      EYEBALL_CRED_MICROSOFT_OUTLOOK_ACCESS_TOKEN: ${{ secrets.EYEBALL_CRED_MICROSOFT_OUTLOOK_ACCESS_TOKEN }}
+      EYEBALL_CRED_MICROSOFT_OUTLOOK_EXPIRES_AT: ${{ secrets.EYEBALL_CRED_MICROSOFT_OUTLOOK_EXPIRES_AT }}
+      EYEBALL_CRED_MICROSOFT_OUTLOOK_SCOPES: ${{ secrets.EYEBALL_CRED_MICROSOFT_OUTLOOK_SCOPES }}
+      EYEBALL_REAL_MICROSOFT_OUTLOOK_MESSAGE_ID: ${{ secrets.EYEBALL_REAL_MICROSOFT_OUTLOOK_MESSAGE_ID }}
+      EYEBALL_CRED_SLACK_ACCESS_TOKEN: ${{ secrets.EYEBALL_CRED_SLACK_ACCESS_TOKEN }}
+      EYEBALL_CRED_SLACK_EXPIRES_AT: ${{ secrets.EYEBALL_CRED_SLACK_EXPIRES_AT }}
+      EYEBALL_CRED_SLACK_SCOPES: ${{ secrets.EYEBALL_CRED_SLACK_SCOPES }}
+      EYEBALL_REAL_SLACK_CONVERSATION_ID: ${{ secrets.EYEBALL_REAL_SLACK_CONVERSATION_ID }}
+      EYEBALL_REAL_SLACK_MESSAGE_ID: ${{ secrets.EYEBALL_REAL_SLACK_MESSAGE_ID }}
+      EYEBALL_CRED_HUBSPOT_ACCESS_TOKEN: ${{ secrets.EYEBALL_CRED_HUBSPOT_ACCESS_TOKEN }}
+      EYEBALL_CRED_HUBSPOT_EXPIRES_AT: ${{ secrets.EYEBALL_CRED_HUBSPOT_EXPIRES_AT }}
+      EYEBALL_CRED_HUBSPOT_SCOPES: ${{ secrets.EYEBALL_CRED_HUBSPOT_SCOPES }}
+      EYEBALL_REAL_HUBSPOT_CONTACT_ID: ${{ secrets.EYEBALL_REAL_HUBSPOT_CONTACT_ID }}
+      EYEBALL_REAL_HUBSPOT_COMPANY_ID: ${{ secrets.EYEBALL_REAL_HUBSPOT_COMPANY_ID }}
+      EYEBALL_REAL_HUBSPOT_DEAL_ID: ${{ secrets.EYEBALL_REAL_HUBSPOT_DEAL_ID }}
+      EYEBALL_CRED_QUICKBOOKS_ACCESS_TOKEN: ${{ secrets.EYEBALL_CRED_QUICKBOOKS_ACCESS_TOKEN }}
+      EYEBALL_CRED_QUICKBOOKS_EXPIRES_AT: ${{ secrets.EYEBALL_CRED_QUICKBOOKS_EXPIRES_AT }}
+      EYEBALL_CRED_QUICKBOOKS_SCOPES: ${{ secrets.EYEBALL_CRED_QUICKBOOKS_SCOPES }}
+      EYEBALL_REAL_QUICKBOOKS_REALM_ID: ${{ secrets.EYEBALL_REAL_QUICKBOOKS_REALM_ID }}
+      EYEBALL_REAL_QUICKBOOKS_CUSTOMER_ID: ${{ secrets.EYEBALL_REAL_QUICKBOOKS_CUSTOMER_ID }}
+      EYEBALL_REAL_QUICKBOOKS_INVOICE_ID: ${{ secrets.EYEBALL_REAL_QUICKBOOKS_INVOICE_ID }}
+      EYEBALL_CRED_ZENDESK_ACCESS_TOKEN: ${{ secrets.EYEBALL_CRED_ZENDESK_ACCESS_TOKEN }}
+      EYEBALL_CRED_ZENDESK_EXPIRES_AT: ${{ secrets.EYEBALL_CRED_ZENDESK_EXPIRES_AT }}
+      EYEBALL_CRED_ZENDESK_SCOPES: ${{ secrets.EYEBALL_CRED_ZENDESK_SCOPES }}
+      EYEBALL_REAL_ZENDESK_BASE_URL: ${{ secrets.EYEBALL_REAL_ZENDESK_BASE_URL }}
+      EYEBALL_REAL_ZENDESK_TICKET_ID: ${{ secrets.EYEBALL_REAL_ZENDESK_TICKET_ID }}
+      EYEBALL_REAL_ZENDESK_ASSIGNEE_ID: ${{ secrets.EYEBALL_REAL_ZENDESK_ASSIGNEE_ID }}
+      EYEBALL_REAL_ZENDESK_CONVERSATION_ID: ${{ secrets.EYEBALL_REAL_ZENDESK_CONVERSATION_ID }}
+      EYEBALL_CRED_AIRTABLE_ACCESS_TOKEN: ${{ secrets.EYEBALL_CRED_AIRTABLE_ACCESS_TOKEN }}
+      EYEBALL_CRED_AIRTABLE_EXPIRES_AT: ${{ secrets.EYEBALL_CRED_AIRTABLE_EXPIRES_AT }}
+      EYEBALL_CRED_AIRTABLE_SCOPES: ${{ secrets.EYEBALL_CRED_AIRTABLE_SCOPES }}
+      EYEBALL_REAL_AIRTABLE_DOCUMENT_ID: ${{ secrets.EYEBALL_REAL_AIRTABLE_DOCUMENT_ID }}
+      EYEBALL_REAL_AIRTABLE_ROW_ID: ${{ secrets.EYEBALL_REAL_AIRTABLE_ROW_ID }}
+      EYEBALL_CRED_GITHUB_ACCESS_TOKEN: ${{ secrets.EYEBALL_CRED_GITHUB_ACCESS_TOKEN }}
+      EYEBALL_CRED_GITHUB_EXPIRES_AT: ${{ secrets.EYEBALL_CRED_GITHUB_EXPIRES_AT }}
+      EYEBALL_CRED_GITHUB_SCOPES: ${{ secrets.EYEBALL_CRED_GITHUB_SCOPES }}
+      EYEBALL_REAL_GITHUB_PROJECT_ID: ${{ secrets.EYEBALL_REAL_GITHUB_PROJECT_ID }}
+      EYEBALL_REAL_GITHUB_ISSUE_ID: ${{ secrets.EYEBALL_REAL_GITHUB_ISSUE_ID }}
+      EYEBALL_REAL_GITHUB_PULL_REQUEST_ID: ${{ secrets.EYEBALL_REAL_GITHUB_PULL_REQUEST_ID }}
+      EYEBALL_CRED_LINEAR_ACCESS_TOKEN: ${{ secrets.EYEBALL_CRED_LINEAR_ACCESS_TOKEN }}
+      EYEBALL_CRED_LINEAR_EXPIRES_AT: ${{ secrets.EYEBALL_CRED_LINEAR_EXPIRES_AT }}
+      EYEBALL_CRED_LINEAR_SCOPES: ${{ secrets.EYEBALL_CRED_LINEAR_SCOPES }}
+      EYEBALL_REAL_LINEAR_PROJECT_ID: ${{ secrets.EYEBALL_REAL_LINEAR_PROJECT_ID }}
+      EYEBALL_REAL_LINEAR_ISSUE_ID: ${{ secrets.EYEBALL_REAL_LINEAR_ISSUE_ID }}
+      EYEBALL_CRED_NOTION_ACCESS_TOKEN: ${{ secrets.EYEBALL_CRED_NOTION_ACCESS_TOKEN }}
+      EYEBALL_CRED_NOTION_EXPIRES_AT: ${{ secrets.EYEBALL_CRED_NOTION_EXPIRES_AT }}
+      EYEBALL_CRED_NOTION_SCOPES: ${{ secrets.EYEBALL_CRED_NOTION_SCOPES }}
+      EYEBALL_REAL_NOTION_DOCUMENT_ID: ${{ secrets.EYEBALL_REAL_NOTION_DOCUMENT_ID }}
+      EYEBALL_REAL_NOTION_ROW_ID: ${{ secrets.EYEBALL_REAL_NOTION_ROW_ID }}
+      EYEBALL_CRED_SHOPIFY_ACCESS_TOKEN: ${{ secrets.EYEBALL_CRED_SHOPIFY_ACCESS_TOKEN }}
+      EYEBALL_CRED_SHOPIFY_EXPIRES_AT: ${{ secrets.EYEBALL_CRED_SHOPIFY_EXPIRES_AT }}
+      EYEBALL_CRED_SHOPIFY_SCOPES: ${{ secrets.EYEBALL_CRED_SHOPIFY_SCOPES }}
+      EYEBALL_REAL_SHOPIFY_BASE_URL: ${{ secrets.EYEBALL_REAL_SHOPIFY_BASE_URL }}
+      EYEBALL_REAL_SHOPIFY_ORDER_ID: ${{ secrets.EYEBALL_REAL_SHOPIFY_ORDER_ID }}
+      EYEBALL_REAL_SHOPIFY_LINE_ITEM_ID: ${{ secrets.EYEBALL_REAL_SHOPIFY_LINE_ITEM_ID }}
+      EYEBALL_REAL_SHOPIFY_PRODUCT_ID: ${{ secrets.EYEBALL_REAL_SHOPIFY_PRODUCT_ID }}
+      EYEBALL_REAL_SHOPIFY_INVENTORY_ITEM_ID: ${{ secrets.EYEBALL_REAL_SHOPIFY_INVENTORY_ITEM_ID }}
+      EYEBALL_REAL_SHOPIFY_LOCATION_ID: ${{ secrets.EYEBALL_REAL_SHOPIFY_LOCATION_ID }}
+    steps:
+      - name: Check out Eyeball
+        uses: actions/checkout@v4
+
+      - name: Check out public provider mocks
+        uses: actions/checkout@v4
+        with:
+          repository: ${{ github.repository_owner }}/eyeball-mocks
+          path: mocks
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 24
+
+      - name: Enable pnpm
+        run: |
+          corepack enable
+          corepack prepare pnpm@11.9.0 --activate
+
+      - name: Install and build provider mocks
+        working-directory: mocks
+        run: |
+          pnpm install --frozen-lockfile
+          pnpm build
+
+      - name: Install Eyeball
+        run: pnpm install --frozen-lockfile
+
+      - name: Select and validate provider batch
+        shell: bash
+        run: |
+          set -euo pipefail
+          case "${{ inputs['provider-batch'] }}" in
+            google)
+              providers="gmail,google-calendar,google-drive,google-sheets"
+              required=(
+                EYEBALL_CRED_GMAIL_ACCESS_TOKEN EYEBALL_CRED_GMAIL_EXPIRES_AT EYEBALL_CRED_GMAIL_SCOPES EYEBALL_REAL_GMAIL_MESSAGE_ID
+                EYEBALL_CRED_GOOGLE_CALENDAR_ACCESS_TOKEN EYEBALL_CRED_GOOGLE_CALENDAR_EXPIRES_AT EYEBALL_CRED_GOOGLE_CALENDAR_SCOPES EYEBALL_REAL_GOOGLE_CALENDAR_CALENDAR_ID EYEBALL_REAL_GOOGLE_CALENDAR_EVENT_ID EYEBALL_REAL_GOOGLE_CALENDAR_ATTENDEE_EMAIL
+                EYEBALL_CRED_GOOGLE_DRIVE_ACCESS_TOKEN EYEBALL_CRED_GOOGLE_DRIVE_EXPIRES_AT EYEBALL_CRED_GOOGLE_DRIVE_SCOPES EYEBALL_REAL_GOOGLE_DRIVE_DELETE_FILE_ID EYEBALL_REAL_GOOGLE_DRIVE_FILE_ID EYEBALL_REAL_GOOGLE_DRIVE_DOCUMENT_ID EYEBALL_REAL_GOOGLE_DRIVE_MOVE_FILE_ID EYEBALL_REAL_GOOGLE_DRIVE_FOLDER_ID
+                EYEBALL_CRED_GOOGLE_SHEETS_ACCESS_TOKEN EYEBALL_CRED_GOOGLE_SHEETS_EXPIRES_AT EYEBALL_CRED_GOOGLE_SHEETS_SCOPES EYEBALL_REAL_GOOGLE_SHEETS_DOCUMENT_ID EYEBALL_REAL_GOOGLE_SHEETS_RANGE EYEBALL_REAL_GOOGLE_SHEETS_ROW_ID EYEBALL_REAL_GOOGLE_SHEETS_UPDATE_RANGE
+              )
+              {
+                echo "EYEBALL_REAL_GMAIL_BASE_URL=https://gmail.googleapis.com"
+                echo "EYEBALL_REAL_GOOGLE_CALENDAR_BASE_URL=https://www.googleapis.com"
+                echo "EYEBALL_REAL_GOOGLE_DRIVE_BASE_URL=https://www.googleapis.com"
+                echo "EYEBALL_REAL_GOOGLE_SHEETS_BASE_URL=https://sheets.googleapis.com"
+              } >> "$GITHUB_ENV"
+              ;;
+            microsoft)
+              providers="microsoft-outlook"
+              required=(EYEBALL_CRED_MICROSOFT_OUTLOOK_ACCESS_TOKEN EYEBALL_CRED_MICROSOFT_OUTLOOK_EXPIRES_AT EYEBALL_CRED_MICROSOFT_OUTLOOK_SCOPES EYEBALL_REAL_MICROSOFT_OUTLOOK_MESSAGE_ID)
+              echo "EYEBALL_REAL_MICROSOFT_OUTLOOK_BASE_URL=https://graph.microsoft.com" >> "$GITHUB_ENV"
+              ;;
+            slack)
+              providers="slack"
+              required=(EYEBALL_CRED_SLACK_ACCESS_TOKEN EYEBALL_CRED_SLACK_EXPIRES_AT EYEBALL_CRED_SLACK_SCOPES EYEBALL_REAL_SLACK_CONVERSATION_ID EYEBALL_REAL_SLACK_MESSAGE_ID)
+              echo "EYEBALL_REAL_SLACK_BASE_URL=https://slack.com" >> "$GITHUB_ENV"
+              ;;
+            business)
+              providers="hubspot,quickbooks,zendesk"
+              required=(
+                EYEBALL_CRED_HUBSPOT_ACCESS_TOKEN EYEBALL_CRED_HUBSPOT_EXPIRES_AT EYEBALL_CRED_HUBSPOT_SCOPES EYEBALL_REAL_HUBSPOT_CONTACT_ID EYEBALL_REAL_HUBSPOT_COMPANY_ID EYEBALL_REAL_HUBSPOT_DEAL_ID
+                EYEBALL_CRED_QUICKBOOKS_ACCESS_TOKEN EYEBALL_CRED_QUICKBOOKS_EXPIRES_AT EYEBALL_CRED_QUICKBOOKS_SCOPES EYEBALL_REAL_QUICKBOOKS_REALM_ID EYEBALL_REAL_QUICKBOOKS_CUSTOMER_ID EYEBALL_REAL_QUICKBOOKS_INVOICE_ID
+                EYEBALL_CRED_ZENDESK_ACCESS_TOKEN EYEBALL_CRED_ZENDESK_EXPIRES_AT EYEBALL_CRED_ZENDESK_SCOPES EYEBALL_REAL_ZENDESK_BASE_URL EYEBALL_REAL_ZENDESK_TICKET_ID EYEBALL_REAL_ZENDESK_ASSIGNEE_ID EYEBALL_REAL_ZENDESK_CONVERSATION_ID
+              )
+              {
+                echo "EYEBALL_REAL_HUBSPOT_BASE_URL=https://api.hubapi.com"
+                echo "EYEBALL_REAL_QUICKBOOKS_BASE_URL=https://quickbooks.api.intuit.com"
+              } >> "$GITHUB_ENV"
+              ;;
+            productivity)
+              providers="airtable,github,linear,notion"
+              required=(
+                EYEBALL_CRED_AIRTABLE_ACCESS_TOKEN EYEBALL_CRED_AIRTABLE_EXPIRES_AT EYEBALL_CRED_AIRTABLE_SCOPES EYEBALL_REAL_AIRTABLE_DOCUMENT_ID EYEBALL_REAL_AIRTABLE_ROW_ID
+                EYEBALL_CRED_GITHUB_ACCESS_TOKEN EYEBALL_CRED_GITHUB_EXPIRES_AT EYEBALL_CRED_GITHUB_SCOPES EYEBALL_REAL_GITHUB_PROJECT_ID EYEBALL_REAL_GITHUB_ISSUE_ID EYEBALL_REAL_GITHUB_PULL_REQUEST_ID
+                EYEBALL_CRED_LINEAR_ACCESS_TOKEN EYEBALL_CRED_LINEAR_EXPIRES_AT EYEBALL_CRED_LINEAR_SCOPES EYEBALL_REAL_LINEAR_PROJECT_ID EYEBALL_REAL_LINEAR_ISSUE_ID
+                EYEBALL_CRED_NOTION_ACCESS_TOKEN EYEBALL_CRED_NOTION_EXPIRES_AT EYEBALL_CRED_NOTION_SCOPES EYEBALL_REAL_NOTION_DOCUMENT_ID EYEBALL_REAL_NOTION_ROW_ID
+              )
+              {
+                echo "EYEBALL_REAL_AIRTABLE_BASE_URL=https://api.airtable.com"
+                echo "EYEBALL_REAL_GITHUB_BASE_URL=https://api.github.com"
+                echo "EYEBALL_REAL_LINEAR_BASE_URL=https://api.linear.app"
+                echo "EYEBALL_REAL_NOTION_BASE_URL=https://api.notion.com"
+              } >> "$GITHUB_ENV"
+              ;;
+            commerce)
+              providers="shopify"
+              required=(
+                EYEBALL_CRED_SHOPIFY_ACCESS_TOKEN EYEBALL_CRED_SHOPIFY_EXPIRES_AT EYEBALL_CRED_SHOPIFY_SCOPES EYEBALL_REAL_SHOPIFY_BASE_URL
+                EYEBALL_REAL_SHOPIFY_ORDER_ID EYEBALL_REAL_SHOPIFY_LINE_ITEM_ID EYEBALL_REAL_SHOPIFY_PRODUCT_ID EYEBALL_REAL_SHOPIFY_INVENTORY_ITEM_ID EYEBALL_REAL_SHOPIFY_LOCATION_ID
+              )
+              ;;
+          esac
+          for name in "${required[@]}"; do
+            if [[ -z "${!name:-}" ]]; then
+              echo "Missing required environment secret: $name" >&2
+              exit 1
+            fi
+          done
+          echo "EYEBALL_CONTRACT_PROVIDERS=$providers" >> "$GITHUB_ENV"
+
+      - name: Build Eyeball
+        run: pnpm build
+
+      - name: Run filtered real-target contracts
+        env:
+          EYEBALL_CONTRACT_TARGET: real
+        run: pnpm test:contract
+
+      - name: Require a complete green certification report
+        run: >-
+          node --input-type=module -e '
+          import { readFileSync } from "node:fs";
+          const report = JSON.parse(readFileSync("apps/executor/contract-report.json", "utf8"));
+          const badRows = report.matrix.filter((row) => row.outcome === "fail" || row.outcome === "skipped");
+          const badAssertions = report.assertions.filter((row) => row.outcome !== "pass");
+          if (report.target !== "real" || badRows.length > 0 || badAssertions.length > 0) {
+            console.error(JSON.stringify({ target: report.target, badRows, badAssertions }, null, 2));
+            process.exit(1);
+          }
+          console.log(JSON.stringify(report.summary, null, 2));'
+
+      - name: Upload sanitized contract evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: contract-real-${{ inputs['provider-batch'] }}-${{ github.run_id }}
+          path: apps/executor/contract-report.json
+          if-no-files-found: warn
+          retention-days: 30

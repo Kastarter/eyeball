@@ -309,7 +309,8 @@ Real failures do not auto-retry side effects. A retry reuses its idempotency key
 ## 5. Real-auth certification process
 
 Certification follows green adapter/mock conformance and the swap boundary in
-[MOCKS.md §10](./MOCKS.md#10-real-auth-swap-contract).
+[MOCKS.md §10](./MOCKS.md#10-real-auth-swap-contract). The exact credential variables, provider batches, app setup,
+commands, evidence checks, and manual workflow are maintained in [REAL-AUTH.md](./REAL-AUTH.md).
 
 For each provider:
 

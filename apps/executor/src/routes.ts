@@ -9,6 +9,7 @@ import {
   TOOL_ERROR_CODES,
 } from "@eyeball/core";
 import { type Context, Hono } from "hono";
+import { createConfiguredCredentialProvider } from "./credential-provider.js";
 import type { DevVaultCredentialProvider } from "./dev-vault.js";
 import type { DevVoiceSessionAdvancer } from "./dev-voice-sessions.js";
 import {
@@ -192,9 +193,8 @@ export function createExecutorApp(options: ExecutorAppOptions = {}): Hono<{
     options.engine ??
     new ExecutionEngine({
       env,
-      ...(options.devVault === undefined
-        ? {}
-        : { credentialProvider: options.devVault }),
+      credentialProvider:
+        options.devVault ?? createConfiguredCredentialProvider({ env }),
     });
   if (
     options.devVault !== undefined &&

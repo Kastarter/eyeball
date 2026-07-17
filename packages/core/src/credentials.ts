@@ -91,7 +91,7 @@ export interface CredentialRefreshContext extends CredentialContext {
 }
 
 export interface CredentialProvider {
-  readonly kind: "env" | "mock" | "cloud";
+  readonly kind: "env" | "mock" | "local-vault" | "cloud";
   resolve(context: CredentialContext): Promise<ResolvedCredential>;
   refresh?(context: CredentialRefreshContext): Promise<OAuth2Credential>;
   invalidate?(context: CredentialContext): Promise<void>;

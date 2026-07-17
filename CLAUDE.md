@@ -5,9 +5,10 @@ authenticated tools across SaaS, messaging, voice, social data, and business sys
 
 ## Current State
 
-- Monorepo scaffold is green; `@eyeball/core` implements RFC 001 contracts and framework converters with 79 tests.
-- `@eyeball/catalog` keeps the frozen catalog 1.0 baseline and ships catalog 1.1 with email, calendar, messaging, voice, CRM, ERP/accounting, payments, e-commerce, customer-support, social-data, storage, spreadsheet/database, and PM/dev-tool contracts plus 37 provider manifests; catalog tests total 85.
+- Monorepo scaffold is green; `@eyeball/core` implements RFC 001 contracts and framework converters with 85 tests.
+- `@eyeball/catalog` keeps the frozen catalog 1.0 baseline and ships catalog 1.1 with email, calendar, messaging, voice, CRM, ERP/accounting, payments, e-commerce, customer-support, social-data, storage, spreadsheet/database, and PM/dev-tool contracts plus 37 provider manifests; catalog tests total 102.
 - `@eyeball/executor` implements RFC 001 sync/async execution, polling, idempotency, API-key isolation, and adapter dispatch, including in-process integration flows and the formal manifest-derived contract suite.
+- OSS real auth now includes the AES-256-GCM local vault, automatic OAuth refresh, the `eyeball-auth` CLI, shared metadata for all 14 shipped OAuth toolkits, and filtered real-provider certification batches; Airtable endpoint metadata remains `TODO-verify`.
 - `@eyeball/dashboard` is a Next.js 16 App Router admin scaffold with the seven-section shell, teaching empty states, reusable UI primitives, and a `/design` visual QA gallery.
 - Dashboard Overview reads toolkit/tool counts from `@eyeball/catalog` and checks the executor's public `/health` route client-side with a graceful offline state.
 - Dashboard Executions ships filter/pagination polling, URL-deep-linked forensic detail, and canonical cURL reconstruction; Voice Agents ships revision-aware authoring plus scripted or chat session testing.
@@ -39,6 +40,7 @@ authenticated tools across SaaS, messaging, voice, social data, and business sys
 - Executor HTTP tests use Hono `app.request` and in-process provider apps; they never bind loopback sockets.
 - Contract fixtures live by capability under `apps/executor/test/contract/fixtures`; `pnpm test:contract` defaults to mock and writes the ignored `apps/executor/contract-report.json`.
 - Real contracts use `EYEBALL_CONTRACT_TARGET=real`, `EYEBALL_REAL_<TOOLKIT>_*` target/fixture settings, and `EYEBALL_CRED_<TOOLKIT>_*` credentials; missing configuration is an explicit Vitest skip.
+- `EYEBALL_CONTRACT_PROVIDERS` is the strict comma-separated provider filter; `EYEBALL_CREDENTIALS` selects `mock` (default), `env`, or `local-vault` without fallback.
 - Canonical tool names use `toolkit.operation`; restricted surfaces use reversible `toolkit__operation`.
 - Format converters pass canonical JSON Schema objects through unchanged; OpenAI strict mode stays omitted until a version-pinned compatibility validator exists.
 - WhatsApp Business connections keep `phoneNumberId` beside `apiKey` in the resolved API-key credential tuple; messaging calls do not repeat it under `x_provider`.
@@ -57,6 +59,7 @@ authenticated tools across SaaS, messaging, voice, social data, and business sys
 - Auth boundary is the `CredentialProvider` seam: an OSS env provider restricted to one
   project/user pair plus deterministic mocks; private cloud vault, hosted OAuth/connect,
   refresh, and multi-user connected accounts.
+- OSS real auth keeps its encrypted single-tenant local vault in `packages/core`; provider OAuth endpoint/client metadata lives in `packages/catalog` so the executor and `eyeball-auth` CLI share one source of truth.
 - Execution storage and scheduling sit behind `ExecutionStore` and `TaskQueue`; OSS currently uses atomic in-memory idempotency plus a bounded promise queue.
 - Shared adapter contracts live in `@eyeball/core`; `@eyeball/toolkits` depends on core, and the thin executor app registers toolkit adapters by slug.
 - Toolkit adapters receive materialized tools, defaulted canonical input, one resolved credential, a trusted manifest base URL, fetch, clock, and logger.
@@ -101,6 +104,7 @@ authenticated tools across SaaS, messaging, voice, social data, and business sys
 - Open contract item: specify a version-pinned LangChain converter contract or remove it from
   the launch quickstarts.
 - The separate `mocks/` source workspace is not part of this repository's package release; docs must not claim its packages are currently published.
+- The local vault serializes writes only within one process; multiple executors must not share one vault file.
 - Open contract item: define WebRTC agent-session activation, number-binding lifecycle, and
   outbound transport defaults for RFC 002.
 - Open contract item: define how opaque voice-agent model references are versioned, resolved,

@@ -2,7 +2,7 @@
 
 - Status: Draft for review
 - Catalog baseline: 1.0
-- Last updated: 2026-07-16
+- Last updated: 2026-07-17
 - Applies to: `core`, `sdk`, `bridge`, `executor`, `mcp-gateway`, `eyeball-mocks`
 
 ## 0. Scope and conformance
@@ -680,7 +680,7 @@ export interface CredentialRefreshContext extends CredentialContext {
 }
 
 export interface CredentialProvider {
-  readonly kind: "env" | "mock" | "cloud";
+  readonly kind: "env" | "mock" | "local-vault" | "cloud";
   resolve(context: CredentialContext): Promise<ResolvedCredential>;
   refresh?(context: CredentialRefreshContext): Promise<OAuth2Credential>;
   invalidate?(context: CredentialContext): Promise<void>;
@@ -732,6 +732,18 @@ export declare class MockCredentialProvider implements CredentialProvider {
   refresh?(context: CredentialRefreshContext): Promise<OAuth2Credential>;
 }
 
+/** OSS single-tenant encrypted JSON-file credential store. */
+export declare class LocalVaultCredentialProvider implements CredentialProvider {
+  readonly kind: "local-vault";
+  constructor(options: {
+    filePath: string;
+    allowedProjectId: string;
+    oauth?: Readonly<Record<ToolkitSlug, { tokenUrl: string }>>;
+  });
+  resolve(context: CredentialContext): Promise<ResolvedCredential>;
+  refresh(context: CredentialRefreshContext): Promise<OAuth2Credential>;
+}
+
 /** Public stub only; implementation and Auth Vault client live in eyeball-cloud. */
 export interface CloudCredentialProvider extends CredentialProvider {
   readonly kind: "cloud";
@@ -743,6 +755,11 @@ export interface CloudCredentialProvider extends CredentialProvider {
   `auth_missing`; process-wide credentials can never fall through to another project.
 - `MockCredentialProvider` is deterministic and accepts `fixture:`-prefixed test secrets;
   it supports valid, expired, refresh, missing, and insufficient-scope fixtures.
+- `LocalVaultCredentialProvider` is the durable OSS/self-host path: one encrypted JSON file,
+  AES-256-GCM records under `EYEBALL_VAULT_KEY`, fresh per-write nonce derivation,
+  single-process write serialization, expiry checks, refresh-token rotation, and in-flight
+  refresh deduplication. It is single-tenant infrastructure, not a substitute for the hosted
+  connection vault.
 - `CloudCredentialProvider` calls the private Auth Vault API, selects the connection,
   refreshes OAuth, and returns only a short-lived provider-ready credential.
 

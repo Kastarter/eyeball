@@ -14,6 +14,7 @@ import {
   fixtureInput,
   MissingRealConfigurationError,
 } from "./fixtures.js";
+import { parseContractProviderFilter } from "./provider-filter.js";
 import {
   CONTRACT_SUITE_VERSION,
   type ContractReportRow,
@@ -26,6 +27,10 @@ export interface DescribeCapabilityConfig {
   readonly target: ContractTarget;
   readonly registry: CapabilityFixtureRegistry;
 }
+
+const configuredProviders = parseContractProviderFilter(
+  process.env.EYEBALL_CONTRACT_PROVIDERS,
+);
 
 function implementedTools(
   manifest: ReturnType<typeof defaultCatalog.getManifest> & object,
@@ -162,9 +167,23 @@ export function describeCapability(
     );
   }
   validateRegistry(config.registry);
-  const manifests = defaultCatalog.listManifests({ capability });
+  const manifests = defaultCatalog
+    .listManifests({ capability })
+    .filter(
+      (manifest) =>
+        configuredProviders === undefined ||
+        configuredProviders.has(manifest.toolkit.slug),
+    );
   const contracts = defaultCatalog.listContracts({ capability });
-  if (manifests.length === 0 || contracts.length === 0) {
+  if (contracts.length === 0) {
+    throw new Error(
+      `Capability ${capability} has no manifest-derived contract matrix.`,
+    );
+  }
+  if (manifests.length === 0) {
+    if (configuredProviders !== undefined) {
+      return;
+    }
     throw new Error(
       `Capability ${capability} has no manifest-derived contract matrix.`,
     );

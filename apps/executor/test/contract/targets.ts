@@ -1,4 +1,8 @@
 import {
+  credentialMappingForManifest,
+  requiredCredentialEnvironment,
+} from "@eyeball/catalog";
+import {
   type CredentialProvider,
   CredentialProviderError,
   type EnvCredentialMapping,
@@ -245,74 +249,6 @@ export function mockCredential(
   }
 }
 
-function realCredentialMapping(
-  manifest: ProviderManifest,
-): EnvCredentialMapping {
-  const prefix = envPrefix("EYEBALL_CRED", manifest.toolkit.slug);
-  switch (manifest.auth.class) {
-    case "oauth2":
-      return {
-        type: "oauth2",
-        accessTokenEnv: `${prefix}ACCESS_TOKEN`,
-        expiresAtEnv: `${prefix}EXPIRES_AT`,
-        scopesEnv: `${prefix}SCOPES`,
-      };
-    case "api_key":
-      return {
-        type: "api_key",
-        valueEnvs: Object.fromEntries(
-          (manifest.auth.fields ?? ["apiKey"]).map((field) => [
-            field,
-            `${prefix}${snakeCase(field)}`,
-          ]),
-        ),
-      };
-    case "basic": {
-      if (manifest.toolkit.slug === "twilio") {
-        return {
-          type: "basic",
-          usernameEnv: `${prefix}ACCOUNT_SID`,
-          passwordEnv: `${prefix}AUTH_TOKEN`,
-        };
-      }
-      if (manifest.toolkit.slug === "odoo") {
-        return {
-          type: "basic",
-          usernameEnv: `${prefix}USERNAME`,
-          passwordEnv: `${prefix}API_KEY`,
-          parameterEnvs: { database: `${prefix}DATABASE` },
-        };
-      }
-      return {
-        type: "basic",
-        usernameEnv: `${prefix}USERNAME`,
-        passwordEnv: `${prefix}PASSWORD`,
-      };
-    }
-    case "none":
-      return { type: "none" };
-  }
-}
-
-function requiredCredentialEnvironment(
-  mapping: EnvCredentialMapping,
-): readonly string[] {
-  switch (mapping.type) {
-    case "oauth2":
-      return [mapping.accessTokenEnv];
-    case "api_key":
-      return Object.values(mapping.valueEnvs);
-    case "basic":
-      return [
-        mapping.usernameEnv,
-        mapping.passwordEnv,
-        ...Object.values(mapping.parameterEnvs ?? {}),
-      ];
-    case "none":
-      return [];
-  }
-}
-
 function realReadiness(
   manifest: ProviderManifest,
   mapping: EnvCredentialMapping,
@@ -364,7 +300,7 @@ export function createContractTargetHarness(
     };
   }
 
-  const mapping = realCredentialMapping(manifest);
+  const mapping = credentialMappingForManifest(manifest);
   const readiness = realReadiness(manifest, mapping);
   const env = process.env;
   const credentialProvider: CredentialProvider = options.expired

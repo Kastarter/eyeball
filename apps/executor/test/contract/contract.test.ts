@@ -1,3 +1,4 @@
+import { defaultCatalog } from "@eyeball/catalog";
 import { afterAll } from "vitest";
 import { calendarFixtures } from "./fixtures/calendar.js";
 import { crmFixtures } from "./fixtures/crm.js";
@@ -13,6 +14,10 @@ import { storageFixtures } from "./fixtures/storage.js";
 import { supportFixtures } from "./fixtures/support.js";
 import { voiceFixtures } from "./fixtures/voice.js";
 import type { ContractTarget } from "./fixtures.js";
+import {
+  parseContractProviderFilter,
+  validateContractProviderFilter,
+} from "./provider-filter.js";
 import { writeContractReport } from "./report.js";
 import { describeCapability } from "./runner.js";
 
@@ -25,6 +30,10 @@ function contractTarget(): ContractTarget {
 }
 
 const target = contractTarget();
+validateContractProviderFilter(
+  parseContractProviderFilter(process.env.EYEBALL_CONTRACT_PROVIDERS),
+  defaultCatalog.listManifests().map((manifest) => manifest.toolkit.slug),
+);
 
 describeCapability("calendar_scheduling", {
   target,

@@ -17,6 +17,7 @@
     "docs:check": "node --import tsx scripts/check-docs.ts",
     "docs:snippets": "node --import tsx scripts/check-docs-snippets.ts",
     "docs:typecheck": "tsc -p tsconfig.docs.json",
+    "eyeball-auth": "tsx scripts/eyeball-auth.ts",
     "test": "turbo run test",
     "test:contract": "pnpm --filter @eyeball/executor test:contract",
     "typecheck": "turbo run typecheck",
