@@ -1,7 +1,8 @@
 {
   "name": "@eyeball/bridge",
   "version": "0.1.0",
-  "private": false,
+  "private": true,
+  "description": "EXPERIMENTAL Activepieces compatibility spike for eyeball",
   "type": "module",
   "files": [
     "dist"
@@ -16,11 +17,22 @@
   },
   "scripts": {
     "build": "tsc -p tsconfig.json",
+    "introspect": "pnpm run build && node scripts/introspect.mjs",
     "test": "vitest run",
     "typecheck": "tsc -p tsconfig.json --noEmit",
-    "lint": "biome check src test"
+    "lint": "biome check src test scripts"
   },
   "dependencies": {
+    "@activepieces/piece-airtable": "0.6.10",
+    "@activepieces/piece-discord": "0.5.4",
+    "@activepieces/piece-gmail": "0.12.8",
+    "@activepieces/piece-slack": "0.17.3",
+    "@activepieces/piece-typeform": "0.4.6",
+    "@activepieces/pieces-framework": "0.32.0",
+    "@activepieces/shared": "0.95.1",
     "@eyeball/core": "workspace:*"
+  },
+  "devDependencies": {
+    "nock": "14.0.16"
   }
 }

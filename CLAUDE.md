@@ -39,11 +39,12 @@ Open-core tool and integration platform for AI agents: one typed, authenticated 
 - Voice agents keep immutable revisions; child calls re-enter the normal executor under pinned scope.
 - Mockhouse is a separate nested repository; rebuild its `dist` before contract tests.
 - `docs/MOCKS.md` and `docs/TESTING.md` are authoritative for mock-versus-real parity.
+- The five selected Activepieces npm pieces are self-contained bundles; framework/shared are explicit bridge compatibility pins, not peers declared by those artifacts.
 - The self-hosted docs app statically generates every navigation path and builds search/TOC data from the authored MDX.
 
 ## Current State
 
-- Source version is `0.1.0`; all eight main workspaces build, test, typecheck, and lint.
+- Source version is `0.1.0`; all nine main workspaces build, test, typecheck, and lint.
 - Catalog `1.1` contains 37 manifests/toolkits and the implemented capability adapters.
 - The manifest-derived matrix has 457 rows: 218 smoke and 239 explicit `not_supported`.
 - The dashboard, SDK, MCP gateway, local encrypted vault, auth CLI, and public docs source are built.
@@ -52,10 +53,11 @@ Open-core tool and integration platform for AI agents: one typed, authenticated 
 - `pnpm dev:stack` boots 30-provider Mockhouse, executor, and MCP gateway with dev connections.
 - Deterministic MCP and restaurant voice demos run in-process; the Anthropic episode is optional.
 - The nested mocks repository has eight workspaces and 163 tests.
+- The private Activepieces bridge spike imports five pinned pieces, introspects 67 actions and 23 triggers, hydrates Airtable dynamic fields, and executes Gmail, Slack, and Airtable against in-process mocks.
 
 ## Known Issues
 
-- **Top pending:** `packages/bridge` is an empty stub; the Activepieces five-piece compatibility spike and vendoring decision are not done.
+- The Activepieces spike is not a production breadth layer: pieces need per-tool canonical mappings, isolated execution/egress, auth alignment, license provenance, and mock/real certification before catalog promotion; do not vendor the monorepo wholesale.
 - Hosted OAuth vault, billing, license finalization, and real-provider certification are not complete.
 - Voice sessions need durable state and a persistent production media worker.
 - Attachments await an executor-to-adapter staged-file resolver.

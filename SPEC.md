@@ -13,7 +13,7 @@ Implemented in `0.1.0`:
 - the authenticated executor, project/user-scoped connections, idempotency, async queueing, public execution records, and encrypted local vault;
 - the TypeScript SDK, Streamable HTTP MCP gateway, Next.js admin dashboard, generated documentation, integrated Mockhouse stack, and deterministic MCP/restaurant demos.
 
-This completion claim covers the repository's local `0.1.0` scope. Hosted OAuth, production durability, real-provider certification, and the Activepieces breadth bridge are not represented as complete.
+This completion claim covers the repository's local `0.1.0` scope. Hosted OAuth, production durability, real-provider certification, and productionizing the experimental Activepieces bridge are not represented as complete.
 
 ---
 
@@ -46,9 +46,9 @@ Generalist, competing head-on with Composio / Arcade / ACI.dev / Pipedream. We w
 
 1. **DX** — fewest lines from `npm install` to a working authenticated tool call.
 2. **Auth done right** — end-user connected accounts as a first-class primitive.
-3. **Breadth fast** — the planned Activepieces bridge can turn MIT-licensed pieces (~280+
-   apps) into typed agent tools instead of hand-building integrations. The bridge spike is
-   the top post-`0.1.0` item and has not been run.
+3. **Breadth fast** — a selective Activepieces bridge can turn compatible MIT-licensed pieces
+   into typed agent tools instead of hand-building every integration. The five-piece spike
+   proved the seam but rejected automatic catalog-wide compatibility; promotion is per piece.
 4. **Tools the wrappers don't have** — first-class calling/telephony, social-data
    scraping (ScrapeCreators), and other "real world" actions beyond SaaS CRUD.
 5. **Smart tool selection** — semantic search over the catalog so agents with access to
@@ -114,7 +114,7 @@ Two planes, one catalog:
 │ EXECUTION PLANE                                            │
 │  Executor service: validate input → resolve connection →   │
 │  inject auth → run → normalize errors → log                │
-│  Planned piece runner (Activepieces spike not yet done)     │
+│  Experimental piece runner (five-piece spike only)          │
 │  Long-running jobs (calls, big scrapes) via queue + poll   │
 ├────────────────────────────────────────────────────────────┤
 │ AUTH VAULT                                                 │
@@ -126,14 +126,14 @@ Postgres (catalog, projects, connections, executions) · Redis (queue, rate limi
 
 ### Key design decisions
 
-- **The Activepieces bridge is the intended breadth engine and the top pending item.**
-  `packages/bridge` is still an empty stub: the five-piece compatibility spike, transformer,
-  runner shim, and per-piece rig have not been implemented. Pieces are MIT-licensed
-  TypeScript modules with declared actions, props, and auth. The planned transformer is:
-  piece action props → JSON Schema tool definition; piece auth declaration → auth config;
-  execution wraps the piece's `run()` with our vault-injected credentials. One bridge,
-  ~280 toolkits. (Engineering risk: props are dynamic in places; some pieces assume the
-  Activepieces engine context — we need a compatibility shim and a per-piece test rig.)
+- **The Activepieces bridge is an experimental selective breadth seam.** The five-piece spike
+  in `packages/bridge` imports Gmail, Airtable, Slack, Discord, and Typeform; introspects real
+  actions, triggers, props, and auth; transforms strict JSON Schema; hydrates one real dynamic
+  schema; and executes Gmail, Slack, and Airtable against existing in-process mocks. It also
+  proved that dynamic props need connection-time resolution, bundled clients do not share one
+  transport seam, and engine context/auth assumptions vary by piece. The decision is no
+  wholesale vendoring and no "one bridge, ~280 toolkits" claim: promote exact pinned pieces
+  individually behind an isolated worker and per-piece certification. See RFC 003.
 - **Non-bridge tools where wrappers fall short.** Native calling/telephony (place a call,
   agent speaks/listens — long-running, stateful) and ScrapeCreators-backed social-data
   adapters (profiles, posts, creator search) are separate catalog sources. Browser-ish
@@ -177,14 +177,15 @@ executions(id, project_id, tool_id, connected_account_id, input, output,
 
 ## 6. Delivery status
 
-- **Specification baseline (complete).** The eight-document suite fixes catalog 1.0
+- **Specification baseline (complete).** The nine-document suite fixes catalog 1.0
   (20 capabilities, 187 capability-scoped tools, 157 providers, 34 P0), RFC 001 contracts,
   additive catalog 1.1 voice agents, mock architecture, testing, admin UI, and public docs.
 - **Local `0.1.0` implementation (complete).** Core, catalog, adapters, executor, TypeScript
   SDK, MCP gateway, dashboard, docs, local vault, Mockhouse integration, and deterministic
   demos build and pass the repository gates.
-- **Activepieces breadth bridge (top pending).** Run the five-piece compatibility spike before
-  any breadth claim or bridge generalization; `packages/bridge` remains an empty stub.
+- **Activepieces breadth bridge (experimental spike complete).** The five-piece result supports
+  selective per-piece promotion only. Isolated execution, transport profiles, auth alignment,
+  license provenance, and mock/real certification remain before any breadth claim.
 - **Hosted/live work (later).** Hosted auth/connect flows, production durability, Python/P1/P2
   breadth, and real-provider certification follow the proven local core loop.
 
@@ -226,13 +227,14 @@ deploy to Vercel; the voice worker requires persistent container infrastructure.
 
 The original dependency order and current result are:
 
-1. **Specifications (complete)** — the eight-document suite and frozen contract hierarchy.
+1. **Specifications (complete)** — the nine-document suite and frozen contract hierarchy.
 2. **Repository scaffolds (complete)** — initialize the main and nested mock monorepos.
 3. **Mocks and contracts (complete for local `0.1.0`)** — Mockhouse, fixtures, scripted
    voice behavior, and manifest-derived suites.
 4. **Executor and toolkits (complete for implemented native/provider adapters)** — core
    validators/catalog compiler, credential seam, execution records, adapters, and local voice
-   demo. **The five-piece Activepieces compatibility spike is still not done.**
+   demo. The private five-piece Activepieces compatibility spike is complete; production
+   integration is deliberately gated by RFC 003.
 5. **TypeScript SDK (complete)** — discovery, lossless conversion bundles, execution, polling,
    and model tool-call helpers.
 6. **MCP gateway and tool search (complete)** — catalog/search discovery and executor-backed
@@ -249,10 +251,11 @@ polish, security/compliance program.
 
 ## 9. Remaining open questions
 
-1. **Activepieces bridge and vendoring — TOP PENDING ITEM.** `packages/bridge` is an empty
-   stub. Run the five-piece compatibility/runner spike first, then decide whether to vendor or
-   fork the pieces we use (own them and accept drift) or track upstream (absorb breaking
-   changes). The original breadth strategy remains unproven until this is done.
+1. **Activepieces bridge productionization.** The spike decision is to track exact upstream
+   packages during evaluation, never vendor the monorepo wholesale, and take a minimal audited
+   snapshot/fork only for a promoted piece that needs patches. The remaining open work is the
+   isolated runner, per-piece canonical/auth/transport profiles, license provenance, and
+   mock/real certification described by RFC 003.
 2. **Billing model.** Per-execution vs per-connected-account; free-tier shape drives adoption
    for a DX-led product.
 3. **License finalization.** FSL-1.1 vs Elastic 2.0 vs a custom attribution clause needs a
@@ -261,6 +264,7 @@ polish, security/compliance program.
 ## 10. Document map
 
 Conflict order is RFC 001 > provider catalog > RFC 002 > mocks > testing > product/UI/docs.
+RFC 003 is a subordinate experimental finding and does not redefine those contracts.
 Each document is authoritative only for the role named here:
 
 | Document | Authority and role |
@@ -268,6 +272,7 @@ Each document is authoritative only for the role named here:
 | `docs/rfcs/001-canonical-tools.md` | Highest authority for tool, execution, error, credential, conversion, and versioning contracts. |
 | `docs/PROVIDERS.md` | Definitive catalog 1.0 authority for capabilities, canonical names, toolkit slugs, tiers, membership, and counts. |
 | `docs/rfcs/002-voice-agents.md` | Additive catalog 1.1 authority for immutable voice-agent resources, tools, sessions, and persistent-worker semantics; subordinate to RFC 001. |
+| `docs/rfcs/003-bridge-spike-findings.md` | Experimental evidence and promotion decision for the Activepieces bridge; non-normative where RFC 001 or the provider catalog is more specific. |
 | `docs/MOCKS.md` | Authority for mock architecture, control endpoints, fixture tokens, fidelity, P0 inventory, and real-auth swap behavior. |
 | `docs/TESTING.md` | Test-pyramid, contract-suite, CI, and certification strategy; it references rather than redefines higher contracts. |
 | `SPEC.md` | Product intent, architecture context, repository strategy, delivery order, and open decisions; non-normative where an RFC or catalog is more specific. |
