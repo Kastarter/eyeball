@@ -14,10 +14,17 @@
     "lint": "biome check src test"
   },
   "dependencies": {
+    "@electric-sql/pglite": "^0.5.4",
     "@eyeball/catalog": "workspace:*",
     "@eyeball/core": "workspace:*",
     "@eyeball/toolkits": "workspace:*",
     "@hono/node-server": "^1.16.0",
-    "hono": "^4.8.10"
+    "drizzle-orm": "^0.45.2",
+    "hono": "^4.8.10",
+    "pg": "^8.22.0"
+  },
+  "devDependencies": {
+    "@types/pg": "^8.20.0",
+    "drizzle-kit": "^0.31.10"
   }
 }

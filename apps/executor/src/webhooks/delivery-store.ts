@@ -65,7 +65,7 @@ function storageKey(projectId: string, deliveryId: string): string {
   return JSON.stringify([projectId, deliveryId]);
 }
 
-function validTransition(
+export function validDeliveryTransition(
   previous: WebhookDeliveryStatus,
   next: WebhookDeliveryStatus,
 ): boolean {
@@ -76,13 +76,13 @@ function validTransition(
   );
 }
 
-function cursorAfter(deliveryId: string): string {
+export function deliveryCursorAfter(deliveryId: string): string {
   return Buffer.from(JSON.stringify({ after: deliveryId }), "utf8").toString(
     "base64url",
   );
 }
 
-function deliveryIdFromCursor(cursor: string): string {
+export function deliveryIdFromCursor(cursor: string): string {
   try {
     const parsed = JSON.parse(
       Buffer.from(cursor, "base64url").toString("utf8"),
@@ -103,8 +103,38 @@ function deliveryIdFromCursor(cursor: string): string {
   }
 }
 
-function sameAttempt(left: unknown, right: unknown): boolean {
+export function sameDeliveryAttempt(left: unknown, right: unknown): boolean {
   return JSON.stringify(left) === JSON.stringify(right);
+}
+
+export function validateCreateWebhookDelivery(
+  projectId: string,
+  input: CreateWebhookDeliveryInput,
+): void {
+  if (
+    projectId.trim().length === 0 ||
+    input.endpointId.trim().length === 0 ||
+    input.eventId.trim().length === 0 ||
+    !Number.isFinite(Date.parse(input.createdAt))
+  ) {
+    throw new WebhookDeliveryInputError(
+      "Webhook delivery identity and timestamp are required.",
+    );
+  }
+}
+
+export function validateListWebhookDeliveries(
+  input: ListWebhookDeliveriesInput,
+): void {
+  if (
+    !Number.isSafeInteger(input.limit) ||
+    input.limit < 1 ||
+    input.limit > 100
+  ) {
+    throw new WebhookDeliveryInputError(
+      "Webhook delivery limit must be an integer from 1 through 100.",
+    );
+  }
 }
 
 /** Process-local delivery log. It deliberately stores no endpoint secret or payload. */
@@ -120,16 +150,7 @@ export class InMemoryWebhookDeliveryStore implements WebhookDeliveryStore {
     projectId: string,
     input: CreateWebhookDeliveryInput,
   ): Promise<WebhookDelivery> {
-    if (
-      projectId.trim().length === 0 ||
-      input.endpointId.trim().length === 0 ||
-      input.eventId.trim().length === 0 ||
-      !Number.isFinite(Date.parse(input.createdAt))
-    ) {
-      throw new WebhookDeliveryInputError(
-        "Webhook delivery identity and timestamp are required.",
-      );
-    }
+    validateCreateWebhookDelivery(projectId, input);
     const generatedDeliveryId = this.#deliveryIdFactory();
     if (generatedDeliveryId.trim().length === 0) {
       throw new Error("Webhook delivery ID factory returned an empty value.");
@@ -173,7 +194,7 @@ export class InMemoryWebhookDeliveryStore implements WebhookDeliveryStore {
     ) {
       throw new Error("Webhook delivery identity fields are immutable.");
     }
-    if (!validTransition(previous.status, delivery.status)) {
+    if (!validDeliveryTransition(previous.status, delivery.status)) {
       throw new Error(
         `Invalid webhook delivery transition: ${previous.status} -> ${delivery.status}`,
       );
@@ -182,7 +203,8 @@ export class InMemoryWebhookDeliveryStore implements WebhookDeliveryStore {
       delivery.attempts.length < previous.attempts.length ||
       delivery.attempts.length > previous.attempts.length + 1 ||
       previous.attempts.some(
-        (attempt, index) => !sameAttempt(attempt, delivery.attempts[index]),
+        (attempt, index) =>
+          !sameDeliveryAttempt(attempt, delivery.attempts[index]),
       )
     ) {
       throw new Error("Webhook delivery attempts are append-only.");
@@ -205,15 +227,7 @@ export class InMemoryWebhookDeliveryStore implements WebhookDeliveryStore {
     endpointId: string,
     input: ListWebhookDeliveriesInput,
   ): Promise<WebhookDeliveryPage> {
-    if (
-      !Number.isSafeInteger(input.limit) ||
-      input.limit < 1 ||
-      input.limit > 100
-    ) {
-      throw new WebhookDeliveryInputError(
-        "Webhook delivery limit must be an integer from 1 through 100.",
-      );
-    }
+    validateListWebhookDeliveries(input);
     const all = [...this.#deliveries.entries()]
       .filter(
         ([key, delivery]) =>
@@ -237,7 +251,7 @@ export class InMemoryWebhookDeliveryStore implements WebhookDeliveryStore {
     return {
       deliveries,
       ...(nextOffset < all.length && last !== undefined
-        ? { nextCursor: cursorAfter(last.deliveryId) }
+        ? { nextCursor: deliveryCursorAfter(last.deliveryId) }
         : {}),
     };
   }

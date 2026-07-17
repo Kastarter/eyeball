@@ -50,21 +50,23 @@ function copy<T>(value: T): T {
   return structuredClone(value);
 }
 
-function publicSubscription(
+export function publicSubscription(
   subscription: StoredTriggerSubscription,
 ): TriggerSubscription {
   const { ingestSecretHash: _ingestSecretHash, ...result } = subscription;
   return result;
 }
 
-function cursorAfter(subscriptionId: TriggerSubscriptionId): string {
+export function triggerSubscriptionCursorAfter(
+  subscriptionId: TriggerSubscriptionId,
+): string {
   return Buffer.from(
     JSON.stringify({ after: subscriptionId }),
     "utf8",
   ).toString("base64url");
 }
 
-function subscriptionIdFromCursor(cursor: string): string {
+export function subscriptionIdFromCursor(cursor: string): string {
   try {
     const parsed = JSON.parse(
       Buffer.from(cursor, "base64url").toString("utf8"),
@@ -85,7 +87,9 @@ function subscriptionIdFromCursor(cursor: string): string {
   }
 }
 
-function validateListInput(input: ListTriggerSubscriptionsInput): void {
+export function validateTriggerSubscriptionListInput(
+  input: ListTriggerSubscriptionsInput,
+): void {
   if (
     !Number.isSafeInteger(input.limit) ||
     input.limit < 1 ||
@@ -149,7 +153,7 @@ export class InMemoryTriggerSubscriptionStore
     projectId: string,
     input: ListTriggerSubscriptionsInput,
   ): Promise<TriggerSubscriptionPage> {
-    validateListInput(input);
+    validateTriggerSubscriptionListInput(input);
     const all = [...(this.#projects.get(projectId)?.values() ?? [])]
       .filter(
         (subscription) =>
@@ -173,7 +177,7 @@ export class InMemoryTriggerSubscriptionStore
     return {
       subscriptions,
       ...(nextOffset < all.length && last !== undefined
-        ? { nextCursor: cursorAfter(last.subscriptionId) }
+        ? { nextCursor: triggerSubscriptionCursorAfter(last.subscriptionId) }
         : {}),
     };
   }

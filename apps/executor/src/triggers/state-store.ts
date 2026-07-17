@@ -20,7 +20,7 @@ export interface TriggerStateStore {
   ): Promise<boolean>;
 }
 
-function validTimestamp(value: string, field: string): number {
+export function validTriggerTimestamp(value: string, field: string): number {
   const timestamp = Date.parse(value);
   if (!Number.isFinite(timestamp)) {
     throw new Error(`${field} must be a valid timestamp.`);
@@ -41,9 +41,9 @@ export class InMemoryTriggerStateStore implements TriggerStateStore {
   }
 
   async put(state: TriggerState): Promise<void> {
-    validTimestamp(state.updatedAt, "Trigger state updatedAt");
+    validTriggerTimestamp(state.updatedAt, "Trigger state updatedAt");
     if (state.nextPollAt !== undefined) {
-      validTimestamp(state.nextPollAt, "Trigger state nextPollAt");
+      validTriggerTimestamp(state.nextPollAt, "Trigger state nextPollAt");
     }
     this.#states.set(state.subscriptionId, structuredClone(state));
   }
@@ -62,8 +62,11 @@ export class InMemoryTriggerStateStore implements TriggerStateStore {
     if (providerEventId.length === 0) {
       throw new Error("Provider event ID must not be empty.");
     }
-    const nowMs = validTimestamp(now, "Dedup claim now");
-    const expiresAtMs = validTimestamp(expiresAt, "Dedup claim expiresAt");
+    const nowMs = validTriggerTimestamp(now, "Dedup claim now");
+    const expiresAtMs = validTriggerTimestamp(
+      expiresAt,
+      "Dedup claim expiresAt",
+    );
     if (expiresAtMs <= nowMs) {
       throw new Error("Dedup claim expiry must be later than now.");
     }

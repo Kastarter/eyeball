@@ -113,6 +113,12 @@ node --import tsx example.ts
 
 The listener ports and development identity can be changed with `EYEBALL_MOCKHOUSE_PORT`, `EYEBALL_EXECUTOR_PORT`, `EYEBALL_MCP_GATEWAY_PORT`, `EYEBALL_DEV_API_KEY`, `EYEBALL_DEV_PROJECT_ID`, and `EYEBALL_DEV_USER_ID`.
 
+## Deployment persistence
+
+The executor remains zero-config and process-local by default. Set `EYEBALL_DATABASE_URL` in a deployment to use the Drizzle-backed Postgres stores for executions and 24-hour idempotency, webhook endpoint and delivery logs, and trigger subscription, cursor, and dedup state. Committed migrations run at executor boot and can also be applied explicitly with `pnpm db:migrate`; `docker compose up -d postgres` starts the optional local development database. CI and contract tests use embedded PGlite and do not require Docker.
+
+Database persistence does not yet make the closure-based execution and webhook queues, trigger polling leases, or the synchronous voice-agent store durable. See [Run the executor](./docs-site/self-hosting/executor.mdx) for configuration and restart boundaries.
+
 ## Docs site
 
 The repository renders `docs-site/docs.json` and all authored MDX through its own static Next.js app; no hosted documentation platform is required. Start it on the reserved documentation port with:

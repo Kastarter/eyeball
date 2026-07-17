@@ -98,22 +98,26 @@ function endpointSecret(): string {
   return `whsec_${randomBytes(32).toString("base64url")}`;
 }
 
-function secretPrefix(secret: string): string {
+export function secretPrefix(secret: string): string {
   return secret.slice(0, Math.min(secret.length, 14));
 }
 
-function publicEndpoint(endpoint: StoredWebhookEndpoint): WebhookEndpoint {
+export function publicEndpoint(
+  endpoint: StoredWebhookEndpoint,
+): WebhookEndpoint {
   const { secret: _secret, ...result } = endpoint;
   return result;
 }
 
-function validTimestamp(value: string, field: string): void {
+export function validTimestamp(value: string, field: string): void {
   if (!Number.isFinite(Date.parse(value))) {
     throw new WebhookEndpointInputError(`${field} must be a timestamp.`);
   }
 }
 
-function validateEvents(events: readonly WebhookSubscriptionEventType[]): void {
+export function validateEvents(
+  events: readonly WebhookSubscriptionEventType[],
+): void {
   if (events.length === 0) {
     throw new WebhookEndpointInputError(
       "Webhook endpoints must subscribe to at least one event.",
@@ -175,7 +179,7 @@ function privateHostname(hostname: string): boolean {
   );
 }
 
-function normalizedUrl(
+export function normalizedUrl(
   value: string,
   options: Pick<
     InMemoryWebhookEndpointStoreOptions,
@@ -211,13 +215,13 @@ function normalizedUrl(
   return url.toString();
 }
 
-function cursorAfter(endpointId: string): string {
+export function endpointCursorAfter(endpointId: string): string {
   return Buffer.from(JSON.stringify({ after: endpointId }), "utf8").toString(
     "base64url",
   );
 }
 
-function endpointIdFromCursor(cursor: string): string {
+export function endpointIdFromCursor(cursor: string): string {
   try {
     const parsed = JSON.parse(
       Buffer.from(cursor, "base64url").toString("utf8"),
@@ -238,7 +242,7 @@ function endpointIdFromCursor(cursor: string): string {
   }
 }
 
-function validateListInput(input: ListWebhookEndpointsInput): void {
+export function validateListInput(input: ListWebhookEndpointsInput): void {
   if (
     !Number.isSafeInteger(input.limit) ||
     input.limit < 1 ||
@@ -340,7 +344,7 @@ export class InMemoryWebhookEndpointStore implements WebhookEndpointStore {
     return {
       webhooks,
       ...(nextOffset < all.length && last !== undefined
-        ? { nextCursor: cursorAfter(last.endpointId) }
+        ? { nextCursor: endpointCursorAfter(last.endpointId) }
         : {}),
     };
   }

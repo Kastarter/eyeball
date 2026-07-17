@@ -1,6 +1,6 @@
 ---
 title: "Run the executor"
-description: "Build the Hono executor, configure its project-key ring, and understand its credential default."
+description: "Build the Hono executor, configure project keys, and choose zero-config or Postgres persistence."
 ---
 
 Build and start:
@@ -20,13 +20,45 @@ curl http://127.0.0.1:3000/health
 
 `EYEBALL_API_KEYS` is a comma-separated keyring. Use `key:projectId` for project-wide authority or `key:projectId:userId` to pin a key to one end user. A pinned key rejects conflicting request-body, header, query, and MCP metadata identities. Duplicate keys and malformed entries fail startup.
 
-The stock `src/server.ts` creates `createExecutorApp()` with:
+The stock `src/server.ts` creates the executor runtime with:
 
 - the default catalog and adapters;
-- an in-memory execution store and async queue;
-- an empty `MockCredentialProvider`;
+- the configured credential provider (`MockCredentialProvider` by default);
+- process-local stores when `EYEBALL_DATABASE_URL` is absent;
+- durable Postgres stores when `EYEBALL_DATABASE_URL` is present;
 - no development connection routes.
 
-To add credentials or durability, create your own server entry point and pass a configured `ExecutionEngine` and optional `devVault` to `createExecutorApp`. Do not expose the development vault in a production multi-tenant service.
+To add credentials, create your own server entry point and pass a configured `ExecutionEngine` and optional `devVault` to `createExecutorApp`. Do not expose the development vault in a production multi-tenant service.
+
+## Postgres persistence
+
+Set `EYEBALL_DATABASE_URL` to persist execution records and idempotency reservations, webhook endpoints and delivery attempts, and trigger subscriptions, cursors, and dedup claims. The stock runtime uses a `pg` pool capped at five connections and applies the committed Drizzle migrations before accepting traffic.
+
+```bash
+EYEBALL_DATABASE_URL="postgresql://eyeball:eyeball_dev@127.0.0.1:5432/eyeball" \
+EYEBALL_API_KEYS="eyeball_local_key:proj_local" \
+  pnpm --filter @eyeball/executor start
+```
+
+You can also apply migrations without starting the executor:
+
+```bash
+EYEBALL_DATABASE_URL="postgresql://eyeball:eyeball_dev@127.0.0.1:5432/eyeball" \
+  pnpm db:migrate
+```
+
+For local development, the root Compose file provides Postgres only; it is optional and is not used by CI or the store contracts:
+
+```bash
+docker compose up -d postgres
+```
+
+The contract suite runs the same schema, migrations, and Drizzle queries against embedded PGlite, so tests do not require Docker or a live database. Protect the database like any credential store: webhook signing secrets are intentionally available to the delivery worker and therefore reside in the database.
+
+<Warning>
+  Postgres makes records durable, not work scheduling. Async execution tasks, webhook retry queues, and trigger polling leases remain process-local. A restart preserves their records but does not yet resume every in-flight task. The voice-agent `AgentStore` also remains in memory because its current injectable contract is synchronous and cannot perform networked database I/O.
+</Warning>
+
+When `EYEBALL_DATABASE_URL` is absent, all current in-memory defaults remain unchanged for a zero-config local process.
 
 Provider base-URL overrides use the manifest-declared environment variable for that adapter. Keep those variables trusted; requests cannot supply an arbitrary origin.

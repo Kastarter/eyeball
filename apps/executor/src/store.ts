@@ -127,13 +127,13 @@ function executionStorageKey(
   return JSON.stringify([projectId, executionId]);
 }
 
-function cursorAfter(executionId: ExecutionId): string {
+export function executionCursorAfter(executionId: ExecutionId): string {
   return Buffer.from(JSON.stringify({ after: executionId }), "utf8").toString(
     "base64url",
   );
 }
 
-function executionIdFromCursor(cursor: string): ExecutionId {
+export function executionIdFromCursor(cursor: string): ExecutionId {
   try {
     const parsed = JSON.parse(
       Buffer.from(cursor, "base64url").toString("utf8"),
@@ -156,7 +156,7 @@ function executionIdFromCursor(cursor: string): ExecutionId {
   }
 }
 
-function assertTransition(
+export function assertExecutionTransition(
   previous: ExecutionRecord,
   next: ExecutionRecord,
 ): void {
@@ -303,7 +303,7 @@ export class InMemoryExecutionStore implements ExecutionStore {
     if (stored === undefined) {
       throw new Error(`Unknown execution ID: ${record.executionId}`);
     }
-    assertTransition(stored.record, record);
+    assertExecutionTransition(stored.record, record);
     stored.record = clone(record);
     if (record.status === "succeeded" || record.status === "failed") {
       const key = executionStorageKey(projectId, record.executionId);
@@ -393,7 +393,7 @@ export class InMemoryExecutionStore implements ExecutionStore {
     return {
       executions,
       ...(nextOffset < all.length && last !== undefined
-        ? { nextCursor: cursorAfter(last.executionId) }
+        ? { nextCursor: executionCursorAfter(last.executionId) }
         : {}),
     };
   }
