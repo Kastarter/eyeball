@@ -119,6 +119,14 @@ export function createInProcessExecutorHarness(
     if (new URL(request.url).origin !== MOCK_ORIGIN) {
       throw new Error(`Unexpected provider origin: ${request.url}`);
     }
+    // Mockhouse protects provider routes independently of the provider manifest.
+    // Native `none`-auth runtimes therefore still need the test-only transport token.
+    if (
+      options.credential?.type === "none" &&
+      !request.headers.has("Authorization")
+    ) {
+      request.headers.set("Authorization", "Bearer fixture:valid");
+    }
     return mockApp.request(request);
   }) as typeof fetch;
 

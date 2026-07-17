@@ -72,7 +72,7 @@ are identifiers only; secrets continue to enter execution solely through RFC 001
 `CredentialProvider`.
 
 ```ts
-import type { JsonValue, NormalizedToolError, ObjectSchema202012,
+import type { ExecutionId, JsonValue, NormalizedToolError, ObjectSchema202012,
   QualifiedToolName, ToolAnnotations, ToolDefinition } from "@eyeball/core";
 
 export type VoiceAgentTransport = "pstn:twilio" | "webrtc:livekit" | "chat";
@@ -437,8 +437,16 @@ model-generated calls through the regular executor, never directly to an adapter
 executor rechecks the allowlist at its trusted boundary, validates canonical input before
 calling `CredentialProvider`, and records each child execution with `sessionId` correlation.
 
-The worker MUST generate a unique idempotency key per logical mutating tool call and reuse it
-when retrying that call. It MUST NOT infer safe retries from model output. Tool failures are
+Before dispatch, the worker MUST persist the `tool_call` event with a valid child `exe_*` ID.
+Its trusted executor command reserves that same ID, while the public RFC 001 execute body stays
+unchanged. The matching `tool_result`, transcript tool turns, and execution record MUST all use
+that ID. A retry locates the durable event rather than allocating a replacement identity.
+
+The worker derives `voice-session:<sessionId>:event:<sequence>` as the idempotency key for the
+logical call and reuses it when retrying. It MUST NOT infer safe retries from model output. A
+retry whose reserved event ID differs from the stored idempotent execution fails as a conflict.
+A tool outside the immutable revision allowlist produces a sanitized `not_supported` result and
+MUST NOT reach the executor. Other tool failures are
 returned to the turn loop as sanitized `NormalizedToolError` values; secrets, raw provider
 payloads, and other users' resource existence never enter the model context or transcript.
 Successful child calls return only canonical output to the turn loop. Their execution envelope
@@ -503,9 +511,9 @@ export type VoiceAgentSessionEventData =
   | { type: "session.lifecycle"; from?: VoiceAgentSessionState; to: VoiceAgentSessionState }
   | { type: "turn.transcript"; turnId: string; speaker: "human" | "agent";
       text: string; final: boolean; startMs: number; endMs: number }
-  | { type: "tool_call"; turnId: string; executionId: string;
+  | { type: "tool_call"; turnId: string; executionId: ExecutionId;
       tool: QualifiedToolName; input: Readonly<Record<string, JsonValue>> }
-  | ({ type: "tool_result"; turnId: string; executionId: string;
+  | ({ type: "tool_result"; turnId: string; executionId: ExecutionId;
       tool: QualifiedToolName } & (
       | { output: JsonValue; error?: never }
       | { output?: never; error: NormalizedToolError }
@@ -528,7 +536,7 @@ export interface TranscriptTurn {
   endMs: number;
   text: string;
   confidence?: number;
-  executionId?: string;
+  executionId?: ExecutionId;
   tool?: QualifiedToolName;
 }
 
@@ -552,6 +560,9 @@ is greater than that value. `nextSequence` is the last sequence returned, or the
 `afterSequence` when the page is empty; callers pass it back as the next `afterSequence`.
 Polling is safe to repeat. The worker persists an event before publishing it; sequence numbers
 are gap-free within a session, and consumers deduplicate by event `id`.
+If a polling worker resumes after its cursor has passed an unresolved `tool_call`, it reloads
+the durable history, finds the session's pending execution ID, and reuses that call identity.
+Streaming workers retain the same dispatch rule and differ only in event delivery.
 
 Selected events and transcript readiness are delivered to the definition's referenced
 project endpoints. The envelope adds `projectId` and either a `VoiceAgentSessionEvent` or a

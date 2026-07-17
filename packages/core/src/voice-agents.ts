@@ -1,6 +1,7 @@
 import type { NormalizedToolError } from "./errors.js";
 import { TOOL_ERROR_CODES } from "./errors.js";
 import { type InputValidationResult, validateInput } from "./schema.js";
+import type { ExecutionId } from "./types/execution.js";
 import type {
   JSONSchema202012,
   JsonValue,
@@ -156,14 +157,14 @@ export type VoiceAgentSessionEventData =
   | {
       type: "tool_call";
       turnId: string;
-      executionId: string;
+      executionId: ExecutionId;
       tool: QualifiedToolName;
       input: Readonly<Record<string, JsonValue>>;
     }
   | ({
       type: "tool_result";
       turnId: string;
-      executionId: string;
+      executionId: ExecutionId;
       tool: QualifiedToolName;
     } & (
       | { output: JsonValue; error?: never }
@@ -197,7 +198,7 @@ export interface TranscriptTurn {
   endMs: number;
   text: string;
   confidence?: number;
-  executionId?: string;
+  executionId?: ExecutionId;
   tool?: QualifiedToolName;
 }
 
@@ -220,6 +221,10 @@ export interface TranscriptArtifact {
 }
 
 const id: JSONSchema202012 = { type: "string", minLength: 1 };
+const executionId: JSONSchema202012 = {
+  type: "string",
+  pattern: "^exe_[A-Za-z0-9][A-Za-z0-9_-]{0,127}$",
+};
 const timestamp: JSONSchema202012 = { type: "string", format: "date-time" };
 const e164: JSONSchema202012 = {
   type: "string",
@@ -238,6 +243,7 @@ const stateValues = [
 /** Reusable RFC 002 fragments embedded into every published voice-agent schema. */
 export const voiceAgentSchemaDefs = {
   id,
+  executionId,
   timestamp,
   e164,
   transport: {
@@ -575,7 +581,7 @@ export const voiceAgentSchemaDefs = {
         properties: {
           type: { const: "tool_call" },
           turnId: id,
-          executionId: id,
+          executionId: { $ref: "#/$defs/executionId" },
           tool: { $ref: "#/$defs/qualifiedToolName" },
           input: { type: "object", additionalProperties: true },
         },
@@ -589,7 +595,7 @@ export const voiceAgentSchemaDefs = {
         properties: {
           type: { const: "tool_result" },
           turnId: id,
-          executionId: id,
+          executionId: { $ref: "#/$defs/executionId" },
           tool: { $ref: "#/$defs/qualifiedToolName" },
           output: true,
           error: { $ref: "#/$defs/normalizedError" },
@@ -645,7 +651,7 @@ export const voiceAgentSchemaDefs = {
       endMs: { type: "integer", minimum: 0 },
       text: { type: "string" },
       confidence: { type: "number", minimum: 0, maximum: 1 },
-      executionId: id,
+      executionId: { $ref: "#/$defs/executionId" },
       tool: { $ref: "#/$defs/qualifiedToolName" },
     },
   },

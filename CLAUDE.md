@@ -49,6 +49,8 @@ authenticated tools across SaaS, messaging, voice, social data, and business sys
 - Shared adapter contracts live in `@eyeball/core`; `@eyeball/toolkits` depends on core, and the thin executor app registers toolkit adapters by slug.
 - Toolkit adapters receive materialized tools, defaulted canonical input, one resolved credential, a trusted manifest base URL, fetch, clock, and logger.
 - Adapter contexts pin trusted project/user scope; the native voice-agent adapter keeps immutable revisions and bindings behind an injectable `AgentStore`, while Pipecat owns session lifecycle and ordered events.
+- Voice child calls use the reusable session-dispatch contract in `packages/toolkits/src/voice/session-driver.ts`: revision allowlist first, then the ordinary executor under pinned project/user scope with `voice-session:<sessionId>:event:<sequence>` idempotency.
+- The mock voice worker polls Pipecat with an injected advancing clock; a production worker can replace polling with streaming while retaining `dispatchVoiceSessionToolCall`.
 - Mocks-first testing: build deterministic provider APIs and manifest-derived contracts before
   executor/toolkit implementation; unchanged suites certify real providers last.
 - MCP discovery omits async-by-nature tools by default; `includeAsync` represents negotiated Tasks support and emits required/optional task support.

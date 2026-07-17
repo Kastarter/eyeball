@@ -318,6 +318,11 @@ The tutorial flow is:
 7. Fetch the final transcript artifact and assert the two child execution IDs.
 8. For live mode, connect transport/speech and calendar/email accounts, then disable mocks.
 
+The executable reference behind this page is `apps/mcp-gateway/demo/restaurant.ts`. Its
+`runVoiceSessionDriver` worker uses the Pipecat event sequence for idempotency, reserves each
+durable `tool_call` execution ID at the trusted engine boundary, and verifies the same IDs in
+the final transcript. The public RFC 001 execute payload remains unchanged.
+
 The page should embed a transcript component whose tool events render as chips:
 
 ```mdx

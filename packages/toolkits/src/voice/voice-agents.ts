@@ -658,6 +658,22 @@ function transcriptTurn(
       tool: data.tool,
     };
   }
+  if (data.type === "tool_result") {
+    return {
+      id: `tool_result_${event.id}`,
+      speaker: "tool",
+      startMs: previousEndMs,
+      endMs: previousEndMs,
+      text: JSON.stringify({
+        type: "tool_result",
+        ...(data.error === undefined
+          ? { output: data.output }
+          : { error: data.error }),
+      }),
+      executionId: data.executionId,
+      tool: data.tool,
+    };
+  }
   return undefined;
 }
 

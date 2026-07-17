@@ -236,7 +236,7 @@ describe("native voice-agents toolkit", () => {
       type: "tool_call",
       tool: "crm.search_contacts",
       input: { phoneNumber: "+15550001111" },
-      executionId: expect.stringMatching(/^execution_/u),
+      executionId: expect.stringMatching(/^exe_/u),
     });
 
     const partialArtifact = object(
@@ -257,7 +257,7 @@ describe("native voice-agents toolkit", () => {
     expect(partialTurns[2]).toMatchObject({
       speaker: "tool",
       tool: "crm.search_contacts",
-      executionId: expect.stringMatching(/^execution_/u),
+      executionId: expect.stringMatching(/^exe_/u),
       text: expect.stringContaining('"type":"tool_call"'),
     });
 
@@ -274,7 +274,10 @@ describe("native voice-agents toolkit", () => {
 
     const endResponse = await provider.app.request(
       `/sessions/${encodeURIComponent(sessionId)}/end`,
-      { method: "POST" },
+      {
+        method: "POST",
+        headers: { Authorization: "Bearer fixture:valid" },
+      },
     );
     expect(endResponse.status).toBe(200);
     provider.advanceClock(2_000);

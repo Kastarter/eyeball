@@ -84,6 +84,16 @@ E2E starts `apps/executor` and `apps/mcp-gateway`, exposes canonical tools throu
 The scripted client is the protocol gate and fallback when no LLM key is configured. The agent loop detects description,
 schema, selection, and multi-step regressions, but its nondeterminism does not block pull requests.
 
+The deterministic MCP episode discovers and executes Gmail, GitHub, and Slack in sequence and asserts provider state plus
+the three stored child executions. A Messages-compatible fixture client continuously tests restricted-name mapping and
+tool-result continuation; setting `ANTHROPIC_API_KEY` additionally enables the bounded live Anthropic episode, which is
+skipped in normal CI.
+
+The deterministic voice episode creates an immutable restaurant-agent revision, starts a scripted Pipecat caller, runs two
+model turns, and dispatches Calendar and Gmail through the ordinary executor. It asserts pinned project/user scope, the
+revision allowlist, stable event-derived idempotency, exact `exe_*` identity across `tool_call`, `tool_result`, transcript,
+and execution storage, plus final provider side effects. Pipecat time advances through the injected mock clock.
+
 E2E scenarios use mock providers. They prove the complete Eyeball path, not live vendor reachability.
 
 ### 1.5 Real-target certification

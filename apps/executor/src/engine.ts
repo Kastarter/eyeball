@@ -78,6 +78,8 @@ export interface ExecuteCommand {
   projectId: string;
   request: unknown;
   idempotencyKey?: string;
+  /** Trusted worker reservation; never accepted from the public HTTP request body. */
+  executionId?: ExecutionId;
 }
 
 export interface ListExecutionsQuery {
@@ -395,6 +397,12 @@ export class ExecutionEngine {
     ) {
       return invalidRequest("Idempotency-Key must not be empty.");
     }
+    if (
+      command.executionId !== undefined &&
+      !isExecutionId(command.executionId)
+    ) {
+      return invalidRequest("The reserved execution ID is invalid.");
+    }
     if (!tool.annotations.readOnly && command.idempotencyKey === undefined) {
       return invalidRequest(
         `Idempotency-Key is required for mutating tool ${tool.name}.`,
@@ -411,7 +419,7 @@ export class ExecutionEngine {
             createdAt,
           );
     const pending: ExecutionRecord & { status: "pending" } = {
-      executionId: this.#executionIdFactory(),
+      executionId: command.executionId ?? this.#executionIdFactory(),
       tool: tool.name,
       toolVersion: tool.version,
       catalogVersion: this.catalog.catalogVersion,
@@ -431,6 +439,15 @@ export class ExecutionEngine {
       );
     }
     if (allocation.kind === "replay") {
+      if (
+        command.executionId !== undefined &&
+        allocation.record.executionId !== command.executionId
+      ) {
+        return invalidRequest(
+          "Reserved execution ID does not match the existing idempotent execution.",
+          409,
+        );
+      }
       return {
         statusCode:
           allocation.record.status === "pending" ||

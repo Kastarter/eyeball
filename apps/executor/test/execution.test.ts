@@ -477,6 +477,42 @@ describe("RFC 001 execution API", () => {
     expect(harness.credentialResolveCalls).toBe(1);
   });
 
+  it("preserves a trusted reserved ID across idempotent worker retries", async () => {
+    const harness = createHarness();
+    const request = executeRequest("reserved");
+    const reservedId = createExecutionId("voice_event_7");
+
+    const first = await harness.engine.execute({
+      projectId: PROJECT_A,
+      request,
+      idempotencyKey: "voice-session:session_1:event:7",
+      executionId: reservedId,
+    });
+    const replay = await harness.engine.execute({
+      projectId: PROJECT_A,
+      request,
+      idempotencyKey: "voice-session:session_1:event:7",
+      executionId: reservedId,
+    });
+
+    expect(first.response.executionId).toBe(reservedId);
+    expect(replay.response.executionId).toBe(reservedId);
+    expect(replay.replayed).toBe(true);
+    await expect(
+      harness.engine.execute({
+        projectId: PROJECT_A,
+        request,
+        idempotencyKey: "voice-session:session_1:event:7",
+        executionId: createExecutionId("different_voice_event"),
+      }),
+    ).rejects.toMatchObject({
+      httpStatus: 409,
+      message:
+        "Reserved execution ID does not match the existing idempotent execution.",
+    });
+    expect(harness.calls).toHaveLength(1);
+  });
+
   it("returns 409 without allocating when idempotency parameters drift", async () => {
     const harness = createHarness();
     await postExecute(harness.app, executeRequest("first"), {
