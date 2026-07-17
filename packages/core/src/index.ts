@@ -8,6 +8,7 @@ export * from "./errors.js";
 export * from "./local-vault.js";
 export * from "./naming.js";
 export * from "./schema.js";
+export * from "./triggers.js";
 export * from "./types/execution.js";
 export * from "./types/tool.js";
 export * from "./voice-agents.js";

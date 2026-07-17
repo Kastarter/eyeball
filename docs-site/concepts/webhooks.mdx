@@ -1,9 +1,9 @@
 ---
 title: "Webhooks"
-description: "Receive signed execution and voice events with bounded retries and project-scoped endpoints."
+description: "Receive signed execution, voice, and trigger events with bounded retries and project-scoped endpoints."
 ---
 
-Webhooks deliver terminal execution and selected voice-session events after the source record is durable. Delivery is asynchronous: a slow or unavailable receiver never delays an execution from becoming terminal.
+Webhooks deliver terminal execution, selected voice-session, and normalized trigger events. Delivery is asynchronous: a slow or unavailable receiver never delays the source workflow.
 
 ## Create an endpoint
 
@@ -35,6 +35,8 @@ The creation response contains a `whsec_...` signing secret. It is returned exac
 | `execution.failed` | `execution.failed` | Emitted after a failed execution record is durable. |
 | `voice.session.event` | `voice.session.event` | Carries a selected durable `VoiceAgentSessionEvent`. The development session driver is wired; the production worker must call the same delivery seam. |
 | `voice.transcript.ready` | `voice.transcript.ready` | Delivery seam is defined; production transcript publication awaits the persistent voice worker. |
+| `trigger.*` | Any `trigger.<toolkit>.<name>` | Wildcard selector for every trigger directed to the endpoint. |
+| `trigger.<toolkit>.<name>` | The same exact event type | Selects one canonical trigger, such as `trigger.gmail.email_received`. |
 
 Voice-agent definitions still select granular session events such as `session.lifecycle`, `tool_call`, and `tool_result`, and reference one or more project endpoint IDs. The endpoint itself subscribes to the outer `voice.session.event` class.
 
@@ -47,7 +49,8 @@ type WebhookEvent = {
     | "execution.succeeded"
     | "execution.failed"
     | "voice.session.event"
-    | "voice.transcript.ready";
+    | "voice.transcript.ready"
+    | `trigger.${string}.${string}`;
   createdAt: string;
   projectId: string;
   data: unknown;
@@ -116,4 +119,4 @@ Eyeball processes one delivery at a time per endpoint. Retries for an earlier ev
 
 The stock executor uses process-local endpoint, delivery-log, and queue implementations. They are suitable for development and tests, but a restart loses pending deliveries. Production self-hosters must inject durable `WebhookEndpointStore`, `WebhookDeliveryStore`, and queue implementations and add delivery metrics and alerting.
 
-See the [webhook API reference](/api/webhooks) for route shapes.
+See the [webhook API reference](/api/webhooks) for route shapes and [Triggers](/concepts/triggers) for subscription and payload semantics.

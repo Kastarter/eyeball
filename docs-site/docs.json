@@ -38,6 +38,7 @@
         "concepts/tool-discovery-and-search",
         "concepts/connected-accounts",
         "concepts/executions",
+        "concepts/triggers",
         "concepts/webhooks",
         "concepts/idempotency-and-retries",
         "concepts/errors",
@@ -197,6 +198,7 @@
           ]
         },
         "api/mcp",
+        "api/triggers",
         "api/webhooks",
         "api/idempotency",
         "api/errors"

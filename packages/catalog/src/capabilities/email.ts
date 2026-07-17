@@ -1,5 +1,6 @@
 import type {
   CapabilityToolContract,
+  CapabilityTriggerContract,
   JSONSchema202012,
   JSONSchemaObject202012,
   ObjectSchema202012,
@@ -8,10 +9,12 @@ import type {
 import { deepFreeze } from "../immutable.js";
 import {
   defineContract,
+  defineTriggerContract,
   nextPageTokenProperty,
   pageSizeProperty,
   pageTokenProperty,
   publishedObjectSchema,
+  publishedTriggerSchema,
 } from "./schema.js";
 
 const CAPABILITY = "email" as const;
@@ -925,4 +928,76 @@ export const emailContractsByName = deepFreeze(
   Object.fromEntries(
     emailCapabilityContracts.map((contract) => [contract.name, contract]),
   ) as EmailContractsByName,
+);
+
+const emailReceived = defineTriggerContract({
+  capability: CAPABILITY,
+  name: "email_received",
+  description:
+    "Emit a canonical event when a new email reaches the connected mailbox and matches the configured portable filters.",
+  payloadSchema: publishedTriggerSchema({
+    capability: CAPABILITY,
+    trigger: "email_received",
+    description: "Canonical metadata for the newly received email.",
+    required: [
+      "id",
+      "from",
+      "to",
+      "subject",
+      "snippet",
+      "threadId",
+      "receivedAt",
+    ],
+    properties: {
+      id: {
+        type: "string",
+        description: "Provider-stable identifier of the received email.",
+        minLength: 1,
+      },
+      from: {
+        type: "string",
+        format: "email",
+        description: "Normalized sender email address.",
+      },
+      to: emailArray("Normalized recipient email addresses."),
+      subject: {
+        type: "string",
+        description: "Subject line, or an empty string when absent.",
+      },
+      snippet: {
+        type: "string",
+        description: "Short normalized preview of the email body.",
+      },
+      threadId: {
+        type: "string",
+        description: "Provider-stable conversation thread identifier.",
+        minLength: 1,
+      },
+      receivedAt: {
+        type: "string",
+        format: "date-time",
+        description: "RFC 3339 timestamp when the mailbox received the email.",
+      },
+    },
+  }),
+  annotations: { deduplicated: true, replayable: false },
+  version: VERSION,
+});
+
+export const emailCapabilityTriggerContracts = deepFreeze([
+  emailReceived,
+] as const satisfies readonly CapabilityTriggerContract[]);
+
+type EmailTriggerContract = (typeof emailCapabilityTriggerContracts)[number];
+type EmailTriggerContractsByName = {
+  readonly [Contract in EmailTriggerContract as Contract["name"]]: Contract;
+};
+
+export const emailTriggerContractsByName = deepFreeze(
+  Object.fromEntries(
+    emailCapabilityTriggerContracts.map((contract) => [
+      contract.name,
+      contract,
+    ]),
+  ) as EmailTriggerContractsByName,
 );

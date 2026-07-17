@@ -1,0 +1,142 @@
+---
+title: "Triggers API"
+description: "Create user-scoped trigger subscriptions, receive provider callbacks, and deliver normalized signed events."
+---
+
+Subscription CRUD routes require `Authorization: Bearer <project-api-key>`. An unpinned project key may act for any user in that project. A user-pinned key is restricted to its pinned user.
+
+## Discover triggers with the SDK
+
+Trigger definitions come from the local catalog and require no HTTP request:
+
+```ts
+import { Eyeball } from "@eyeball/sdk";
+
+const eyeball = new Eyeball({
+  apiKey: process.env.EYEBALL_API_KEY!,
+  baseUrl: process.env.EYEBALL_EXECUTOR_URL!,
+});
+
+const triggers = await eyeball.triggers.list({
+  capability: "email",
+  deliveryMode: "polling",
+});
+```
+
+The result is an array of canonical `TriggerDefinition` values with `name`, `toolkit`, `capability`, `description`, `payloadSchema`, `annotations`, and `version`.
+
+## Create a subscription
+
+`POST /v1/subscriptions`
+
+```json
+{
+  "trigger": "slack.message_received",
+  "userId": "user_123",
+  "connectionId": "conn_slack_123",
+  "webhookEndpointIds": ["whe_123"],
+  "filters": {
+    "conversationId": "C012345"
+  }
+}
+```
+
+The executor validates:
+
+- the canonical trigger and provider implementation;
+- the user-scoped connection, auth class, expiry, and effective scopes;
+- distinct project-owned webhook endpoints subscribed to the exact trigger or `trigger.*`;
+- trigger-specific portable filters; and
+- `pollIntervalSeconds` for polling triggers.
+
+A `201` push response includes the public subscription plus `ingestUrl`:
+
+```json
+{
+  "subscriptionId": "trgsub_123",
+  "projectId": "proj_123",
+  "userId": "user_123",
+  "trigger": "slack.message_received",
+  "connectionId": "conn_slack_123",
+  "webhookEndpointIds": ["whe_123"],
+  "filters": { "conversationId": "C012345" },
+  "status": "active",
+  "createdAt": "2026-07-18T09:00:00.000Z",
+  "updatedAt": "2026-07-18T09:00:00.000Z",
+  "ingestUrl": "https://executor.example.com/v1/ingest/trgsub_123/trgsec_..."
+}
+```
+
+`ingestUrl` appears only in the create response. Polling subscriptions omit it and include the selected `pollIntervalSeconds`.
+
+The SDK equivalent is `eyeball.subscriptions.create(options)`.
+
+## List subscriptions
+
+`GET /v1/subscriptions?userId=user_123&limit=100&cursor=...`
+
+The response is `{ subscriptions, nextCursor? }`. `limit` must be from 1 through 100. List responses never contain an ingest secret, ingest URL, or provider cursor.
+
+For a pinned key, the executor forces the pinned user filter. A conflicting `userId` query or `X-Eyeball-User-Id` header returns `403 auth_insufficient_scope`. An unpinned project key may omit `userId` to list the project.
+
+The SDK equivalent is `eyeball.subscriptions.list(options)`.
+
+## Get a subscription
+
+`GET /v1/subscriptions/:subscriptionId`
+
+Returns the project-owned public subscription or `404`. A pinned key may read only its pinned user's subscription. The response never contains the ingest secret, ingest URL, or provider cursor.
+
+The SDK equivalent is `eyeball.subscriptions.get(subscriptionId)`.
+
+## Delete a subscription
+
+`DELETE /v1/subscriptions/:subscriptionId`
+
+Returns `204` when deleted or `404` when the subscription is absent from the authenticated project. A pinned key cannot delete another user's subscription. Deletion removes process-local cursor and dedup state and prevents future ingestion.
+
+The SDK equivalent is `eyeball.subscriptions.delete(subscriptionId)`.
+
+## Provider push ingestion
+
+`POST /v1/ingest/:subscriptionId/:secret`
+
+This route does not accept an Eyeball API key. The secret embedded in the create-time ingest URL authenticates the provider callback. A missing subscription, inactive subscription, wrong secret, or non-push subscription returns the same `404` response.
+
+Slack URL verification:
+
+```json
+{
+  "type": "url_verification",
+  "challenge": "provider-challenge"
+}
+```
+
+returns `200` with:
+
+```json
+{ "challenge": "provider-challenge" }
+```
+
+A valid Slack `event_callback` returns `202`:
+
+```json
+{
+  "kind": "accepted",
+  "accepted": 1,
+  "duplicates": 0
+}
+```
+
+The response acknowledges ingestion into the asynchronous signed webhook pipeline. Inspect outbound attempts through `GET /v1/webhooks/:endpointId/deliveries`.
+
+## Errors
+
+| Status | Typical meaning |
+| ---: | --- |
+| `401` | Missing or invalid API key on subscription CRUD. |
+| `403` | Pinned key attempted to act for a different user. |
+| `404` | Subscription is missing, cross-project, inactive for ingestion, or has a wrong ingest secret. |
+| `422` | Invalid trigger, connection, scope, endpoint, filter, polling cadence, or provider callback body. |
+
+Read [Triggers](/concepts/triggers) for payloads and dedup semantics, and [Webhooks API](/api/webhooks) for endpoint management and delivery logs.

@@ -1,0 +1,167 @@
+---
+title: "Triggers"
+description: "Subscribe to normalized Gmail and Slack events through the existing signed webhook delivery engine."
+---
+
+Triggers are the event-side counterpart to canonical tools. A trigger definition gives each provider event a stable name and a schema-validated canonical payload. A subscription binds that trigger to one project user, an optional named connection, and one or more webhook endpoints.
+
+The MVP supports two flows:
+
+| Trigger | Ingestion | Default cadence | Portable filters |
+| --- | --- | ---: | --- |
+| `gmail.email_received` | Polling | `60s` (`30s` minimum) | `from`, `to`, `subjectContains` |
+| `slack.message_received` | Push | Provider callback | `conversationId`, `from` |
+
+Discover definitions locally with the SDK:
+
+```ts
+import { Eyeball } from "@eyeball/sdk";
+
+const eyeball = new Eyeball({
+  apiKey: process.env.EYEBALL_API_KEY!,
+  baseUrl: process.env.EYEBALL_EXECUTOR_URL!,
+});
+
+const triggers = await eyeball.triggers.list({
+  toolkits: ["gmail", "slack"],
+});
+```
+
+## Create the destination first
+
+A subscription references existing project webhook endpoints. Subscribe the endpoint to the exact trigger event or to `trigger.*`:
+
+```ts
+import { Eyeball } from "@eyeball/sdk";
+
+const eyeball = new Eyeball({
+  apiKey: process.env.EYEBALL_API_KEY!,
+  baseUrl: process.env.EYEBALL_EXECUTOR_URL!,
+});
+
+const endpoint = await eyeball.webhooks.create({
+  url: "https://example.com/webhooks/eyeball",
+  events: ["trigger.slack.message_received"],
+});
+```
+
+Store `endpoint.secret` immediately. Trigger delivery uses the same signed envelope, verification helper, retry schedule, and delivery log as execution webhooks.
+
+## Subscribe to Slack push events
+
+```ts
+import { Eyeball } from "@eyeball/sdk";
+
+const eyeball = new Eyeball({
+  apiKey: process.env.EYEBALL_API_KEY!,
+  baseUrl: process.env.EYEBALL_EXECUTOR_URL!,
+});
+
+const subscription = await eyeball.subscriptions.create({
+  trigger: "slack.message_received",
+  userId: "user_123",
+  connectionId: "conn_slack_123",
+  webhookEndpointIds: ["whe_123"],
+  filters: { conversationId: "C012345" },
+});
+
+console.log(subscription.ingestUrl);
+```
+
+Configure the returned `ingestUrl` as the Slack Events API request URL. Slack first sends `url_verification`; Eyeball echoes its challenge and does not emit an event. Later `event_callback` messages are normalized and delivered as `trigger.slack.message_received`.
+
+<Warning>
+  The ingest URL contains the subscription secret and appears only in the create response. Treat the complete URL as a credential. Do not log it or expose it to a model.
+</Warning>
+
+The MVP authenticates the callback with that unguessable per-subscription secret. Slack request-signature verification is deferred; keep the URL private and recreate the subscription if it is exposed.
+
+## Subscribe to Gmail polling
+
+```ts
+import { Eyeball } from "@eyeball/sdk";
+
+const eyeball = new Eyeball({
+  apiKey: process.env.EYEBALL_API_KEY!,
+  baseUrl: process.env.EYEBALL_EXECUTOR_URL!,
+});
+
+const endpoint = await eyeball.webhooks.create({
+  url: "https://example.com/webhooks/eyeball",
+  events: ["trigger.gmail.email_received"],
+});
+
+await eyeball.subscriptions.create({
+  trigger: "gmail.email_received",
+  userId: "user_123",
+  connectionId: "conn_gmail_123",
+  webhookEndpointIds: [endpoint.endpointId],
+  pollIntervalSeconds: 60,
+  filters: { subjectContains: "invoice" },
+});
+```
+
+The scheduler stores a Gmail `historyId` high-water cursor. The first due poll emits matching inbox messages currently visible to the adapter. Later polls emit only messages beyond that cursor. A failed poll retains the prior cursor and schedules another attempt.
+
+## Canonical event envelope
+
+Both flows arrive through your endpoint in this shape:
+
+```json
+{
+  "id": "evt_...",
+  "type": "trigger.slack.message_received",
+  "createdAt": "2026-07-18T09:00:00.000Z",
+  "projectId": "proj_...",
+  "data": {
+    "subscriptionId": "trgsub_...",
+    "trigger": "slack.message_received",
+    "userId": "user_123",
+    "connectionId": "conn_slack_123",
+    "providerEventId": "Ev012345",
+    "occurredAt": "2026-07-18T08:59:59.000Z",
+    "payload": {
+      "id": "msg_123",
+      "from": "U012345",
+      "conversationId": "C012345",
+      "text": "Invoice approved",
+      "receivedAt": "2026-07-18T08:59:59.000Z",
+      "x_provider": {
+        "slack": {
+          "eventId": "Ev012345",
+          "teamId": "T012345",
+          "channelId": "C012345",
+          "eventTs": "1784365199.000000"
+        }
+      }
+    }
+  }
+}
+```
+
+Portable fields stay at `data.payload`. Provider-only metadata is confined to the schema-validated `x_provider.<toolkit>` object. Credentials, ingest secrets, and polling cursors never enter the event.
+
+## Deduplication versus delivery retries
+
+Eyeball claims `(subscriptionId, providerEventId)` for 24 hours. Repeated Slack callbacks or repeated Gmail observations inside that window enqueue one trigger event. This is a best-effort exactly-once ingestion window; the stock state store is process-local and loses claims on restart.
+
+Outbound webhook delivery is separately at least once. A successful handler whose acknowledgement is lost can receive the same envelope again. Verify the signature over the exact raw body, persist the envelope `id`, and apply the event idempotently.
+
+```ts
+import { verifyWebhookSignature } from "@eyeball/sdk";
+
+export async function POST(request: Request): Promise<Response> {
+  const rawBody = await request.text();
+  if (!verifyWebhookSignature({
+    payload: rawBody,
+    headers: request.headers,
+    secret: process.env.EYEBALL_WEBHOOK_SECRET!,
+  })) {
+    return new Response("Invalid signature", { status: 401 });
+  }
+
+  return new Response(null, { status: 204 });
+}
+```
+
+See the [Triggers API](/api/triggers) for request and response shapes and [Webhooks](/concepts/webhooks) for signatures, retries, and delivery durability.

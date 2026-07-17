@@ -557,6 +557,96 @@ describe("Eyeball SDK", () => {
     );
   });
 
+  it("lists canonical triggers locally without an HTTP request", async () => {
+    const fetchImpl = testFetch(() => {
+      throw new Error("trigger discovery must remain local");
+    });
+    const eb = client(fetchImpl);
+
+    await expect(
+      eb.triggers.list({
+        toolkits: ["gmail"],
+        capability: "email",
+        deliveryMode: "polling",
+      }),
+    ).resolves.toMatchObject([
+      {
+        name: "gmail.email_received",
+        toolkit: "gmail",
+        annotations: { deliveryMode: "polling" },
+      },
+    ]);
+  });
+
+  it("creates, lists, and deletes trigger subscriptions", async () => {
+    const requests: Request[] = [];
+    const subscription = {
+      subscriptionId: "trgsub_sdk",
+      projectId: "proj_sdk",
+      userId: "user_sdk",
+      trigger: "slack.message_received",
+      connectionId: "conn_sdk_slack",
+      webhookEndpointIds: ["whe_sdk"],
+      status: "active",
+      createdAt: "2026-07-17T12:00:00.000Z",
+      updatedAt: "2026-07-17T12:00:00.000Z",
+    } as const;
+    const eb = client(
+      testFetch((request) => {
+        if (request.method === "POST") {
+          return jsonResponse(
+            {
+              ...subscription,
+              ingestUrl:
+                "https://executor.example.test/v1/ingest/trgsub_sdk/trgsec_sdk",
+            },
+            201,
+          );
+        }
+        if (request.method === "DELETE") {
+          return new Response(null, { status: 204 });
+        }
+        return jsonResponse({
+          subscriptions: [subscription],
+          nextCursor: "cursor_sdk",
+        });
+      }, requests),
+      { userId: "user_sdk" },
+    );
+
+    await expect(
+      eb.subscriptions.create({
+        trigger: "slack.message_received",
+        connectionId: "conn_sdk_slack",
+        webhookEndpointIds: ["whe_sdk"],
+        filters: { conversationId: "C_sdk" },
+      }),
+    ).resolves.toMatchObject({ subscriptionId: "trgsub_sdk" });
+    await expect(
+      eb.subscriptions.list({ cursor: "previous", limit: 10 }),
+    ).resolves.toMatchObject({
+      subscriptions: [{ subscriptionId: "trgsub_sdk" }],
+      nextCursor: "cursor_sdk",
+    });
+    await expect(
+      eb.subscriptions.delete("trgsub_sdk"),
+    ).resolves.toBeUndefined();
+
+    await expect(requests[0]?.json()).resolves.toEqual({
+      trigger: "slack.message_received",
+      userId: "user_sdk",
+      connectionId: "conn_sdk_slack",
+      webhookEndpointIds: ["whe_sdk"],
+      filters: { conversationId: "C_sdk" },
+    });
+    expect(new URL(requests[1]?.url ?? "").search).toBe(
+      "?userId=user_sdk&cursor=previous&limit=10",
+    );
+    expect(new URL(requests[2]?.url ?? "").pathname).toBe(
+      "/v1/subscriptions/trgsub_sdk",
+    );
+  });
+
   it("rejects cleartext non-loopback executor URLs without an explicit opt-in", () => {
     const options = {
       apiKey: "ey_test_sdk",

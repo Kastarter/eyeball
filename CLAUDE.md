@@ -19,6 +19,7 @@ Open-core tool and integration platform for AI agents: one typed, authenticated 
 - Manifest `endpoint.baseUrlOverrideEnv` values are the only trusted provider endpoint override seam.
 - HTTP and provider tests prefer Hono `app.request`; do not require loopback sockets.
 - Webhooks sign `<unix-seconds>.<raw-body>` as `v1=<HMAC-SHA256 hex>`; attempts time out at 10s and retry after 0s/30s/2m/10m/1h.
+- Trigger events deliver as `trigger.<toolkit>.<name>` through signed webhooks; push ingest secrets appear only in create-time URLs.
 - The docs shell follows Mintlify-derived geometry: a 56px top bar, 576px prose column, and 256px/264px navigation rails.
 - `pnpm test:contract` defaults to built mocks and writes ignored `apps/executor/contract-report.json`.
 - Real certification uses `EYEBALL_CONTRACT_TARGET=real`; missing credentials are explicit skips.
@@ -34,6 +35,7 @@ Open-core tool and integration platform for AI agents: one typed, authenticated 
 - `@eyeball/toolkits` owns adapters; the executor resolves one manifest and credential per call.
 - Execution storage and scheduling sit behind `ExecutionStore` and `TaskQueue`.
 - Webhook endpoints/delivery logs sit behind injectable stores; delivery is async and concurrency-one per endpoint.
+- Trigger subscriptions, cursors, and dedup claims sit behind injectable stores; Slack push and Gmail polling normalize against catalog schemas.
 - Staged bytes sit behind project-scoped `FileStore`; adapters resolve them only through execution-bound `AdapterContext.files`.
 - The MCP gateway delegates execution to the executor and preserves child execution identities.
 - Project keys authorize all project users unless user-pinned; executor and MCP reject conflicting identities.
@@ -61,6 +63,7 @@ Open-core tool and integration platform for AI agents: one typed, authenticated 
 - The private Activepieces bridge spike imports five pinned pieces, introspects 67 actions and 23 triggers, hydrates Airtable dynamic fields, and executes Gmail, Slack, and Airtable against in-process mocks.
 - Staged files flow through Gmail and Outlook send/reply/draft operations plus Google Drive upload; other email providers fail non-empty attachments explicitly as `not_supported`.
 - Project-scoped signed execution webhooks and development voice-session event delivery are implemented with in-process defaults.
+- Catalog `1.1` includes `gmail.email_received` polling and `slack.message_received` push, with executor subscription CRUD and SDK clients.
 
 ## Known Issues
 
@@ -68,6 +71,7 @@ Open-core tool and integration platform for AI agents: one typed, authenticated 
 - Hosted OAuth vault, billing, license finalization, and real-provider certification are not complete.
 - Voice sessions need durable state and a persistent production media worker.
 - Production webhook endpoints, retry jobs, and delivery logs require durable injected stores/queues; transcript publication awaits the voice worker.
+- Stock trigger stores and polling scheduler are process-local; provider signature verification, replay/backfill, distributed leases, and atomic claim/outbox are deferred.
 - Provider idempotency propagation is separate from working executor-level replay protection.
 - The stock executor uses process-local store/queue defaults; production 24-hour idempotency requires injected durable implementations.
 - The local vault serializes only within one process; do not share one file across executors.

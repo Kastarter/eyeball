@@ -6,6 +6,7 @@ import {
 import {
   buildNameMap,
   type ConnectionId,
+  type CreatedTriggerSubscription,
   type CreatedWebhookEndpoint,
   type ExecutionBase,
   type ExecutionRecord,
@@ -14,6 +15,8 @@ import {
   type FileId,
   fromRestrictedToolName,
   isCanonicalToolName,
+  isTriggerSubscriptionId,
+  isWebhookSubscriptionEventType,
   type JsonValue,
   type QualifiedToolName,
   type RotatedWebhookSecret,
@@ -21,11 +24,13 @@ import {
   type StagedFileReference,
   TOOL_ERROR_CODES,
   type ToolDefinition,
+  type TriggerDefinition,
+  type TriggerSubscription,
+  type TriggerSubscriptionPage,
   toAiSdkTools,
   toAnthropicTools,
   toMcpTools,
   toOpenAITools,
-  WEBHOOK_SUBSCRIPTION_EVENT_TYPES,
   type WebhookDeliveryPage,
   type WebhookEndpoint,
   type WebhookEndpointPage,
@@ -36,6 +41,7 @@ import type {
   ConnectedConnection,
   ConnectionPage,
   CreateConnectionOptions,
+  CreateSubscriptionOptions,
   CreateWebhookEndpointOptions,
   ExecuteToolOptions,
   ExecutionPage,
@@ -45,7 +51,9 @@ import type {
   EyeballToolFormat,
   GetToolsOptions,
   GetToolsResult,
+  GetTriggersOptions,
   ListExecutionsOptions,
+  ListSubscriptionsOptions,
   ListWebhookDeliveriesOptions,
   ListWebhookEndpointsOptions,
   RevokedConnection,
@@ -59,7 +67,6 @@ import type {
 
 const DEFAULT_POLL_MS = 500;
 const DEFAULT_TIMEOUT_MS = 60_000;
-const WEBHOOK_EVENT_TYPES = new Set<string>(WEBHOOK_SUBSCRIPTION_EVENT_TYPES);
 
 interface ClientContext {
   readonly http: EyeballHttpClient;
@@ -166,7 +173,7 @@ function webhookEvents(
   if (
     events.length === 0 ||
     new Set(events).size !== events.length ||
-    events.some((event) => !WEBHOOK_EVENT_TYPES.has(event))
+    events.some((event) => !isWebhookSubscriptionEventType(event))
   ) {
     return invalidInput(
       "events must contain one or more distinct supported webhook event types.",
@@ -175,10 +182,25 @@ function webhookEvents(
   return events;
 }
 
-function webhookPageSuffix(
-  options: ListWebhookEndpointsOptions | ListWebhookDeliveriesOptions,
-): string {
+function subscriptionId(value: string): string {
+  if (!isTriggerSubscriptionId(value)) {
+    return invalidInput("subscriptionId must be a valid trgsub_* identifier.");
+  }
+  return encodeURIComponent(value);
+}
+
+function pageSuffix(options: {
+  cursor?: string;
+  limit?: number;
+  userId?: string;
+}): string {
   const query = new URLSearchParams();
+  if (options.userId !== undefined) {
+    if (options.userId.trim().length === 0) {
+      return invalidInput("userId must not be empty.");
+    }
+    query.set("userId", options.userId);
+  }
   if (options.cursor !== undefined) {
     if (options.cursor.length === 0) {
       return invalidInput("cursor must not be empty.");
@@ -196,6 +218,12 @@ function webhookPageSuffix(
     query.set("limit", String(options.limit));
   }
   return query.size === 0 ? "" : `?${query.toString()}`;
+}
+
+function webhookPageSuffix(
+  options: ListWebhookEndpointsOptions | ListWebhookDeliveriesOptions,
+): string {
+  return pageSuffix(options);
 }
 
 export class FilesClient {
@@ -564,6 +592,113 @@ export class ConnectionsClient {
   }
 }
 
+/** Canonical trigger discovery from the local open-core catalog. */
+export class TriggersClient {
+  /** Resolves trigger definitions without network I/O. */
+  async list(
+    options: GetTriggersOptions = {},
+  ): Promise<readonly TriggerDefinition[]> {
+    const toolkitSet =
+      options.toolkits === undefined ? undefined : new Set(options.toolkits);
+    if (
+      toolkitSet !== undefined &&
+      [...toolkitSet].some((toolkit) => toolkit.trim().length === 0)
+    ) {
+      return invalidInput("toolkits must not contain empty values.");
+    }
+    const triggers = defaultCatalog
+      .listTriggers({
+        ...(options.capability === undefined
+          ? {}
+          : { capability: options.capability }),
+        ...(options.deliveryMode === undefined
+          ? {}
+          : { deliveryMode: options.deliveryMode }),
+      })
+      .filter(
+        (trigger) =>
+          toolkitSet === undefined || toolkitSet.has(trigger.toolkit),
+      );
+    return Object.freeze(triggers);
+  }
+}
+
+/** User-scoped push and polling trigger subscriptions. */
+export class SubscriptionsClient {
+  readonly #context: ClientContext;
+
+  constructor(context: ClientContext) {
+    this.#context = context;
+  }
+
+  create(
+    options: CreateSubscriptionOptions,
+  ): Promise<CreatedTriggerSubscription> {
+    if (!isCanonicalToolName(options.trigger)) {
+      return invalidInput("trigger must be a canonical dotted trigger name.");
+    }
+    const userId = effectiveUserId(options.userId, this.#context.defaultUserId);
+    if (
+      options.webhookEndpointIds.length === 0 ||
+      new Set(options.webhookEndpointIds).size !==
+        options.webhookEndpointIds.length ||
+      options.webhookEndpointIds.some((endpointId) => endpointId.length === 0)
+    ) {
+      return invalidInput(
+        "webhookEndpointIds must contain one or more distinct endpoint IDs.",
+      );
+    }
+    if (
+      options.pollIntervalSeconds !== undefined &&
+      (!Number.isSafeInteger(options.pollIntervalSeconds) ||
+        options.pollIntervalSeconds < 1)
+    ) {
+      return invalidInput("pollIntervalSeconds must be a positive integer.");
+    }
+    return this.#context.http.request("/v1/subscriptions", {
+      method: "POST",
+      body: JSON.stringify({
+        trigger: options.trigger,
+        userId,
+        ...(options.connectionId === undefined
+          ? {}
+          : { connectionId: options.connectionId }),
+        webhookEndpointIds: options.webhookEndpointIds,
+        ...(options.filters === undefined ? {} : { filters: options.filters }),
+        ...(options.pollIntervalSeconds === undefined
+          ? {}
+          : { pollIntervalSeconds: options.pollIntervalSeconds }),
+      }),
+    });
+  }
+
+  list(
+    options: ListSubscriptionsOptions = {},
+  ): Promise<TriggerSubscriptionPage> {
+    const userId = options.userId ?? this.#context.defaultUserId;
+    return this.#context.http.request(
+      `/v1/subscriptions${pageSuffix({
+        ...(userId === undefined ? {} : { userId }),
+        ...(options.cursor === undefined ? {} : { cursor: options.cursor }),
+        ...(options.limit === undefined ? {} : { limit: options.limit }),
+      })}`,
+    );
+  }
+
+  get(value: string): Promise<TriggerSubscription> {
+    return this.#context.http.request(
+      `/v1/subscriptions/${subscriptionId(value)}`,
+    );
+  }
+
+  delete(value: string): Promise<void> {
+    return this.#context.http.request(
+      `/v1/subscriptions/${subscriptionId(value)}`,
+      { method: "DELETE" },
+    );
+  }
+}
+
 export class WebhooksClient {
   readonly #context: ClientContext;
 
@@ -661,6 +796,8 @@ export class Eyeball {
   readonly executions: ExecutionsClient;
   readonly connections: ConnectionsClient;
   readonly files: FilesClient;
+  readonly triggers: TriggersClient;
+  readonly subscriptions: SubscriptionsClient;
   readonly webhooks: WebhooksClient;
 
   constructor(options: EyeballOptions) {
@@ -692,6 +829,8 @@ export class Eyeball {
     this.tools = new ToolsClient(context, this.executions);
     this.connections = new ConnectionsClient(context);
     this.files = new FilesClient(context);
+    this.triggers = new TriggersClient();
+    this.subscriptions = new SubscriptionsClient(context);
     this.webhooks = new WebhooksClient(context);
   }
 }

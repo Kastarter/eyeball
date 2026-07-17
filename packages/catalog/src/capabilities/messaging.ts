@@ -1,15 +1,18 @@
 import type {
   CapabilityToolContract,
+  CapabilityTriggerContract,
   JSONSchema202012,
   ObjectSchema202012,
 } from "@eyeball/core";
 import { deepFreeze } from "../immutable.js";
 import {
   defineContract,
+  defineTriggerContract,
   nextPageTokenProperty,
   pageSizeProperty,
   pageTokenProperty,
   publishedObjectSchema,
+  publishedTriggerSchema,
 } from "./schema.js";
 
 const CAPABILITY = "messaging_chat" as const;
@@ -871,4 +874,70 @@ export const messagingContractsByName = deepFreeze(
   Object.fromEntries(
     messagingCapabilityContracts.map((contract) => [contract.name, contract]),
   ) as MessagingContractsByName,
+);
+
+const messageReceived = defineTriggerContract({
+  capability: CAPABILITY,
+  name: "message_received",
+  description:
+    "Emit a canonical event when a new message is posted to a connected conversation and matches the configured portable filters.",
+  payloadSchema: publishedTriggerSchema({
+    capability: CAPABILITY,
+    trigger: "message_received",
+    description: "Canonical content and metadata for the incoming message.",
+    required: ["id", "from", "conversationId", "text", "receivedAt"],
+    properties: {
+      id: {
+        type: "string",
+        description: "Provider-stable identifier of the received message.",
+        minLength: 1,
+      },
+      from: {
+        type: "string",
+        description: "Provider-stable identifier of the sender.",
+        minLength: 1,
+      },
+      conversationId: {
+        type: "string",
+        description: "Provider-stable channel or conversation identifier.",
+        minLength: 1,
+      },
+      text: {
+        type: "string",
+        description: "Normalized plain-text message content.",
+      },
+      threadId: {
+        type: "string",
+        description:
+          "Provider-stable thread identifier when the message is threaded.",
+        minLength: 1,
+      },
+      receivedAt: {
+        type: "string",
+        format: "date-time",
+        description: "RFC 3339 timestamp when the message was sent.",
+      },
+    },
+  }),
+  annotations: { deduplicated: true, replayable: false },
+  version: VERSION,
+});
+
+export const messagingCapabilityTriggerContracts = deepFreeze([
+  messageReceived,
+] as const satisfies readonly CapabilityTriggerContract[]);
+
+type MessagingTriggerContract =
+  (typeof messagingCapabilityTriggerContracts)[number];
+type MessagingTriggerContractsByName = {
+  readonly [Contract in MessagingTriggerContract as Contract["name"]]: Contract;
+};
+
+export const messagingTriggerContractsByName = deepFreeze(
+  Object.fromEntries(
+    messagingCapabilityTriggerContracts.map((contract) => [
+      contract.name,
+      contract,
+    ]),
+  ) as MessagingTriggerContractsByName,
 );

@@ -1,9 +1,15 @@
 import { calendarCapabilityContracts } from "./capabilities/calendar.js";
 import { crmCapabilityContracts } from "./capabilities/crm.js";
 import { ecommerceCapabilityContracts } from "./capabilities/ecommerce.js";
-import { emailCapabilityContracts } from "./capabilities/email.js";
+import {
+  emailCapabilityContracts,
+  emailCapabilityTriggerContracts,
+} from "./capabilities/email.js";
 import { erpCapabilityContracts } from "./capabilities/erp.js";
-import { messagingCapabilityContracts } from "./capabilities/messaging.js";
+import {
+  messagingCapabilityContracts,
+  messagingCapabilityTriggerContracts,
+} from "./capabilities/messaging.js";
 import { paymentsCapabilityContracts } from "./capabilities/payments.js";
 import { pmCapabilityContracts } from "./capabilities/pm.js";
 import { socialDataCapabilityContracts } from "./capabilities/social-data.js";
@@ -63,6 +69,10 @@ export const defaultCatalog = new CatalogRegistry({
     ...storageCapabilityContracts,
     ...spreadsheetsCapabilityContracts,
     ...pmCapabilityContracts,
+  ],
+  triggerContracts: [
+    ...emailCapabilityTriggerContracts,
+    ...messagingCapabilityTriggerContracts,
   ],
   manifests: [
     gmailManifest,

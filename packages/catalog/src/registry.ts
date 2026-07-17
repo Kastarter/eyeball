@@ -3,6 +3,7 @@ import {
   CAPABILITY_SLUGS,
   type CapabilitySlug,
   type CapabilityToolContract,
+  type CapabilityTriggerContract,
   type CatalogManifest,
   type CatalogVersion,
   DELIVERY_TIERS,
@@ -12,9 +13,11 @@ import {
   PROVIDER_SOURCES,
   type ProviderManifest,
   type ProviderToolImplementation,
+  type ProviderTriggerImplementation,
   type SemVer,
   type ToolDefinition,
   type Toolkit,
+  type TriggerDefinition,
   validateCanonicalToolName,
   validateInput,
 } from "@eyeball/core";
@@ -34,6 +37,7 @@ import {
 export interface CatalogRegistryOptions {
   catalogVersion?: CatalogVersion;
   contracts?: readonly CapabilityToolContract[];
+  triggerContracts?: readonly CapabilityTriggerContract[];
   manifests?: readonly ProviderManifest[];
   /** Optional semantic provider for the registry's async hybrid search method. */
   embeddingProvider?: EmbeddingProvider;
@@ -46,6 +50,19 @@ export interface ListToolsFilters {
 }
 
 export interface ListContractsFilters {
+  capability?: CapabilitySlug;
+  name?: string;
+  version?: SemVer;
+}
+
+export interface ListTriggersFilters {
+  capability?: CapabilitySlug;
+  toolkit?: string;
+  tier?: Toolkit["tier"];
+  deliveryMode?: TriggerDefinition["annotations"]["deliveryMode"];
+}
+
+export interface ListTriggerContractsFilters {
   capability?: CapabilitySlug;
   name?: string;
   version?: SemVer;
@@ -71,6 +88,7 @@ const ANNOTATION_KEYS = [
   "idempotent",
   "async",
 ] as const;
+const TRIGGER_ANNOTATION_KEYS = ["deduplicated", "replayable"] as const;
 
 function catalogVersionParts(
   version: CatalogVersion,
@@ -100,6 +118,16 @@ function implementationKey(implementation: ProviderToolImplementation): string {
   return contractKey(
     implementation.capability,
     implementation.canonicalTool,
+    implementation.canonicalVersion,
+  );
+}
+
+function triggerImplementationKey(
+  implementation: ProviderTriggerImplementation,
+): string {
+  return contractKey(
+    implementation.capability,
+    implementation.canonicalTrigger,
     implementation.canonicalVersion,
   );
 }
@@ -234,6 +262,64 @@ function assertContract(contract: CapabilityToolContract): void {
   }
 }
 
+function assertTriggerContract(contract: CapabilityTriggerContract): void {
+  assertCapability(contract.capability, `Trigger contract ${contract.name}`);
+  assertSemVer(
+    contract.version,
+    `Trigger contract ${contract.capability}.${contract.name}`,
+  );
+  validateCanonicalToolName(`catalog.${contract.name}`);
+
+  const context = `Trigger contract ${contract.capability}.${contract.name}`;
+  assertNonEmpty(contract.description, `${context} description`);
+  const annotationEntries = Object.entries(contract.annotations);
+  if (
+    annotationEntries.length !== TRIGGER_ANNOTATION_KEYS.length ||
+    TRIGGER_ANNOTATION_KEYS.some(
+      (key) => typeof contract.annotations[key] !== "boolean",
+    ) ||
+    annotationEntries.some(
+      ([key]) => !(TRIGGER_ANNOTATION_KEYS as readonly string[]).includes(key),
+    )
+  ) {
+    throw new Error(
+      `${context} must declare exactly the two trigger annotations.`,
+    );
+  }
+  if (contract.payloadSchema.properties?.x_provider !== undefined) {
+    throw new Error(
+      `${context} must not define the reserved x_provider property.`,
+    );
+  }
+  assertSchema(
+    contract.payloadSchema,
+    `Payload schema for ${contract.capability}.${contract.name}`,
+  );
+}
+
+function assertTriggerDelivery(
+  implementation: ProviderTriggerImplementation,
+  context: string,
+): void {
+  if (implementation.delivery.mode === "polling") {
+    const { defaultIntervalSeconds, minimumIntervalSeconds } =
+      implementation.delivery;
+    if (
+      !Number.isSafeInteger(defaultIntervalSeconds) ||
+      !Number.isSafeInteger(minimumIntervalSeconds) ||
+      minimumIntervalSeconds < 1 ||
+      defaultIntervalSeconds < minimumIntervalSeconds
+    ) {
+      throw new Error(
+        `${context} polling cadence must use positive integer seconds with defaultIntervalSeconds at least minimumIntervalSeconds.`,
+      );
+    }
+    return;
+  }
+
+  assertNonEmpty(implementation.delivery.providerEvent, `${context} event`);
+}
+
 function assertToolkitSlug(slug: string): void {
   validateCanonicalToolName(`${slug}.catalog_probe`);
 }
@@ -310,8 +396,13 @@ function assertManifestHeader(
       `${context} has invalid base URL override environment variable.`,
     );
   }
-  if (manifest.implements.length === 0) {
-    throw new Error(`${context} must implement at least one canonical tool.`);
+  if (
+    manifest.implements.length === 0 &&
+    (manifest.triggers === undefined || manifest.triggers.length === 0)
+  ) {
+    throw new Error(
+      `${context} must implement at least one canonical tool or trigger.`,
+    );
   }
 }
 
@@ -434,6 +525,64 @@ function materializeTool(
   });
 }
 
+function triggerSchemaId(
+  schema: ObjectSchema202012,
+  implementation: ProviderTriggerImplementation,
+  toolkit: string,
+): string {
+  if (schema.$id !== undefined) {
+    return `${schema.$id}:${toolkit}`;
+  }
+  return `urn:eyeball:${implementation.capability}:${implementation.canonicalTrigger}:payload:${implementation.canonicalVersion}:${toolkit}`;
+}
+
+function materializeTriggerSchema(
+  schema: ObjectSchema202012,
+  implementation: ProviderTriggerImplementation,
+  toolkit: string,
+): ObjectSchema202012 {
+  const copied = clone(schema);
+  copied.$id = triggerSchemaId(copied, implementation, toolkit);
+  return graftExtension(copied, toolkit, implementation.payloadExtensionSchema);
+}
+
+function materializeTrigger(
+  contract: CapabilityTriggerContract,
+  manifest: ProviderManifest,
+  implementation: ProviderTriggerImplementation,
+): TriggerDefinition {
+  const name = validateCanonicalToolName(
+    `${manifest.toolkit.slug}.${contract.name}`,
+  );
+  return deepFreeze({
+    name,
+    toolkit: manifest.toolkit.slug,
+    capability: contract.capability,
+    description: contract.description,
+    payloadSchema: materializeTriggerSchema(
+      contract.payloadSchema,
+      implementation,
+      manifest.toolkit.slug,
+    ),
+    annotations: {
+      ...clone(contract.annotations),
+      ...(implementation.delivery.mode === "polling"
+        ? {
+            deliveryMode: "polling" as const,
+            defaultIntervalSeconds:
+              implementation.delivery.defaultIntervalSeconds,
+            minimumIntervalSeconds:
+              implementation.delivery.minimumIntervalSeconds,
+          }
+        : {
+            deliveryMode: "push" as const,
+            providerEvent: implementation.delivery.providerEvent,
+          }),
+    },
+    version: contract.version,
+  });
+}
+
 /**
  * Mutable catalog builder with immutable lookup results. Register capability contracts
  * before the manifests that implement them.
@@ -441,6 +590,7 @@ function materializeTool(
 export class CatalogRegistry {
   readonly catalogVersion: CatalogVersion;
   readonly #contracts = new Map<string, CapabilityToolContract>();
+  readonly #triggerContracts = new Map<string, CapabilityTriggerContract>();
   readonly #manifests = new Map<string, ProviderManifest>();
   readonly #embeddingProvider: EmbeddingProvider | undefined;
   #searchIndex: CatalogToolSearchIndex | undefined;
@@ -453,6 +603,7 @@ export class CatalogRegistry {
     this.catalogVersion = catalogVersion;
     this.#embeddingProvider = options.embeddingProvider;
     this.registerContracts(options.contracts ?? []);
+    this.registerTriggerContracts(options.triggerContracts ?? []);
     for (const manifest of options.manifests ?? []) {
       this.registerManifest(manifest);
     }
@@ -512,6 +663,56 @@ export class CatalogRegistry {
       );
     }
     return this.registerContracts(contracts);
+  }
+
+  registerTriggerContract(contract: CapabilityTriggerContract): this {
+    return this.registerTriggerContracts([contract]);
+  }
+
+  registerTriggerContracts(
+    contracts: readonly CapabilityTriggerContract[],
+  ): this {
+    const pending = new Map<string, CapabilityTriggerContract>();
+    for (const contract of contracts) {
+      assertTriggerContract(contract);
+      if (this.catalogVersion === "1.0") {
+        throw new Error(
+          `Trigger contract ${contract.capability}.${contract.name} is not present in catalog 1.0.`,
+        );
+      }
+      const key = contractKey(
+        contract.capability,
+        contract.name,
+        contract.version,
+      );
+      if (this.#triggerContracts.has(key) || pending.has(key)) {
+        throw new Error(
+          `Duplicate trigger contract: ${contract.capability}.${contract.name}@${contract.version}`,
+        );
+      }
+      pending.set(key, clone(contract));
+    }
+    for (const [key, contract] of pending) {
+      this.#triggerContracts.set(key, contract);
+    }
+    return this;
+  }
+
+  registerTriggerCapability(
+    contracts: readonly CapabilityTriggerContract[],
+  ): this {
+    const capability = contracts[0]?.capability;
+    if (capability === undefined) {
+      throw new Error(
+        "A trigger capability registration must include at least one contract.",
+      );
+    }
+    if (contracts.some((contract) => contract.capability !== capability)) {
+      throw new Error(
+        "A trigger capability registration may only contain contracts from one capability.",
+      );
+    }
+    return this.registerTriggerContracts(contracts);
   }
 
   registerManifest(manifest: ProviderManifest): this {
@@ -614,6 +815,84 @@ export class CatalogRegistry {
       }
     }
 
+    const triggerImplementations = new Set<string>();
+    const qualifiedTriggerNames = new Set<string>();
+    for (const implementation of manifest.triggers ?? []) {
+      assertCapability(
+        implementation.capability,
+        `Manifest ${manifest.toolkit.slug} trigger`,
+      );
+      assertSemVer(
+        implementation.canonicalVersion,
+        `Manifest ${manifest.toolkit.slug} trigger ${implementation.canonicalTrigger}`,
+      );
+      validateCanonicalToolName(
+        `${manifest.toolkit.slug}.${implementation.canonicalTrigger}`,
+      );
+      assertNonEmpty(
+        implementation.operationId,
+        `Operation ID for ${manifest.toolkit.slug}.${implementation.canonicalTrigger}`,
+      );
+      assertStringList(
+        implementation.requiredScopes,
+        `Required scopes for ${manifest.toolkit.slug}.${implementation.canonicalTrigger}`,
+      );
+      assertTriggerDelivery(
+        implementation,
+        `Trigger ${manifest.toolkit.slug}.${implementation.canonicalTrigger}`,
+      );
+      const baselineProvider = getProviderCatalogEntry(manifest.toolkit.slug);
+      if (
+        manifest.catalogVersion.split(".", 1)[0] === "1" &&
+        baselineProvider !== undefined &&
+        !baselineProvider.memberships.some(
+          ({ capability }) => capability === implementation.capability,
+        )
+      ) {
+        throw new Error(
+          `Manifest ${manifest.toolkit.slug} is not cataloged for capability ${implementation.capability}.`,
+        );
+      }
+
+      const key = triggerImplementationKey(implementation);
+      if (triggerImplementations.has(key)) {
+        throw new Error(
+          `Manifest ${manifest.toolkit.slug} declares duplicate trigger ${implementation.canonicalTrigger}.`,
+        );
+      }
+      triggerImplementations.add(key);
+      const qualifiedName = `${manifest.toolkit.slug}.${implementation.canonicalTrigger}`;
+      if (qualifiedTriggerNames.has(qualifiedName)) {
+        throw new Error(
+          `Manifest ${manifest.toolkit.slug} declares colliding qualified trigger ${qualifiedName}.`,
+        );
+      }
+      qualifiedTriggerNames.add(qualifiedName);
+
+      const contract = this.#triggerContracts.get(key);
+      if (contract === undefined) {
+        throw new Error(
+          `Manifest ${manifest.toolkit.slug} references unknown trigger contract ${implementation.capability}.${implementation.canonicalTrigger}@${implementation.canonicalVersion}.`,
+        );
+      }
+      if (implementation.payloadExtensionSchema !== undefined) {
+        assertExtensionSchema(
+          implementation.payloadExtensionSchema,
+          `Payload extension for ${qualifiedName}`,
+        );
+      }
+
+      const materialized = materializeTrigger(
+        contract,
+        manifest,
+        implementation,
+      );
+      assertSchema(
+        materialized.payloadSchema,
+        `Materialized payload schema for ${materialized.name}`,
+      );
+    }
+
     this.#manifests.set(manifest.toolkit.slug, clone(manifest));
     this.#searchIndex = undefined;
     return this;
@@ -646,6 +925,28 @@ export class CatalogRegistry {
     return materializeTool(contract, manifest, implementation);
   }
 
+  getTrigger(name: string): TriggerDefinition | undefined {
+    if (!isCanonicalToolName(name)) {
+      return undefined;
+    }
+    const separator = name.indexOf(".");
+    const toolkit = name.slice(0, separator);
+    const canonicalTrigger = name.slice(separator + 1);
+    const manifest = this.#manifests.get(toolkit);
+    const implementation = manifest?.triggers?.find(
+      (candidate) => candidate.canonicalTrigger === canonicalTrigger,
+    );
+    if (manifest === undefined || implementation === undefined) {
+      return undefined;
+    }
+    const contract = this.#triggerContracts.get(
+      triggerImplementationKey(implementation),
+    );
+    return contract === undefined
+      ? undefined
+      : materializeTrigger(contract, manifest, implementation);
+  }
+
   getEffectiveScopes(name: string): EffectiveScopes | undefined {
     if (!isCanonicalToolName(name)) {
       return undefined;
@@ -662,6 +963,35 @@ export class CatalogRegistry {
       return undefined;
     }
 
+    const required = new Set([
+      ...(manifest.auth.requiredScopes ?? []),
+      ...(implementation.requiredScopes ?? []),
+    ]);
+    const optional = new Set(
+      (manifest.auth.optionalScopes ?? []).filter(
+        (scope) => !required.has(scope),
+      ),
+    );
+    return {
+      required: Object.freeze([...required].sort()),
+      optional: Object.freeze([...optional].sort()),
+    };
+  }
+
+  getEffectiveTriggerScopes(name: string): EffectiveScopes | undefined {
+    if (!isCanonicalToolName(name)) {
+      return undefined;
+    }
+    const separator = name.indexOf(".");
+    const toolkit = name.slice(0, separator);
+    const canonicalTrigger = name.slice(separator + 1);
+    const manifest = this.#manifests.get(toolkit);
+    const implementation = manifest?.triggers?.find(
+      (candidate) => candidate.canonicalTrigger === canonicalTrigger,
+    );
+    if (manifest === undefined || implementation === undefined) {
+      return undefined;
+    }
     const required = new Set([
       ...(manifest.auth.requiredScopes ?? []),
       ...(implementation.requiredScopes ?? []),
@@ -710,6 +1040,38 @@ export class CatalogRegistry {
     return sorted;
   }
 
+  listTriggers(
+    filters: ListTriggersFilters = {},
+  ): readonly TriggerDefinition[] {
+    const triggers: TriggerDefinition[] = [];
+    for (const manifest of this.#manifests.values()) {
+      if (
+        (filters.toolkit !== undefined &&
+          manifest.toolkit.slug !== filters.toolkit) ||
+        (filters.tier !== undefined && manifest.toolkit.tier !== filters.tier)
+      ) {
+        continue;
+      }
+      for (const implementation of manifest.triggers ?? []) {
+        if (
+          (filters.capability !== undefined &&
+            implementation.capability !== filters.capability) ||
+          (filters.deliveryMode !== undefined &&
+            implementation.delivery.mode !== filters.deliveryMode)
+        ) {
+          continue;
+        }
+        const contract = this.#triggerContracts.get(
+          triggerImplementationKey(implementation),
+        );
+        if (contract !== undefined) {
+          triggers.push(materializeTrigger(contract, manifest, implementation));
+        }
+      }
+    }
+    return triggers.sort((left, right) => left.name.localeCompare(right.name));
+  }
+
   /**
    * Searches this registry's lazily cached index. Registries configured with an
    * EmbeddingProvider use hybrid BM25F + cosine ranking; all others use BM25F.
@@ -752,6 +1114,26 @@ export class CatalogRegistry {
       );
   }
 
+  listTriggerContracts(
+    filters: ListTriggerContractsFilters = {},
+  ): readonly CapabilityTriggerContract[] {
+    return [...this.#triggerContracts.values()]
+      .filter(
+        (contract) =>
+          (filters.capability === undefined ||
+            contract.capability === filters.capability) &&
+          (filters.name === undefined || contract.name === filters.name) &&
+          (filters.version === undefined ||
+            contract.version === filters.version),
+      )
+      .map(clone)
+      .sort((left, right) =>
+        `${left.capability}.${left.name}@${left.version}`.localeCompare(
+          `${right.capability}.${right.name}@${right.version}`,
+        ),
+      );
+  }
+
   listManifests(
     filters: ListManifestsFilters = {},
   ): readonly ProviderManifest[] {
@@ -763,7 +1145,10 @@ export class CatalogRegistry {
           (filters.capability === undefined ||
             manifest.implements.some(
               ({ capability }) => capability === filters.capability,
-            )),
+            ) ||
+            manifest.triggers?.some(
+              ({ capability }) => capability === filters.capability,
+            ) === true),
       )
       .map(clone)
       .sort((left, right) =>
@@ -797,6 +1182,7 @@ export class CatalogRegistry {
       catalogVersion: this.catalogVersion,
       generatedAt,
       tools: this.listTools(),
+      triggers: this.listTriggers(),
       providers: this.listManifests(),
     };
   }

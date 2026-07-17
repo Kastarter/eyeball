@@ -1,10 +1,10 @@
 import type { ProviderManifest } from "@eyeball/core";
 import { deepFreeze } from "../immutable.js";
 
-/** The catalog 1.0 Gmail manifest defined normatively by RFC 001 section 2.2. */
+/** Gmail tools from catalog 1.0 plus the additive catalog 1.1 reaction surface. */
 export const gmailManifest = deepFreeze({
   schemaVersion: "1.0",
-  catalogVersion: "1.0",
+  catalogVersion: "1.1",
   toolkit: {
     slug: "gmail",
     displayName: "Gmail",
@@ -79,6 +79,31 @@ export const gmailManifest = deepFreeze({
       canonicalTool: "add_email_label",
       canonicalVersion: "1.0.0",
       operationId: "users.messages.modify",
+    },
+  ],
+  triggers: [
+    {
+      capability: "email",
+      canonicalTrigger: "email_received",
+      canonicalVersion: "1.0.0",
+      operationId: "users.messages.list.poll",
+      delivery: {
+        mode: "polling",
+        defaultIntervalSeconds: 60,
+        minimumIntervalSeconds: 30,
+      },
+      payloadExtensionSchema: {
+        type: "object",
+        additionalProperties: false,
+        required: ["historyId", "labelIds"],
+        properties: {
+          historyId: { type: "string", minLength: 1 },
+          labelIds: {
+            type: "array",
+            items: { type: "string", minLength: 1 },
+          },
+        },
+      },
     },
   ],
 } as const satisfies ProviderManifest);

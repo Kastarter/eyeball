@@ -1,5 +1,9 @@
 import { createHmac, timingSafeEqual } from "node:crypto";
 import type {
+  TriggerWebhookEvent,
+  TriggerWebhookEventType,
+} from "./triggers.js";
+import type {
   ExecutionWebhookEvent,
   TerminalEventType,
 } from "./types/execution.js";
@@ -26,15 +30,36 @@ export const WEBHOOK_SUBSCRIPTION_EVENT_TYPES = [
   "execution.failed",
   "voice.session.event",
   "voice.transcript.ready",
+  "trigger.*",
 ] as const;
 
 export type WebhookSubscriptionEventType =
-  (typeof WEBHOOK_SUBSCRIPTION_EVENT_TYPES)[number];
+  | (typeof WEBHOOK_SUBSCRIPTION_EVENT_TYPES)[number]
+  | TriggerWebhookEventType;
 
 export type WebhookEventType =
   | TerminalEventType
   | "voice.session.event"
-  | "voice.transcript.ready";
+  | "voice.transcript.ready"
+  | TriggerWebhookEventType;
+
+const TRIGGER_WEBHOOK_EVENT_TYPE_PATTERN =
+  /^trigger\.[a-z0-9]+(?:-[a-z0-9]+)*\.[a-z][a-z0-9]*(?:_[a-z0-9]+)*$/u;
+
+export function isTriggerWebhookEventType(
+  value: string,
+): value is TriggerWebhookEventType {
+  return value.length <= 71 && TRIGGER_WEBHOOK_EVENT_TYPE_PATTERN.test(value);
+}
+
+export function isWebhookSubscriptionEventType(
+  value: string,
+): value is WebhookSubscriptionEventType {
+  return (
+    (WEBHOOK_SUBSCRIPTION_EVENT_TYPES as readonly string[]).includes(value) ||
+    isTriggerWebhookEventType(value)
+  );
+}
 
 export interface WebhookEndpoint {
   endpointId: string;
@@ -83,7 +108,8 @@ export interface VoiceTranscriptWebhookEvent {
 export type WebhookEvent =
   | ExecutionWebhookEvent
   | VoiceSessionWebhookEvent
-  | VoiceTranscriptWebhookEvent;
+  | VoiceTranscriptWebhookEvent
+  | TriggerWebhookEvent;
 
 export type WebhookDeliveryStatus =
   | "pending"

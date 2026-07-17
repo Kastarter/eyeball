@@ -3,7 +3,7 @@ import { deepFreeze } from "../immutable.js";
 
 export const slackManifest = deepFreeze({
   schemaVersion: "1.0",
-  catalogVersion: "1.0",
+  catalogVersion: "1.1",
   toolkit: {
     slug: "slack",
     displayName: "Slack",
@@ -83,6 +83,31 @@ export const slackManifest = deepFreeze({
       canonicalTool: "list_members",
       canonicalVersion: "1.0.0",
       operationId: "users.list",
+    },
+  ],
+  triggers: [
+    {
+      capability: "messaging_chat",
+      canonicalTrigger: "message_received",
+      canonicalVersion: "1.0.0",
+      operationId: "events_api.message",
+      delivery: {
+        mode: "push",
+        providerEvent: "message",
+      },
+      requiredScopes: ["channels:history"],
+      payloadExtensionSchema: {
+        type: "object",
+        additionalProperties: false,
+        required: ["eventId", "teamId", "channelId", "eventTs"],
+        properties: {
+          eventId: { type: "string", minLength: 1 },
+          teamId: { type: "string", minLength: 1 },
+          channelId: { type: "string", minLength: 1 },
+          eventTs: { type: "string", minLength: 1 },
+          subtype: { type: "string", minLength: 1 },
+        },
+      },
     },
   ],
 } as const satisfies ProviderManifest);

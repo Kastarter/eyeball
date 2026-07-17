@@ -1,7 +1,6 @@
 import { createHash } from "node:crypto";
 import { defaultCatalog } from "@eyeball/catalog";
 import {
-  type CatalogVersion,
   type CredentialProvider,
   CredentialProviderError,
   createExecutionId,
@@ -58,6 +57,10 @@ import {
   InMemoryExecutionStore,
   InvalidExecutionCursorError,
 } from "./store.js";
+import {
+  type RuntimeTriggerCatalog,
+  TriggerService,
+} from "./triggers/service.js";
 import { WebhookDeliverer } from "./webhooks/deliverer.js";
 
 const DAY_MS = 24 * 60 * 60 * 1_000;
@@ -69,10 +72,8 @@ const EXECUTE_REQUEST_KEYS = new Set([
   "mode",
 ]);
 
-export interface RuntimeCatalog {
-  readonly catalogVersion: CatalogVersion;
+export interface RuntimeCatalog extends RuntimeTriggerCatalog {
   getTool(name: string): ToolDefinition | undefined;
-  getManifest(toolkitSlug: string): ProviderManifest | undefined;
   getEffectiveScopes(
     name: string,
   ): { required: readonly string[]; optional: readonly string[] } | undefined;
@@ -129,6 +130,7 @@ export interface ExecutionEngineOptions {
   maxFileSizeBytes?: number;
   idempotencyRetentionMs?: number;
   webhookDeliverer?: WebhookDeliverer;
+  triggerService?: TriggerService;
 }
 
 export class ExecutionRequestError extends EyeballError {
@@ -414,6 +416,7 @@ export class ExecutionEngine {
   readonly maxFileSizeBytes: number;
   readonly queue: TaskQueue;
   readonly webhookDeliverer: WebhookDeliverer;
+  readonly triggerService: TriggerService;
   readonly #fetchImpl: FetchImplementation;
   readonly #clock: Clock;
   readonly #logger: ExecutorLogger;
@@ -455,6 +458,26 @@ export class ExecutionEngine {
         clock: this.#clock,
         logger: this.#logger,
       });
+    this.triggerService =
+      options.triggerService ??
+      new TriggerService({
+        catalog: this.catalog,
+        credentialProvider: this.credentialProvider,
+        webhookDeliverer: this.webhookDeliverer,
+        fetchImpl: this.#fetchImpl,
+        clock: this.#clock,
+        logger: this.#logger,
+        env: this.#env,
+      });
+    if (
+      this.triggerService.catalog !== this.catalog ||
+      this.triggerService.credentialProvider !== this.credentialProvider ||
+      this.triggerService.webhookDeliverer !== this.webhookDeliverer
+    ) {
+      throw new Error(
+        "The execution engine and trigger service must share catalog, credential, and webhook dependencies.",
+      );
+    }
     this.#executionIdFactory = options.executionIdFactory ?? createExecutionId;
     this.#fileIdFactory = options.fileIdFactory ?? createFileId;
     this.#idempotencyRetentionMs = Math.max(

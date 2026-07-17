@@ -2,22 +2,27 @@ import {
   type CapabilityToolContract,
   type ProviderManifest,
   validateInput,
+  validateTriggerPayload,
 } from "@eyeball/core";
 import { describe, expect, it } from "vitest";
 import {
   CatalogRegistry,
   emailCapabilityContracts,
+  emailCapabilityTriggerContracts,
   emailContractsByName,
   gmailManifest,
 } from "../src/index.js";
 
 function cloneManifest(): ProviderManifest {
-  return structuredClone(gmailManifest) as ProviderManifest;
+  const manifest = structuredClone(gmailManifest) as ProviderManifest;
+  delete manifest.triggers;
+  return manifest;
 }
 
 function createRegistry(): CatalogRegistry {
   return new CatalogRegistry({
     contracts: emailCapabilityContracts,
+    triggerContracts: emailCapabilityTriggerContracts,
     manifests: [gmailManifest],
   });
 }
@@ -87,11 +92,52 @@ describe("catalog registry materialization", () => {
     expect(registry.getTool("gmail.send_email")).toBeDefined();
     expect(registry.getTool("gmail.nonexistent")).toBeUndefined();
     expect(registry.getTool("not a tool")).toBeUndefined();
+    expect(registry.listTriggers()).toHaveLength(1);
+    expect(registry.getTrigger("gmail.email_received")).toBeDefined();
+    expect(registry.getTrigger("gmail.missing")).toBeUndefined();
+  });
+
+  it("materializes and validates the Gmail email-received trigger", () => {
+    const trigger = defined(
+      createRegistry().getTrigger("gmail.email_received"),
+    );
+    expect(trigger).toMatchObject({
+      name: "gmail.email_received",
+      toolkit: "gmail",
+      capability: "email",
+      annotations: {
+        deliveryMode: "polling",
+        defaultIntervalSeconds: 60,
+        minimumIntervalSeconds: 30,
+        deduplicated: true,
+        replayable: false,
+      },
+      version: "1.0.0",
+    });
+    expect(
+      validateTriggerPayload(trigger, {
+        id: "msg_1",
+        from: "sender@example.com",
+        to: ["recipient@example.com"],
+        subject: "Hello",
+        snippet: "Body preview",
+        threadId: "thread_1",
+        receivedAt: "2026-07-18T00:00:00.000Z",
+        x_provider: {
+          gmail: { historyId: "1", labelIds: ["INBOX"] },
+        },
+      }).ok,
+    ).toBe(true);
   });
 
   it("filters contracts, tools, manifests, and toolkits deterministically", () => {
     const registry = createRegistry();
     expect(registry.listTools({ capability: "email" })).toHaveLength(8);
+    expect(registry.listTriggers({ capability: "email" })).toHaveLength(1);
+    expect(registry.listTriggers({ deliveryMode: "push" })).toEqual([]);
+    expect(registry.listTriggerContracts({ capability: "email" })).toHaveLength(
+      1,
+    );
     expect(registry.listTools({ toolkit: "missing" })).toEqual([]);
     expect(registry.listTools({ tier: "P1" })).toEqual([]);
     expect(registry.listManifests({ capability: "email" })).toHaveLength(1);
@@ -131,6 +177,7 @@ describe("catalog registry materialization", () => {
     });
     expect(manifest.providers).toHaveLength(1);
     expect(manifest.tools).toHaveLength(8);
+    expect(manifest.triggers).toHaveLength(1);
     expect(() => createRegistry().toCatalogManifest("2026-07-16")).toThrow(
       /generatedAt/,
     );

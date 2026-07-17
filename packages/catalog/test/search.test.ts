@@ -6,6 +6,7 @@ import {
   defaultCatalog,
   type EmbeddingProvider,
   emailCapabilityContracts,
+  emailCapabilityTriggerContracts,
   gmailManifest,
   microsoftOutlookManifest,
   searchCatalogTools,
@@ -344,6 +345,7 @@ describe("hybrid catalog index", () => {
     const provider = new HashEmbeddingProvider();
     const registry = new CatalogRegistry({
       contracts: emailCapabilityContracts,
+      triggerContracts: emailCapabilityTriggerContracts,
       manifests: [gmailManifest],
       embeddingProvider: provider,
     });

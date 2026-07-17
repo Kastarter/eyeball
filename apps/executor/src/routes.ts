@@ -1,12 +1,15 @@
 import { randomUUID } from "node:crypto";
 import {
   type ApiKeyringInput,
+  CredentialProviderError,
   createErrorEnvelope,
   type ExecutionStatus,
   EyeballError,
   fromRestrictedToolName,
   isCanonicalToolName,
   isConnectionId,
+  isWebhookSubscriptionEventType,
+  type JsonValue,
   materializeApiKeyring,
   parseApiKeyring,
   type QualifiedToolName,
@@ -24,6 +27,8 @@ import {
   type ListExecutionsQuery,
 } from "./engine.js";
 import type { FileStore } from "./staged-files.js";
+import { TriggerRequestError } from "./triggers/service.js";
+import { TriggerSubscriptionStoreError } from "./triggers/subscription-store.js";
 import { WebhookDeliveryInputError } from "./webhooks/delivery-store.js";
 import { WebhookEndpointInputError } from "./webhooks/endpoint-store.js";
 
@@ -37,8 +42,6 @@ const EXECUTION_STATUSES = new Set<ExecutionStatus>([
 export { parseApiKeyring } from "@eyeball/core";
 
 const USER_ID_HEADER = "X-Eyeball-User-Id";
-const WEBHOOK_EVENT_TYPES = new Set<string>(WEBHOOK_SUBSCRIPTION_EVENT_TYPES);
-
 export interface ExecutorVariables {
   projectId: string;
   pinnedUserId: string | undefined;
@@ -131,6 +134,17 @@ function webhookNotFound(context: ExecutorContext): Response {
   );
 }
 
+function subscriptionNotFound(context: ExecutorContext): Response {
+  return requestFailure(
+    context,
+    new EyeballError({
+      code: TOOL_ERROR_CODES.NOT_FOUND,
+      message: "Trigger subscription was not found.",
+    }),
+    404,
+  );
+}
+
 function rejectsPinnedUser(
   context: ExecutorContext,
   ...candidates: readonly (string | undefined)[]
@@ -159,11 +173,44 @@ function handleRouteError(context: ExecutorContext, error: unknown): Response {
   if (error instanceof ExecutionRequestError) {
     return requestFailure(context, error, error.httpStatus);
   }
+  if (error instanceof TriggerRequestError) {
+    return requestFailure(context, error, error.httpStatus);
+  }
   if (
     error instanceof WebhookEndpointInputError ||
-    error instanceof WebhookDeliveryInputError
+    error instanceof WebhookDeliveryInputError ||
+    error instanceof TriggerSubscriptionStoreError
   ) {
     return invalidQuery(context, error.message);
+  }
+  if (error instanceof CredentialProviderError) {
+    return requestFailure(
+      context,
+      new EyeballError({
+        code: error.code,
+        message: error.message,
+        retryable: error.retryable,
+        ...(error.retryAfter === undefined
+          ? {}
+          : { retryAfter: error.retryAfter }),
+        cause: error,
+      }),
+      422,
+    );
+  }
+  if (error instanceof EyeballError) {
+    if (error.code === TOOL_ERROR_CODES.NOT_FOUND) {
+      return requestFailure(context, error, 404);
+    }
+    if (
+      error.code === TOOL_ERROR_CODES.INVALID_INPUT ||
+      error.code === TOOL_ERROR_CODES.NOT_SUPPORTED ||
+      error.code === TOOL_ERROR_CODES.AUTH_MISSING ||
+      error.code === TOOL_ERROR_CODES.AUTH_EXPIRED ||
+      error.code === TOOL_ERROR_CODES.AUTH_INSUFFICIENT_SCOPE
+    ) {
+      return requestFailure(context, error, 422);
+    }
   }
   return requestFailure(
     context,
@@ -302,6 +349,10 @@ export function createExecutorApp(options: ExecutorAppOptions = {}): Hono<{
 
   app.use("/v1/*", async (context, next) => {
     context.set("requestId", requestIdFactory());
+    if (context.req.path.startsWith("/v1/ingest/")) {
+      await next();
+      return;
+    }
     const token = bearerToken(context.req.header("Authorization"));
     const principal = token === undefined ? undefined : keyring.get(token);
     if (principal === undefined) {
@@ -372,7 +423,8 @@ export function createExecutorApp(options: ExecutorAppOptions = {}): Hono<{
       !Array.isArray(request.events) ||
       request.events.length === 0 ||
       request.events.some(
-        (event) => typeof event !== "string" || !WEBHOOK_EVENT_TYPES.has(event),
+        (event) =>
+          typeof event !== "string" || !isWebhookSubscriptionEventType(event),
       )
     ) {
       return invalidQuery(
@@ -484,7 +536,7 @@ export function createExecutorApp(options: ExecutorAppOptions = {}): Hono<{
         request.events.length === 0 ||
         request.events.some(
           (event) =>
-            typeof event !== "string" || !WEBHOOK_EVENT_TYPES.has(event),
+            typeof event !== "string" || !isWebhookSubscriptionEventType(event),
         )
       ) {
         return invalidQuery(
@@ -590,6 +642,222 @@ export function createExecutorApp(options: ExecutorAppOptions = {}): Hono<{
         context.req.param("id"),
       );
       return deleted ? context.body(null, 204) : webhookNotFound(context);
+    } catch (error) {
+      return handleRouteError(context, error);
+    }
+  });
+
+  app.post("/v1/subscriptions", async (context) => {
+    let request: unknown;
+    try {
+      request = await context.req.json();
+    } catch {
+      return invalidQuery(context, "Request body must be valid JSON.");
+    }
+    if (!isRecord(request)) {
+      return invalidQuery(
+        context,
+        "Trigger subscription must be a JSON object.",
+      );
+    }
+    const unknownKey = Object.keys(request).find(
+      (key) =>
+        key !== "trigger" &&
+        key !== "userId" &&
+        key !== "connectionId" &&
+        key !== "webhookEndpointIds" &&
+        key !== "filters" &&
+        key !== "pollIntervalSeconds",
+    );
+    if (unknownKey !== undefined) {
+      return invalidQuery(
+        context,
+        `Unknown trigger subscription field: ${unknownKey}.`,
+      );
+    }
+    if (typeof request.trigger !== "string") {
+      return invalidQuery(context, "trigger must be a canonical trigger name.");
+    }
+    if (
+      request.userId !== undefined &&
+      (typeof request.userId !== "string" || request.userId.trim().length === 0)
+    ) {
+      return invalidQuery(context, "userId must be a non-empty string.");
+    }
+    const headerUserId = context.req.header(USER_ID_HEADER);
+    if (headerUserId !== undefined && headerUserId.trim().length === 0) {
+      return invalidQuery(context, `${USER_ID_HEADER} must not be empty.`);
+    }
+    if (
+      typeof request.userId === "string" &&
+      headerUserId !== undefined &&
+      request.userId !== headerUserId
+    ) {
+      return invalidQuery(
+        context,
+        "userId conflicts with the X-Eyeball-User-Id header.",
+      );
+    }
+    if (
+      rejectsPinnedUser(
+        context,
+        typeof request.userId === "string" ? request.userId : undefined,
+        headerUserId,
+      )
+    ) {
+      return pinnedUserFailure(context);
+    }
+    const userId =
+      context.get("pinnedUserId") ??
+      (typeof request.userId === "string" ? request.userId : headerUserId);
+    if (userId === undefined) {
+      return invalidQuery(context, "userId or X-Eyeball-User-Id is required.");
+    }
+    if (
+      request.connectionId !== undefined &&
+      typeof request.connectionId !== "string"
+    ) {
+      return invalidQuery(context, "connectionId must be a string.");
+    }
+    if (
+      !Array.isArray(request.webhookEndpointIds) ||
+      request.webhookEndpointIds.some((value) => typeof value !== "string")
+    ) {
+      return invalidQuery(
+        context,
+        "webhookEndpointIds must be an array of endpoint ID strings.",
+      );
+    }
+    if (request.filters !== undefined && !isRecord(request.filters)) {
+      return invalidQuery(context, "filters must be a JSON object.");
+    }
+    if (
+      request.pollIntervalSeconds !== undefined &&
+      typeof request.pollIntervalSeconds !== "number"
+    ) {
+      return invalidQuery(context, "pollIntervalSeconds must be a number.");
+    }
+
+    try {
+      const created = await engine.triggerService.create({
+        projectId: context.get("projectId"),
+        userId,
+        trigger: request.trigger,
+        ...(request.connectionId === undefined
+          ? {}
+          : { connectionId: request.connectionId as string }),
+        webhookEndpointIds: request.webhookEndpointIds as string[],
+        ...(request.filters === undefined
+          ? {}
+          : {
+              filters: request.filters as Readonly<Record<string, JsonValue>>,
+            }),
+        ...(request.pollIntervalSeconds === undefined
+          ? {}
+          : { pollIntervalSeconds: request.pollIntervalSeconds }),
+        ingestBaseUrl: new URL(context.req.url).origin,
+      });
+      return context.json(created, 201);
+    } catch (error) {
+      return handleRouteError(context, error);
+    }
+  });
+
+  app.get("/v1/subscriptions", async (context) => {
+    const queryUserId = context.req.query("userId");
+    const headerUserId = context.req.header(USER_ID_HEADER);
+    if (queryUserId !== undefined && queryUserId.trim().length === 0) {
+      return invalidQuery(context, "userId must not be empty.");
+    }
+    if (headerUserId !== undefined && headerUserId.trim().length === 0) {
+      return invalidQuery(context, `${USER_ID_HEADER} must not be empty.`);
+    }
+    if (
+      queryUserId !== undefined &&
+      headerUserId !== undefined &&
+      queryUserId !== headerUserId
+    ) {
+      return invalidQuery(
+        context,
+        "userId conflicts with the X-Eyeball-User-Id header.",
+      );
+    }
+    if (rejectsPinnedUser(context, queryUserId, headerUserId)) {
+      return pinnedUserFailure(context);
+    }
+    const limitValue = context.req.query("limit");
+    const limit = limitValue === undefined ? undefined : Number(limitValue);
+    if (
+      limit !== undefined &&
+      (!Number.isSafeInteger(limit) || limit < 1 || limit > 100)
+    ) {
+      return invalidQuery(
+        context,
+        "limit must be an integer from 1 through 100.",
+      );
+    }
+    const userId = context.get("pinnedUserId") ?? queryUserId ?? headerUserId;
+    const cursor = context.req.query("cursor");
+    try {
+      const page = await engine.triggerService.list(context.get("projectId"), {
+        ...(userId === undefined ? {} : { userId }),
+        ...(cursor === undefined ? {} : { cursor }),
+        ...(limit === undefined ? {} : { limit }),
+      });
+      return context.json(page);
+    } catch (error) {
+      return handleRouteError(context, error);
+    }
+  });
+
+  app.get("/v1/subscriptions/:id", async (context) => {
+    try {
+      const subscription = await engine.triggerService.get(
+        context.get("projectId"),
+        context.req.param("id"),
+      );
+      if (subscription === undefined) return subscriptionNotFound(context);
+      if (rejectsPinnedUser(context, subscription.userId)) {
+        return pinnedUserFailure(context);
+      }
+      return context.json(subscription);
+    } catch (error) {
+      return handleRouteError(context, error);
+    }
+  });
+
+  app.delete("/v1/subscriptions/:id", async (context) => {
+    try {
+      const subscription = await engine.triggerService.get(
+        context.get("projectId"),
+        context.req.param("id"),
+      );
+      if (subscription === undefined) return subscriptionNotFound(context);
+      if (rejectsPinnedUser(context, subscription.userId)) {
+        return pinnedUserFailure(context);
+      }
+      return (await engine.triggerService.delete(
+        context.get("projectId"),
+        subscription.subscriptionId,
+      ))
+        ? context.body(null, 204)
+        : subscriptionNotFound(context);
+    } catch (error) {
+      return handleRouteError(context, error);
+    }
+  });
+
+  app.post("/v1/ingest/:subscriptionId/:secret", async (context) => {
+    try {
+      const result = await engine.triggerService.ingest(
+        context.req.param("subscriptionId"),
+        context.req.param("secret"),
+        await context.req.text(),
+        context.req.raw.headers,
+      );
+      return result.kind === "challenge"
+        ? context.json({ challenge: result.challenge })
+        : context.json(result, 202);
     } catch (error) {
       return handleRouteError(context, error);
     }

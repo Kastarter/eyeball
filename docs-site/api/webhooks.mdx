@@ -19,7 +19,7 @@ All routes require `Authorization: Bearer <project-api-key>`. Because endpoints 
 
 The `201` response includes `endpointId`, normalized `url`, `events`, `active`, `createdAt`, `updatedAt`, `secretPrefix`, and the complete `secret`. The complete secret appears only in this response.
 
-Supported subscriptions are `execution.completed`, `execution.succeeded`, `execution.failed`, `voice.session.event`, and `voice.transcript.ready`.
+Supported subscriptions are `execution.completed`, `execution.succeeded`, `execution.failed`, `voice.session.event`, `voice.transcript.ready`, `trigger.*`, and exact canonical trigger event types such as `trigger.slack.message_received`.
 
 ## List and get endpoints
 

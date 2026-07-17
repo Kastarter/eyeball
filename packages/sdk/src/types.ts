@@ -11,6 +11,7 @@ import type {
   OpenAIFunctionToolDescriptor,
   ToolDefinition,
   ToolNameMap,
+  TriggerDefinition,
   WebhookSubscriptionEventType,
 } from "@eyeball/core";
 
@@ -32,6 +33,30 @@ export interface ListWebhookEndpointsOptions {
 }
 
 export interface ListWebhookDeliveriesOptions {
+  cursor?: string;
+  limit?: number;
+}
+
+export interface GetTriggersOptions {
+  toolkits?: readonly string[];
+  capability?: CapabilitySlug;
+  deliveryMode?: TriggerDefinition["annotations"]["deliveryMode"];
+}
+
+export interface CreateSubscriptionOptions {
+  trigger: string;
+  /** Uses the client-level userId when omitted. */
+  userId?: string;
+  connectionId?: ConnectionId;
+  webhookEndpointIds: readonly string[];
+  filters?: Readonly<Record<string, JsonValue>>;
+  /** Polling triggers only; the catalog default is used when omitted. */
+  pollIntervalSeconds?: number;
+}
+
+export interface ListSubscriptionsOptions {
+  /** Uses the client-level userId when omitted; omit both to list the project. */
+  userId?: string;
   cursor?: string;
   limit?: number;
 }

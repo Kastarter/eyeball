@@ -6,6 +6,7 @@ import {
   type JsonValue,
   type ObjectSchema202012,
   type ToolDefinition,
+  type TriggerDefinition,
 } from "./types/tool.js";
 
 export interface InputValidationIssue {
@@ -235,7 +236,7 @@ function jsonValueIssue(
 function validateObject(
   schema: ObjectSchema202012,
   input: unknown,
-  options: { useDefaults: boolean; noun: "Input" | "Output" },
+  options: { useDefaults: boolean; noun: "Input" | "Output" | "Payload" },
 ): InputValidationResult {
   const profileError = schemaProfileIssue(schema);
   if (profileError !== undefined) {
@@ -318,5 +319,16 @@ export function validateOutput(
   return validateObject(tool.outputSchema, output, {
     useDefaults: false,
     noun: "Output",
+  });
+}
+
+/** Validates a normalized provider event against its materialized trigger schema. */
+export function validateTriggerPayload(
+  trigger: Pick<TriggerDefinition, "payloadSchema">,
+  payload: unknown,
+): InputValidationResult {
+  return validateObject(trigger.payloadSchema, payload, {
+    useDefaults: false,
+    noun: "Payload",
   });
 }

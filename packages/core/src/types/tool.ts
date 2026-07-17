@@ -62,6 +62,8 @@ export interface ObjectSchema202012 extends JSONSchemaObject202012 {
 export type ToolkitSlug = string;
 export type CanonicalToolName = string;
 export type QualifiedToolName = `${string}.${string}`;
+export type CanonicalTriggerName = string;
+export type QualifiedTriggerName = `${string}.${string}`;
 export type SemVer = `${number}.${number}.${number}`;
 export type CatalogVersion = `${number}.${number}`;
 
@@ -124,6 +126,24 @@ export interface CapabilityToolContract {
   version: SemVer;
 }
 
+/** Provider-neutral event contract shared by every implementation of a trigger. */
+export interface CapabilityTriggerContract {
+  capability: CapabilitySlug;
+  name: CanonicalTriggerName;
+  description: string;
+  /** Canonical payload delivered in `trigger.<toolkit>.<canonical-trigger>`. */
+  payloadSchema: ObjectSchema202012;
+  annotations: CapabilityTriggerAnnotations;
+  version: SemVer;
+}
+
+export interface CapabilityTriggerAnnotations {
+  /** Provider identities are claimed within the configured idempotency window. */
+  deduplicated: boolean;
+  /** Whether the runtime exposes a public replay or backfill operation. */
+  replayable: boolean;
+}
+
 export const AUTH_CLASSES = ["oauth2", "api_key", "basic", "none"] as const;
 export type AuthClass = (typeof AUTH_CLASSES)[number];
 
@@ -157,6 +177,54 @@ export interface ProviderToolImplementation {
   outputExtensionSchema?: ObjectSchema202012;
 }
 
+export type ProviderTriggerDelivery =
+  | {
+      mode: "polling";
+      /** Provider-safe cadence used by the hosted scheduler. */
+      defaultIntervalSeconds: number;
+      minimumIntervalSeconds: number;
+    }
+  | {
+      mode: "push";
+      /** Provider event name routed to this canonical trigger. */
+      providerEvent: string;
+    };
+
+export interface ProviderTriggerImplementation {
+  capability: CapabilitySlug;
+  canonicalTrigger: CanonicalTriggerName;
+  canonicalVersion: SemVer;
+  operationId: string;
+  delivery: ProviderTriggerDelivery;
+  requiredScopes?: readonly string[];
+  /** Schema for `payload.x_provider[manifest.toolkit.slug]` only. */
+  payloadExtensionSchema?: ObjectSchema202012;
+}
+
+export type TriggerAnnotations = CapabilityTriggerAnnotations &
+  (
+    | {
+        deliveryMode: "polling";
+        defaultIntervalSeconds: number;
+        minimumIntervalSeconds: number;
+      }
+    | {
+        deliveryMode: "push";
+        providerEvent: string;
+      }
+  );
+
+export interface TriggerDefinition {
+  /** Exactly `<toolkit>.<canonical-trigger>`. */
+  name: QualifiedTriggerName;
+  toolkit: ToolkitSlug;
+  capability: CapabilitySlug;
+  description: string;
+  payloadSchema: ObjectSchema202012;
+  annotations: TriggerAnnotations;
+  version: SemVer;
+}
+
 export interface Toolkit {
   slug: ToolkitSlug;
   displayName: string;
@@ -175,11 +243,14 @@ export interface ProviderManifest {
     baseUrlOverrideEnv?: string;
   };
   implements: readonly ProviderToolImplementation[];
+  /** Additive reaction surface. Absence means the provider publishes no triggers. */
+  triggers?: readonly ProviderTriggerImplementation[];
 }
 
 export interface CatalogManifest {
   catalogVersion: CatalogVersion;
   generatedAt: string;
   tools: readonly ToolDefinition[];
+  triggers: readonly TriggerDefinition[];
   providers: readonly ProviderManifest[];
 }

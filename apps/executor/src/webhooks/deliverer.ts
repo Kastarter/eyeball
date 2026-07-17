@@ -2,7 +2,10 @@ import { randomUUID } from "node:crypto";
 import {
   createWebhookSignature,
   type ExecutionRecord,
+  type QualifiedTriggerName,
   type TranscriptArtifact,
+  type TriggerEventData,
+  type TriggerWebhookEvent,
   type VoiceAgentSessionEvent,
   type VoiceSessionWebhookEvent,
   type VoiceTranscriptWebhookEvent,
@@ -68,6 +71,14 @@ export interface EnqueueVoiceTranscriptInput {
   createdAt?: string;
 }
 
+export interface EnqueueTriggerEventInput {
+  projectId: string;
+  endpointIds: readonly string[];
+  trigger: QualifiedTriggerName;
+  data: TriggerEventData;
+  createdAt?: string;
+}
+
 function defaultSleep(milliseconds: number): Promise<void> {
   return new Promise((resolve) => setTimeout(resolve, milliseconds));
 }
@@ -96,6 +107,9 @@ function subscribed(
       event.type === "execution.failed") &&
     events.includes("execution.completed")
   ) {
+    return true;
+  }
+  if (event.type.startsWith("trigger.") && events.includes("trigger.*")) {
     return true;
   }
   return events.includes(event.type);
@@ -224,6 +238,24 @@ export class WebhookDeliverer {
         createdAt: snapshot.createdAt ?? this.#now().toISOString(),
         projectId: snapshot.projectId,
         data: snapshot.transcript,
+      };
+      await this.#selectAndEnqueue(
+        snapshot.projectId,
+        event,
+        snapshot.endpointIds,
+      );
+    });
+  }
+
+  enqueueTriggerEvent(input: EnqueueTriggerEventInput): void {
+    const snapshot = structuredClone(input);
+    this.#enqueueSelection(async () => {
+      const event: TriggerWebhookEvent = {
+        id: this.#eventIdFactory(),
+        type: `trigger.${snapshot.trigger}`,
+        createdAt: snapshot.createdAt ?? this.#now().toISOString(),
+        projectId: snapshot.projectId,
+        data: snapshot.data,
       };
       await this.#selectAndEnqueue(
         snapshot.projectId,

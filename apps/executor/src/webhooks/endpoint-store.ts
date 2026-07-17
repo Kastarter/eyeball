@@ -2,8 +2,8 @@ import { randomBytes, randomUUID } from "node:crypto";
 import { isIP } from "node:net";
 import {
   type CreatedWebhookEndpoint,
+  isWebhookSubscriptionEventType,
   type RotatedWebhookSecret,
-  WEBHOOK_SUBSCRIPTION_EVENT_TYPES,
   type WebhookEndpoint,
   type WebhookEndpointPage,
   type WebhookSubscriptionEventType,
@@ -86,8 +86,6 @@ export class InvalidWebhookCursorError extends WebhookEndpointInputError {
   }
 }
 
-const WEBHOOK_EVENT_TYPES = new Set<string>(WEBHOOK_SUBSCRIPTION_EVENT_TYPES);
-
 function copy<T>(value: T): T {
   return structuredClone(value);
 }
@@ -123,7 +121,7 @@ function validateEvents(events: readonly WebhookSubscriptionEventType[]): void {
   }
   if (
     new Set(events).size !== events.length ||
-    events.some((event) => !WEBHOOK_EVENT_TYPES.has(event))
+    events.some((event) => !isWebhookSubscriptionEventType(event))
   ) {
     throw new WebhookEndpointInputError(
       "Webhook endpoint events are invalid or duplicated.",
