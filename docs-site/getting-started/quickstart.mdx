@@ -1,11 +1,11 @@
 ---
-title: "Quickstart"
-description: "Install the TypeScript SDK, query a mock mailbox, and inspect the normalized result."
+title: "First tool call in 5 minutes"
+description: "Use the eyeball SDK to load a model-ready toolkit, query a mock mailbox, and inspect one normalized result."
 ---
 
-This quickstart proves the entire eyeball path without creating any third-party account.
+This is the shortest path through eyeball: start the local source-preview stack, load an eyeball toolkit, and execute one canonical tool without creating a third-party account.
 
-## Run the source preview
+## 1. Start the source preview
 
 ```bash
 # From an eyeball source checkout:
@@ -22,7 +22,7 @@ export EYEBALL_API_KEY="eyeball_dev_project"
 export EYEBALL_EXECUTOR_URL="http://127.0.0.1:3000"
 ```
 
-## Run one canonical tool
+## 2. Load and run one tool
 
 ```ts
 import { Eyeball } from "@eyeball/sdk";
@@ -32,13 +32,18 @@ const eyeball = new Eyeball({
   baseUrl: process.env.EYEBALL_EXECUTOR_URL!,
 });
 
+const bundle = await eyeball.tools.get({
+  toolkits: ["gmail"],
+  format: "anthropic",
+});
+
 const result = await eyeball.tools.run(
   "gmail.search_emails",
   { query: "reservation", pageSize: 5 },
   { userId: "demo_user" },
 );
 
-console.log(result);
+console.log({ modelTools: bundle.tools.length, result });
 ```
 
 Save the snippet as `example.ts`, then run it from the repository root:
@@ -47,7 +52,11 @@ Save the snippet as `example.ts`, then run it from the repository root:
 node --import tsx example.ts
 ```
 
-Expected shape:
+`format: "anthropic"` only chooses the model-facing tool-definition shape. The executor still receives the same canonical eyeball tool name, input, and user scope.
+
+## 3. Inspect the canonical result
+
+Expected output shape:
 
 ```json
 {
@@ -65,4 +74,4 @@ Expected shape:
   Mock mode is an endpoint choice, not a `mock: true` SDK option. This source-preview flow runs with zero third-party SaaS accounts. A public package installation command will replace these workspace steps when `@eyeball/sdk` is published.
 </Note>
 
-Next, choose your model loop: [Anthropic](/getting-started/anthropic), [OpenAI](/getting-started/openai), [AI SDK](/getting-started/ai-sdk), or [MCP](/getting-started/mcp).
+Next, connect the same project through the [MCP gateway](/getting-started/mcp), or choose an integration under **Works with your stack**.

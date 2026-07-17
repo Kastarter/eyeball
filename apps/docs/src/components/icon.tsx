@@ -18,6 +18,8 @@ export type IconName =
   | "search"
   | "sun"
   | "table-list"
+  | "thumbs-down"
+  | "thumbs-up"
   | "tip"
   | "warning";
 
@@ -91,6 +93,20 @@ function IconPaths({ name }: { name: string }) {
         <>
           <rect x="3" y="4" width="18" height="16" rx="2" />
           <path d="M3 9h18M8 4v16M12 13h5M12 16h5" />
+        </>
+      );
+    case "thumbs-down":
+      return (
+        <>
+          <path d="M17 14V2M9 18.1 10 14H4.2a2 2 0 0 1-1.9-2.6l2.3-7A2 2 0 0 1 6.5 3H17v11h-2.8a2 2 0 0 0-1.8 1.1L10 20a2 2 0 0 1-1-1.9Z" />
+          <path d="M17 3h3a2 2 0 0 1 2 2v7a2 2 0 0 1-2 2h-3" />
+        </>
+      );
+    case "thumbs-up":
+      return (
+        <>
+          <path d="M7 10v12M15 5.9 14 10h5.8a2 2 0 0 1 1.9 2.6l-2.3 7a2 2 0 0 1-1.9 1.4H7V10h2.8a2 2 0 0 0 1.8-1.1L14 4a2 2 0 0 1 1 1.9Z" />
+          <path d="M7 21H4a2 2 0 0 1-2-2v-7a2 2 0 0 1 2-2h3" />
         </>
       );
     case "tip":

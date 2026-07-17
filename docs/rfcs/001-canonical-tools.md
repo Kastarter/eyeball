@@ -982,10 +982,6 @@ receive the next compatible catalog minor before this revision shipped.
 5. Converter-owned callbacks that do not receive a stable framework call ID, including the
    current Vercel AI SDK callback shape, need an explicit cross-invocation retry-correlation
    contract before their mutation quickstarts are release-ready.
-6. A version-pinned LangChain converter needs the same name-map, schema, invocation, and
-   losslessness guarantees as the four formats specified in Section 6, or it must remain
-   outside the advertised launch formats.
-
 ## 9. Normative references
 
 - [JSON Schema Draft 2020-12](https://json-schema.org/draft/2020-12)

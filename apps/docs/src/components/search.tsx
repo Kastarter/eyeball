@@ -4,6 +4,7 @@ import Link from "next/link";
 import { useRouter } from "next/navigation";
 import {
   type KeyboardEvent,
+  useCallback,
   useDeferredValue,
   useEffect,
   useMemo,
@@ -17,6 +18,13 @@ interface ScoredRecord {
   record: SearchRecord;
   score: number;
 }
+
+const FOCUSABLE_SELECTOR = [
+  "a[href]",
+  "button:not([disabled])",
+  "input:not([disabled])",
+  '[tabindex]:not([tabindex="-1"])',
+].join(",");
 
 function normalize(value: string): string {
   return value
@@ -78,7 +86,10 @@ export function DocsSearch({ records }: { records: SearchRecord[] }) {
   const [query, setQuery] = useState("");
   const [activeIndex, setActiveIndex] = useState(0);
   const deferredQuery = useDeferredValue(query);
+  const dialogRef = useRef<HTMLElement>(null);
   const inputRef = useRef<HTMLInputElement>(null);
+  const previousFocusRef = useRef<HTMLElement | null>(null);
+  const triggerRef = useRef<HTMLButtonElement>(null);
   const router = useRouter();
 
   const results = useMemo(() => {
@@ -98,39 +109,86 @@ export function DocsSearch({ records }: { records: SearchRecord[] }) {
       .map(({ record }) => record);
   }, [deferredQuery, records]);
 
+  const selectedIndex =
+    results.length === 0 ? -1 : Math.min(activeIndex, results.length - 1);
+
+  const close = useCallback(() => {
+    setOpen(false);
+    setQuery("");
+    setActiveIndex(0);
+  }, []);
+
+  const openSearch = useCallback(() => setOpen(true), []);
+
   useEffect(() => {
     const onKeyDown = (event: globalThis.KeyboardEvent) => {
       if ((event.metaKey || event.ctrlKey) && event.key.toLowerCase() === "k") {
         event.preventDefault();
-        setOpen((current) => !current);
-      }
-      if (event.key === "Escape") {
-        setOpen(false);
+        if (open) {
+          close();
+        } else {
+          openSearch();
+        }
+      } else if (event.key === "Escape" && open) {
+        close();
       }
     };
     window.addEventListener("keydown", onKeyDown);
     return () => window.removeEventListener("keydown", onKeyDown);
-  }, []);
+  }, [close, open, openSearch]);
 
   useEffect(() => {
     if (!open) {
       return;
     }
 
+    previousFocusRef.current =
+      document.activeElement instanceof HTMLElement
+        ? document.activeElement
+        : triggerRef.current;
     const previousOverflow = document.body.style.overflow;
     document.body.style.overflow = "hidden";
-    window.requestAnimationFrame(() => inputRef.current?.focus());
+    const animationFrame = window.requestAnimationFrame(() =>
+      inputRef.current?.focus(),
+    );
     return () => {
+      window.cancelAnimationFrame(animationFrame);
       document.body.style.overflow = previousOverflow;
+      previousFocusRef.current?.focus();
+      previousFocusRef.current = null;
     };
   }, [open]);
 
-  function close() {
-    setOpen(false);
-    setQuery("");
+  function handleDialogKeys(event: KeyboardEvent<HTMLElement>) {
+    if (event.key !== "Tab") {
+      return;
+    }
+
+    const focusable = Array.from(
+      dialogRef.current?.querySelectorAll<HTMLElement>(FOCUSABLE_SELECTOR) ??
+        [],
+    );
+    const first = focusable[0];
+    const last = focusable.at(-1);
+    if (!first || !last) {
+      event.preventDefault();
+      return;
+    }
+
+    if (event.shiftKey && document.activeElement === first) {
+      event.preventDefault();
+      last.focus();
+    } else if (!event.shiftKey && document.activeElement === last) {
+      event.preventDefault();
+      first.focus();
+    }
   }
 
   function handleListKeys(event: KeyboardEvent<HTMLInputElement>) {
+    if (results.length === 0) {
+      return;
+    }
+
     if (event.key === "ArrowDown") {
       event.preventDefault();
       setActiveIndex((current) => Math.min(current + 1, results.length - 1));
@@ -138,7 +196,7 @@ export function DocsSearch({ records }: { records: SearchRecord[] }) {
       event.preventDefault();
       setActiveIndex((current) => Math.max(current - 1, 0));
     } else if (event.key === "Enter") {
-      const selected = results[activeIndex];
+      const selected = results[selectedIndex];
       if (selected) {
         event.preventDefault();
         router.push(selected.path);
@@ -150,13 +208,18 @@ export function DocsSearch({ records }: { records: SearchRecord[] }) {
   return (
     <>
       <button
+        aria-controls="docs-search-dialog"
+        aria-expanded={open}
+        aria-haspopup="dialog"
+        aria-label="Search documentation"
         className="search-trigger"
-        onClick={() => setOpen(true)}
+        onClick={openSearch}
+        ref={triggerRef}
         type="button"
       >
         <Icon name="search" size={16} />
-        <span>Search documentation</span>
-        <kbd>⌘ K</kbd>
+        <span>Search docs…</span>
+        <kbd>⌘K</kbd>
       </button>
       {open ? (
         <div className="search-dialog" role="presentation">
@@ -164,25 +227,32 @@ export function DocsSearch({ records }: { records: SearchRecord[] }) {
             aria-label="Close search"
             className="search-dialog__backdrop"
             onClick={close}
+            tabIndex={-1}
             type="button"
           />
           <section
             aria-label="Search documentation"
             aria-modal="true"
             className="search-dialog__surface"
+            id="docs-search-dialog"
+            onKeyDown={handleDialogKeys}
+            ref={dialogRef}
             role="dialog"
           >
             <div className="search-dialog__input-wrap">
               <Icon name="search" size={18} />
               <input
                 aria-activedescendant={
-                  results[activeIndex]
-                    ? `search-result-${activeIndex}`
+                  results[selectedIndex]
+                    ? `search-result-${selectedIndex}`
                     : undefined
                 }
+                aria-autocomplete="list"
                 aria-controls="docs-search-results"
                 aria-expanded="true"
                 aria-label="Search documentation"
+                autoComplete="off"
+                name="docs-search"
                 onChange={(event) => {
                   setQuery(event.target.value);
                   setActiveIndex(0);
@@ -191,6 +261,7 @@ export function DocsSearch({ records }: { records: SearchRecord[] }) {
                 placeholder="Search guides, APIs, and toolkits…"
                 ref={inputRef}
                 role="combobox"
+                spellCheck={false}
                 value={query}
               />
               <button
@@ -199,11 +270,11 @@ export function DocsSearch({ records }: { records: SearchRecord[] }) {
                 onClick={close}
                 type="button"
               >
-                <span>esc</span>
+                <span>Esc</span>
               </button>
             </div>
             <div className="search-dialog__body">
-              <p className="search-dialog__label">
+              <p aria-live="polite" className="search-dialog__label">
                 {query ? "Best matches" : "Explore documentation"}
               </p>
               {results.length > 0 ? (
@@ -219,9 +290,9 @@ export function DocsSearch({ records }: { records: SearchRecord[] }) {
                       role="presentation"
                     >
                       <Link
-                        aria-selected={activeIndex === index}
+                        aria-selected={selectedIndex === index}
                         className={
-                          activeIndex === index ? "is-active" : undefined
+                          selectedIndex === index ? "is-active" : undefined
                         }
                         href={result.path}
                         id={`search-result-${index}`}

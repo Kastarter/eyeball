@@ -17,14 +17,13 @@
       "pages": [
         "index",
         "getting-started/quickstart",
+        "getting-started/mcp",
         {
-          "group": "Framework quickstarts",
+          "group": "Works with your stack",
           "pages": [
-            "getting-started/anthropic",
             "getting-started/openai",
             "getting-started/ai-sdk",
-            "getting-started/langchain",
-            "getting-started/mcp"
+            "getting-started/anthropic"
           ]
         },
         "getting-started/from-mocks-to-live",

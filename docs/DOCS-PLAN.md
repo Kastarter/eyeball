@@ -1,7 +1,7 @@
 # eyeball public docs plan
 
 Status: proposed  
-Platform: Mintlify  
+Platform: self-hosted Next.js renderer with Mintlify-compatible MDX<br />
 Audience: developers building production AI agents  
 North star: a developer completes a real tool call in less than five minutes
 
@@ -27,7 +27,7 @@ the docs must prove the core promise faster and more reliably than a landing pag
   canonical tool naming, allowlists, execution records, and normalized errors.
 - Label this advantage plainly: “Try authenticated agent tools without signing up for the
   provider.” It is a genuine product differentiator.
-- Keep every framework quickstart below 30 lines of application code, excluding install
+- Keep every stack integration quickstart below 30 lines of application code, excluding install
   commands and comments.
 - Make the voice-agent demo the showcase: it demonstrates auth composition, async execution,
   child tool calls, event streaming, transcripts, and mocks in one memorable flow.
@@ -50,7 +50,8 @@ fixed version. No page opens with positioning copy.
 
 - All snippets compile and run in CI against the released SDK and catalog version.
 - Quickstarts run from empty fixture projects in mock mode on every docs change.
-- The five framework quickstarts share one behavior contract and expected canonical result.
+- The SDK and MCP onboarding paths share one canonical execution contract; the three stack
+  integration guides preserve that result in their model-native response shapes.
 - Links, anchors, OpenAPI examples, generated schemas, and code tabs fail CI when stale.
 - Track median and p90 time-to-first-tool-call, quickstart completion, copy/run failures,
   search exits, and the first page viewed after an error-code search.
@@ -58,45 +59,37 @@ fixed version. No page opens with positioning copy.
 
 ## 2. Site structure
 
-The checked-in Mintlify configuration should use the following navigation shape. The
-`$generated` entries are expanded by the docs build into ordinary Mintlify page paths; they
-are shown here as build-time notation, not a Mintlify runtime feature.
+The checked-in `docs-site/docs.json` configuration puts the direct eyeball SDK and MCP
+paths first. `scripts/generate-docs.ts` expands only the generated toolkit branch and
+preserves the hand-authored onboarding order.
 
 ```jsonc
 {
   "navigation": [
     { "group": "Getting Started", "pages": [
-      "index", "getting-started/quickstart",
-      { "group": "Framework quickstarts", "pages": [
-        "getting-started/anthropic-sdk", "getting-started/openai",
-        "getting-started/vercel-ai-sdk", "getting-started/langchain",
-        "getting-started/mcp"
+      "index", "getting-started/quickstart", "getting-started/mcp",
+      { "group": "Works with your stack", "pages": [
+        "getting-started/openai", "getting-started/ai-sdk",
+        "getting-started/anthropic"
       ]},
       "getting-started/from-mocks-to-live",
       "getting-started/connect-your-first-account"
     ]},
     { "group": "Concepts", "pages": [
-      "concepts/projects", "concepts/toolkits-and-canonical-tools",
-      "concepts/tool-discovery-and-search", "concepts/connected-accounts-and-auth",
-      "concepts/executions-sync-async", "concepts/idempotency-and-retries",
-      "concepts/error-handling", "concepts/catalog-and-versioning"
+      "concepts/projects-and-keys", "concepts/toolkits-and-canonical-tools",
+      "concepts/tool-discovery-and-search", "concepts/connected-accounts",
+      "concepts/executions", "concepts/idempotency-and-retries",
+      "concepts/errors", "concepts/catalog-and-versioning"
     ]},
     { "group": "Capability Guides", "pages": [
-      "capabilities/email", "capabilities/calendar-scheduling",
-      "capabilities/messaging-chat", "capabilities/voice-agents", "capabilities/sms",
-      "capabilities/crm", "capabilities/erp-accounting", "capabilities/social-media-data",
-      "capabilities/social-media-publishing", "capabilities/file-storage-docs",
-      "capabilities/spreadsheets-databases", "capabilities/project-management-dev-tools",
-      "capabilities/payments-billing", "capabilities/ecommerce",
-      "capabilities/customer-support", "capabilities/web-search-scraping",
-      "capabilities/hr-recruiting", "capabilities/marketing-ads",
-      "capabilities/sign-forms", "capabilities/ai-media-utilities"
+      "capabilities/email", "capabilities/messaging", "capabilities/social-data",
+      "capabilities/business", "capabilities/voice-agents"
     ]},
     { "group": "SDK Reference", "pages": [
-      "sdk/typescript/client", "sdk/typescript/tools-get", "sdk/typescript/tools-search",
-      "sdk/typescript/tools-execute", "sdk/typescript/connections",
-      "sdk/typescript/executions", "sdk/typescript/errors", "sdk/python/client",
-      "sdk/python/tools", "sdk/python/connections", "sdk/python/executions"
+      "sdk/typescript/client", "sdk/typescript/tools-get",
+      "sdk/typescript/tools-search", "sdk/typescript/tools-execute",
+      "sdk/typescript/connections", "sdk/typescript/executions",
+      "sdk/typescript/errors"
     ]},
     { "group": "Toolkit Reference", "pages": [
       "toolkits/index", "toolkits/choose-a-toolkit",
@@ -104,16 +97,17 @@ are shown here as build-time notation, not a Mintlify runtime feature.
     ]},
     { "group": "API Reference", "pages": [
       "api/overview", "api/authentication",
-      { "openapi": "execution-api", "pages": [
-        "api/executions/execute", "api/executions/get-execution"
+      { "group": "Executions", "pages": [
+        "api/executions/execute", "api/executions/list-executions",
+        "api/executions/get-execution"
       ]},
-      { "openapi": "connections-api", "pages": [
-        "api/connections/create-connect-link", "api/connections/list-connections",
-        "api/connections/get-connection", "api/connections/delete-connection"
+      { "group": "Connections dev API", "pages": [
+        "api/connections/create-connection", "api/connections/list-connections",
+        "api/connections/delete-connection"
       ]},
-      "api/webhooks", "api/idempotency", "api/errors"
+      "api/mcp", "api/webhooks", "api/idempotency", "api/errors"
     ]},
-    { "group": "Testing with mocks", "pages": [
+    { "group": "Testing with Mocks", "pages": [
       "mocks/overview", "mocks/quickstart", "mocks/fixtures-and-scenarios",
       "mocks/assert-tool-calls", "mocks/normalized-failures", "mocks/voice-sessions",
       "mocks/ci"
@@ -167,11 +161,11 @@ State the open-core boundary before deployment steps.
 - Never present the toy provider as multi-tenant auth. Document data flow, outbound calls,
   version compatibility, and behavior when cloud credential resolution is unavailable.
 
-## 3. The five quickstarts
+## 3. Primary onboarding paths and stack guides
 
-All five quickstarts produce the same observable result: an agent calls
-`gmail.send_email` for `demo_user`, mock mode returns a canonical successful execution, and
-the model receives the tool result. The only changing layer is the framework adapter.
+The direct SDK quickstart and MCP guide are the primary product paths. Anthropic, OpenAI,
+and AI SDK pages live under “Works with your stack” and show how the same canonical result
+fits each model-native response shape.
 
 Common skeleton: install; export `EYEBALL_API_KEY` and the model key; create a mock client;
 call `tools.get`; pass converted tools to the model; provide a stable RFC 001
@@ -262,20 +256,6 @@ dispatch path is visible once.
 
 The sample stays below 20 lines because the AI SDK owns the multi-step loop, but the page
 still expands one execution trace so readers can see where eyeball runs.
-
-### LangChain — draft pending converter contract
-
-1. Install `@langchain/core`, the selected LangChain model package, and `@eyeball/sdk`.
-2. Export the two keys and request Gmail with `format: "langchain"` in mock mode.
-3. Bind `bundle.tools` to the chat model and create the minimal tool-calling graph/loop.
-4. Each returned LangChain tool delegates to `eb.tools.execute` with `demo_user` scope and
-   unwraps canonical output or a normalized error for the model.
-5. Invoke with the email prompt, print the final message, and show the execution trace.
-
-Keep the first example to one model node and one tool node. Agents, memory, persistence, and
-LangGraph deployment belong on a follow-up page, not in time-to-first-tool-call.
-Do not publish this quickstart until RFC 001 defines a version-pinned LangChain descriptor,
-schema/name-map conversion, invocation, error behavior, and mutation-idempotency mapping.
 
 ### MCP
 

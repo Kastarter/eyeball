@@ -88,13 +88,25 @@ function findLanguage(node: ReactNode): string | undefined {
   return undefined;
 }
 
+function languageLabel(language: string): string {
+  const labels: Record<string, string> = {
+    bash: "Bash",
+    http: "HTTP",
+    javascript: "JavaScript",
+    json: "JSON",
+    text: "Text",
+    typescript: "TypeScript",
+  };
+  return labels[language] ?? language;
+}
+
 function CodeBlock({ children, ...props }: HTMLAttributes<HTMLPreElement>) {
   const code = reactNodeToText(children).replace(/\n$/, "");
   const language = findLanguage(children) ?? "text";
   return (
-    <div className="code-frame">
+    <div className="code-frame" data-language={language}>
       <div className="code-frame__header">
-        <span>{language}</span>
+        <span className="code-frame__tab">{languageLabel(language)}</span>
         <CopyButton code={code} />
       </div>
       <pre {...props}>{children}</pre>
@@ -121,7 +133,7 @@ function Card({ children, href, icon = "chevron-right", title }: CardProps) {
   return (
     <Link className="mdx-card" href={href}>
       <span className="mdx-card__icon">
-        <Icon name={icon as IconName} size={18} />
+        <Icon name={icon as IconName} size={24} />
       </span>
       <span className="mdx-card__copy">
         <strong>{title}</strong>
@@ -180,7 +192,7 @@ function Callout({
   return (
     <aside className={`mdx-callout mdx-callout--${tone}`}>
       <span className="mdx-callout__icon">
-        <Icon name={icon} size={18} />
+        <Icon name={icon} size={16} />
       </span>
       <div>{children}</div>
     </aside>

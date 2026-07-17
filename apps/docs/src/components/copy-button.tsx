@@ -16,19 +16,26 @@ export function CopyButton({ code }: { code: string }) {
   }, [copied]);
 
   async function copyCode() {
-    await navigator.clipboard.writeText(code);
-    setCopied(true);
+    try {
+      await navigator.clipboard.writeText(code);
+      setCopied(true);
+    } catch {
+      setCopied(false);
+    }
   }
 
   return (
     <button
-      aria-label={copied ? "Code copied" : "Copy code"}
+      aria-label={
+        copied ? "Code copied" : "Copy the contents from the code block"
+      }
       className="code-copy"
       onClick={copyCode}
+      title={copied ? "Code copied" : "Copy code"}
       type="button"
     >
-      <Icon name={copied ? "check" : "copy"} size={14} />
-      <span>{copied ? "Copied" : "Copy"}</span>
+      <Icon name={copied ? "check" : "copy"} size={16} />
+      <span aria-live="polite">{copied ? "Copied" : "Copy"}</span>
     </button>
   );
 }

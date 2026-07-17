@@ -33,12 +33,12 @@ The hardest part of shipping an agent is not the model or the prompt — it's in
 A **tool platform for agent builders**. You integrate eyeball once; your agents gain a
 catalog of production-ready tools with managed auth, execution, and observability.
 
-- **SDK-first** (TypeScript + Python): the primary customer is a developer building an
+- **SDK-first** (TypeScript source preview): the primary customer is a developer building an
   agent in code — not someone configuring a no-code bot.
-- **Framework-native output**: the SDK hands you tools already shaped for your stack
-  (Anthropic `tools`, OpenAI function calling, Vercel AI SDK `tool()`, LangChain, MCP).
-- **MCP as a secondary surface**: every project can also be exposed as a hosted MCP
-  server, so the same tools work inside Claude Code, Codex, Cursor, and other MCP hosts.
+- **SDK and MCP as first-class surfaces**: use the typed client in application code or expose
+  the same project through Streamable HTTP MCP for Claude Code, Codex, Cursor, and other hosts.
+- **Stack-native output**: the SDK can shape canonical tools for Anthropic, OpenAI, and the
+  Vercel AI SDK without changing the underlying execution contract.
 
 ### Positioning
 
@@ -82,7 +82,7 @@ const { redirectUrl } = await eb.connections.create({
 const tools = await eb.tools.get({
   userId: "user_123",
   toolkits: ["gmail", "slack"],
-  format: "anthropic",           // or "openai" | "ai-sdk" | "langchain" | "mcp"
+  format: "anthropic",           // or "openai" | "ai-sdk" | "mcp"
 });
 
 // 3. Hand them to your agent loop — execution routes through eyeball

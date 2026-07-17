@@ -1,16 +1,16 @@
 ---
-title: "eyeball documentation"
-description: "Give any agent a consistent tool surface across providers, then move from deterministic mocks to connected accounts."
+title: "Build agents that can take action"
+description: "Give every agent one typed, authenticated tool surface, from deterministic local development to connected production accounts."
 ---
 
-eyeball is an open-core execution layer for agent tools. Your model sees one stable capability contract; eyeball handles provider adapters, account selection, idempotency, normalized errors, and execution records.
+eyeball gives your agent one stable capability contract while it handles provider adapters, account selection, idempotency, normalized errors, and execution records.
 
 <CardGroup cols={3}>
   <Card title="1. Discover" icon="magnifying-glass" href="/concepts/tool-discovery-and-search">
     Select a toolkit or search the catalog for the capability the agent needs.
   </Card>
-  <Card title="2. Give tools to the model" icon="brackets-curly" href="/getting-started/anthropic">
-    Export canonical tools in Anthropic, OpenAI, AI SDK, or MCP format.
+  <Card title="2. Connect" icon="brackets-curly" href="/getting-started/connect-your-first-account">
+    Keep account credentials out of prompts and select the right connection at execution time.
   </Card>
   <Card title="3. Execute safely" icon="bolt" href="/concepts/executions">
     Run the returned tool calls through one executor with stable retries and audit state.
@@ -42,6 +42,6 @@ console.log({ modelTools: tools.tools.length, result });
 
 The same code runs against the mock executor with zero third-party SaaS accounts. Moving live changes the executor URL and connected-account state, not the canonical tool call.
 
-<Card title="Start the quickstart" icon="rocket" href="/getting-started/quickstart">
-  Install the SDK and make a deterministic first call.
+<Card title="Make your first tool call" icon="rocket" href="/getting-started/quickstart">
+  Install the eyeball SDK and get a deterministic result in five minutes.
 </Card>

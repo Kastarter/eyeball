@@ -143,7 +143,7 @@ ANTHROPIC_API_KEY=... pnpm demo:anthropic
 | 37 toolkits/provider manifests | Built in catalog `1.1` with canonical schemas and discovery |
 | 457-row contract matrix | Built: 218 smoke rows and 239 explicit `not_supported` rows |
 | Admin panel | Built as the local Next.js dashboard |
-| Documentation | Built in `docs/`, the 100-page `docs-site/` source, and the self-hosted `apps/docs` renderer |
+| Documentation | Built in `docs/`, the 99-page `docs-site/` source, and the self-hosted `apps/docs` renderer |
 | Local credential vault | Built with encrypted single-tenant storage and development fixtures |
 | Hosted OAuth vault | Cloud work pending |
 | Real-provider certification | Pending provider credentials and certification runs |

@@ -18,6 +18,7 @@ Open-core tool and integration platform for AI agents: one typed, authenticated 
 - Credential env vars use `EYEBALL_CRED_<TOOLKIT>_*`; `EYEBALL_API_KEYS` accepts `key:project[:user]`.
 - Manifest `endpoint.baseUrlOverrideEnv` values are the only trusted provider endpoint override seam.
 - HTTP and provider tests prefer Hono `app.request`; do not require loopback sockets.
+- The docs shell follows Mintlify-derived geometry: a 56px top bar, 576px prose column, and 256px/264px navigation rails.
 - `pnpm test:contract` defaults to built mocks and writes ignored `apps/executor/contract-report.json`.
 - Real certification uses `EYEBALL_CONTRACT_TARGET=real`; missing credentials are explicit skips.
 - `scripts/generate-docs.ts` owns generated toolkit pages and nav; never hand-edit them.
@@ -50,7 +51,7 @@ Open-core tool and integration platform for AI agents: one typed, authenticated 
 - Catalog `1.1` contains 37 manifests/toolkits and the implemented capability adapters.
 - The manifest-derived matrix has 457 rows: 218 smoke and 239 explicit `not_supported`.
 - The dashboard, SDK, MCP gateway, local encrypted vault, auth CLI, and public docs source are built.
-- The self-hosted docs renderer builds all 100 authored pages with local navigation, search, syntax highlighting, and dark/light themes.
+- The self-hosted docs renderer builds all 99 authored pages with local navigation, search, syntax highlighting, and dark/light themes.
 - Search-mode MCP exposes both discovery and a generic executor-backed dispatch tool.
 - `pnpm dev:stack` boots 30-provider Mockhouse, executor, and MCP gateway with dev connections.
 - Deterministic MCP and restaurant voice demos run in-process; the Anthropic episode is optional.
