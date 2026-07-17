@@ -4,6 +4,11 @@ import { getCatalogMetrics } from "@/src/lib/catalog";
 
 export const metadata: Metadata = { title: "Overview" };
 
-export default function Page() {
-  return <OverviewPage metrics={getCatalogMetrics()} />;
+export default async function Page({
+  params,
+}: {
+  params: Promise<{ project: string }>;
+}) {
+  const { project } = await params;
+  return <OverviewPage metrics={getCatalogMetrics()} project={project} />;
 }

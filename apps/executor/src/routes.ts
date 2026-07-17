@@ -4,6 +4,7 @@ import {
   type ExecutionStatus,
   EyeballError,
   isCanonicalToolName,
+  isConnectionId,
   type QualifiedToolName,
   TOOL_ERROR_CODES,
 } from "@eyeball/core";
@@ -255,6 +256,17 @@ export function createExecutorApp(options: ExecutorAppOptions = {}): Hono<{
   const devVault = options.devVault;
   if (devVault !== undefined) {
     // Development-only fixture route. Real connection/OAuth lifecycle is private cloud.
+    app.get("/v1/connections", async (context) => {
+      try {
+        const connections = await devVault.listConnections(
+          context.get("projectId"),
+        );
+        return context.json({ connections });
+      } catch (error) {
+        return handleRouteError(context, error);
+      }
+    });
+
     app.post("/v1/connections", async (context) => {
       let request: unknown;
       try {
@@ -310,6 +322,37 @@ export function createExecutorApp(options: ExecutorAppOptions = {}): Hono<{
           201,
         );
       } catch (error) {
+        if (error instanceof EyeballError) {
+          return requestFailure(context, error, 422);
+        }
+        return handleRouteError(context, error);
+      }
+    });
+
+    app.delete("/v1/connections/:id", async (context) => {
+      const connectionId = context.req.param("id");
+      if (!isConnectionId(connectionId)) {
+        return invalidQuery(
+          context,
+          "Connection ID must be a valid conn_* identifier.",
+        );
+      }
+      try {
+        const connection = await devVault.revokeConnection(
+          context.get("projectId"),
+          connectionId,
+        );
+        return context.json({
+          connectionId: connection.connectionId,
+          status: connection.status,
+        });
+      } catch (error) {
+        if (
+          error instanceof EyeballError &&
+          error.code === TOOL_ERROR_CODES.NOT_FOUND
+        ) {
+          return requestFailure(context, error, 404);
+        }
         if (error instanceof EyeballError) {
           return requestFailure(context, error, 422);
         }

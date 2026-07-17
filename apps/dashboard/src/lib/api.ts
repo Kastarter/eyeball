@@ -14,6 +14,11 @@ export interface NormalizedToolError {
   retryable: boolean;
 }
 
+export interface ExecutorErrorEnvelope {
+  error: NormalizedToolError;
+  requestId?: string;
+}
+
 interface ExecutionRecordBase {
   catalogVersion: string;
   createdAt: string;
@@ -50,6 +55,71 @@ export interface ExecutorHealth {
   status: "ok";
 }
 
+export type ConnectionStatus = "connected" | "expired" | "revoked";
+
+export interface ConnectionRecord {
+  connectionId: `conn_${string}`;
+  createdAt: string;
+  status: ConnectionStatus;
+  toolkit: string;
+  userId: string;
+}
+
+export interface ConnectionPage {
+  connections: readonly ConnectionRecord[];
+}
+
+export interface CreateConnectionRequest {
+  toolkit: string;
+  userId: string;
+}
+
+export interface CreateConnectionResponse {
+  connectionId: `conn_${string}`;
+  redirectUrl: string | null;
+  status: "connected";
+}
+
+export interface RevokeConnectionResponse {
+  connectionId: `conn_${string}`;
+  status: "revoked";
+}
+
+export interface ExecuteToolRequest {
+  connectionId?: `conn_${string}`;
+  input: Readonly<Record<string, JsonValue>>;
+  mode: "async" | "sync";
+  tool: string;
+  userId: string;
+}
+
+export type ExecuteToolResponse =
+  | {
+      catalogVersion: string;
+      executionId: `exe_${string}`;
+      status: "pending" | "running";
+      tool: string;
+      toolVersion: string;
+    }
+  | {
+      catalogVersion: string;
+      executionId: `exe_${string}`;
+      latencyMs: number;
+      output: JsonValue;
+      status: "succeeded";
+      tool: string;
+      toolVersion: string;
+    }
+  | {
+      catalogVersion: string;
+      error: NormalizedToolError;
+      executionId: `exe_${string}`;
+      latencyMs: number;
+      status: "failed";
+      tool: string;
+      toolVersion: string;
+    };
+
 export interface ExecutorClientOptions {
   apiKey?: string;
   baseUrl: string;
@@ -57,16 +127,31 @@ export interface ExecutorClientOptions {
 }
 
 export class ExecutorApiError extends Error {
+  readonly code: string | undefined;
+  readonly requestId: string | undefined;
+  readonly retryable: boolean | undefined;
   readonly status: number;
 
-  constructor(message: string, status: number) {
+  constructor(
+    message: string,
+    status: number,
+    details: {
+      code?: string;
+      requestId?: string;
+      retryable?: boolean;
+    } = {},
+  ) {
     super(message);
     this.name = "ExecutorApiError";
+    this.code = details.code;
+    this.requestId = details.requestId;
+    this.retryable = details.retryable;
     this.status = status;
   }
 }
 
 export const DEFAULT_EXECUTOR_BASE_URL = "http://127.0.0.1:8787";
+export const DASHBOARD_EXECUTOR_PROXY_BASE_URL = "/api/executor";
 
 export class ExecutorClient {
   readonly #apiKey: string | undefined;
@@ -124,6 +209,50 @@ export class ExecutorClient {
     );
   }
 
+  listConnections(signal?: AbortSignal): Promise<ConnectionPage> {
+    return this.#request<ConnectionPage>(
+      "/v1/connections",
+      signal === undefined ? {} : { signal },
+    );
+  }
+
+  createConnection(
+    request: CreateConnectionRequest,
+    signal?: AbortSignal,
+  ): Promise<CreateConnectionResponse> {
+    return this.#request<CreateConnectionResponse>("/v1/connections", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(request),
+      ...(signal === undefined ? {} : { signal }),
+    });
+  }
+
+  revokeConnection(
+    connectionId: string,
+    signal?: AbortSignal,
+  ): Promise<RevokeConnectionResponse> {
+    return this.#request<RevokeConnectionResponse>(
+      `/v1/connections/${encodeURIComponent(connectionId)}`,
+      {
+        method: "DELETE",
+        ...(signal === undefined ? {} : { signal }),
+      },
+    );
+  }
+
+  execute(
+    request: ExecuteToolRequest,
+    signal?: AbortSignal,
+  ): Promise<ExecuteToolResponse> {
+    return this.#request<ExecuteToolResponse>("/v1/execute", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(request),
+      ...(signal === undefined ? {} : { signal }),
+    });
+  }
+
   async #request<T>(path: string, init: RequestInit = {}): Promise<T> {
     const headers = new Headers(init.headers);
     headers.set("Accept", "application/json");
@@ -134,18 +263,68 @@ export class ExecutorClient {
       ...init,
       headers,
     });
+    let value: unknown;
+    try {
+      value = await response.json();
+    } catch {
+      value = undefined;
+    }
     if (!response.ok) {
+      const envelope = errorEnvelope(value);
       throw new ExecutorApiError(
-        `Executor request failed with HTTP ${response.status}.`,
+        envelope?.error.message ??
+          `Executor request failed with HTTP ${response.status}.`,
         response.status,
+        envelope === undefined
+          ? {}
+          : {
+              code: envelope.error.code,
+              retryable: envelope.error.retryable,
+              ...(envelope.requestId === undefined
+                ? {}
+                : { requestId: envelope.requestId }),
+            },
       );
     }
-    return (await response.json()) as T;
+    return value as T;
   }
+}
+
+function errorEnvelope(value: unknown): ExecutorErrorEnvelope | undefined {
+  if (typeof value !== "object" || value === null || !("error" in value)) {
+    return undefined;
+  }
+  const error = value.error;
+  if (
+    typeof error !== "object" ||
+    error === null ||
+    !("code" in error) ||
+    !("message" in error) ||
+    !("retryable" in error) ||
+    typeof error.code !== "string" ||
+    typeof error.message !== "string" ||
+    typeof error.retryable !== "boolean"
+  ) {
+    return undefined;
+  }
+  return {
+    error: {
+      code: error.code,
+      message: error.message,
+      retryable: error.retryable,
+    },
+    ...("requestId" in value && typeof value.requestId === "string"
+      ? { requestId: value.requestId }
+      : {}),
+  };
 }
 
 export function configuredExecutorBaseUrl(): string {
   return (
     process.env.NEXT_PUBLIC_EYEBALL_EXECUTOR_URL ?? DEFAULT_EXECUTOR_BASE_URL
   );
+}
+
+export function dashboardExecutorClient(): ExecutorClient {
+  return new ExecutorClient({ baseUrl: DASHBOARD_EXECUTOR_PROXY_BASE_URL });
 }

@@ -16,10 +16,17 @@ export interface CreateDevConnectionContext {
   toolkit: string;
 }
 
-export interface DevConnection {
+export type DevConnectionStatus = "connected" | "expired" | "revoked";
+
+export interface DevConnectionSummary {
   connectionId: ConnectionId;
+  createdAt: string;
   userId: string;
   toolkit: string;
+  status: DevConnectionStatus;
+}
+
+export interface DevConnection extends DevConnectionSummary {
   redirectUrl: null;
   status: "connected";
 }
@@ -31,21 +38,40 @@ export interface DevConnection {
 export interface DevVaultCredentialProvider extends CredentialProvider {
   readonly kind: "mock";
   createConnection(context: CreateDevConnectionContext): Promise<DevConnection>;
+  listConnections(projectId: string): Promise<readonly DevConnectionSummary[]>;
+  revokeConnection(
+    projectId: string,
+    connectionId: ConnectionId,
+  ): Promise<DevConnectionSummary>;
 }
 
 export interface InMemoryDevVaultOptions {
   /** Toolkit credential templates; mock secrets must use the `fixture:*` convention. */
   credentials: Readonly<Record<string, ResolvedCredential>>;
   connectionIdFactory?: () => ConnectionId;
+  now?: () => Date;
 }
 
-interface StoredDevConnection extends DevConnection {
+interface StoredDevConnection extends DevConnectionSummary {
   projectId: string;
   credential: ResolvedCredential;
+  redirectUrl: null;
 }
 
 function clonedCredential(credential: ResolvedCredential): ResolvedCredential {
   return structuredClone(credential);
+}
+
+function connectionSummary(
+  connection: StoredDevConnection,
+): DevConnectionSummary {
+  return {
+    connectionId: connection.connectionId,
+    createdAt: connection.createdAt,
+    userId: connection.userId,
+    toolkit: connection.toolkit,
+    status: connection.status,
+  };
 }
 
 function validateTemplate(
@@ -80,6 +106,7 @@ export class InMemoryDevVault implements DevVaultCredentialProvider {
   readonly #credentials: ReadonlyMap<string, ResolvedCredential>;
   readonly #connectionIdFactory: () => ConnectionId;
   readonly #connections = new Map<ConnectionId, StoredDevConnection>();
+  readonly #now: () => Date;
 
   constructor(options: InMemoryDevVaultOptions) {
     const credentials = new Map<string, ResolvedCredential>();
@@ -93,6 +120,7 @@ export class InMemoryDevVault implements DevVaultCredentialProvider {
     this.#credentials = credentials;
     this.#connectionIdFactory =
       options.connectionIdFactory ?? createConnectionId;
+    this.#now = options.now ?? (() => new Date());
   }
 
   async createConnection(
@@ -121,6 +149,7 @@ export class InMemoryDevVault implements DevVaultCredentialProvider {
     }
     const connection: StoredDevConnection = {
       connectionId,
+      createdAt: this.#now().toISOString(),
       projectId: context.projectId,
       userId: context.userId,
       toolkit: context.toolkit,
@@ -131,6 +160,7 @@ export class InMemoryDevVault implements DevVaultCredentialProvider {
     this.#connections.set(connectionId, connection);
     return {
       connectionId,
+      createdAt: connection.createdAt,
       userId: connection.userId,
       toolkit: connection.toolkit,
       redirectUrl: null,
@@ -138,19 +168,46 @@ export class InMemoryDevVault implements DevVaultCredentialProvider {
     };
   }
 
+  async listConnections(
+    projectId: string,
+  ): Promise<readonly DevConnectionSummary[]> {
+    return [...this.#connections.values()]
+      .filter((connection) => connection.projectId === projectId)
+      .sort((left, right) => right.createdAt.localeCompare(left.createdAt))
+      .map(connectionSummary);
+  }
+
+  async revokeConnection(
+    projectId: string,
+    connectionId: ConnectionId,
+  ): Promise<DevConnectionSummary> {
+    const connection = this.#connections.get(connectionId);
+    if (connection === undefined || connection.projectId !== projectId) {
+      throw new EyeballError({
+        code: TOOL_ERROR_CODES.NOT_FOUND,
+        message: `Connection ${connectionId} was not found.`,
+        retryable: false,
+      });
+    }
+    connection.status = "revoked";
+    return connectionSummary(connection);
+  }
+
   resolve(context: CredentialContext): Promise<ResolvedCredential> {
-    const fixtures = [...this.#connections.values()].map((connection) => ({
-      match: {
-        projectId: connection.projectId,
-        userId: connection.userId,
-        toolkitSlug: connection.toolkit,
-        connectionId: connection.connectionId,
-      },
-      credential: {
-        ...clonedCredential(connection.credential),
-        connectionId: connection.connectionId,
-      } as ResolvedCredential,
-    }));
+    const fixtures = [...this.#connections.values()]
+      .filter((connection) => connection.status === "connected")
+      .map((connection) => ({
+        match: {
+          projectId: connection.projectId,
+          userId: connection.userId,
+          toolkitSlug: connection.toolkit,
+          connectionId: connection.connectionId,
+        },
+        credential: {
+          ...clonedCredential(connection.credential),
+          connectionId: connection.connectionId,
+        } as ResolvedCredential,
+      }));
     return new MockCredentialProvider(fixtures).resolve(context);
   }
 }

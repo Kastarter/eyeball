@@ -1,8 +1,9 @@
-import { Button } from "@/src/components/ui/button";
+import Link from "next/link";
 import { CodeBlock } from "@/src/components/ui/code-block";
 import { Icon } from "@/src/components/ui/icon";
 import type { CatalogMetrics } from "@/src/lib/catalog";
 import { ExecutorHealthCard } from "./executor-health";
+import { OverviewActivity } from "./overview-activity";
 import { PageHeader } from "./page-header";
 
 const quickstart = `import { Eyeball } from "@eyeball/sdk";
@@ -26,14 +27,24 @@ await eb.tools.execute("gmail.send_email", {
   },
 });`;
 
-export function OverviewPage({ metrics }: { metrics: CatalogMetrics }) {
+export function OverviewPage({
+  metrics,
+  project,
+}: {
+  metrics: CatalogMetrics;
+  project: string;
+}) {
   return (
     <div className="page-stack">
       <PageHeader
         actions={
-          <Button disabled icon={<Icon name="activity" />} variant="secondary">
+          <Link
+            className="button button--secondary"
+            href={`/${encodeURIComponent(project)}/executions`}
+          >
+            <Icon name="activity" />
             View live logs
-          </Button>
+          </Link>
         }
         description="The local capability catalog is ready now. Executor health is checked in the browser and degrades calmly when the wire API is unavailable."
         eyebrow="System pulse"
@@ -62,6 +73,8 @@ export function OverviewPage({ metrics }: { metrics: CatalogMetrics }) {
         </div>
         <ExecutorHealthCard />
       </section>
+
+      <OverviewActivity project={project} />
 
       <section className="onboarding-surface">
         <div className="onboarding-surface__copy">

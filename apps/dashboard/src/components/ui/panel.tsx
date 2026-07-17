@@ -8,6 +8,7 @@ export interface PanelProps {
   className?: string;
   description?: string;
   drawer?: boolean;
+  onClose?: () => void;
   onCloseLabel?: string;
   title: string;
 }
@@ -17,6 +18,7 @@ export function Panel({
   className,
   description,
   drawer = false,
+  onClose,
   onCloseLabel,
   title,
 }: PanelProps) {
@@ -36,6 +38,7 @@ export function Panel({
           <Button
             aria-label={onCloseLabel}
             icon={<Icon name="close" />}
+            onClick={onClose}
             size="small"
             variant="ghost"
           >

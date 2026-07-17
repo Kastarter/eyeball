@@ -19,6 +19,7 @@ const PROJECT_B = "proj_dev_vault_b";
 const USER_ID = "user_dev_vault";
 const PROVIDER_ORIGIN = "http://providers.local";
 const GMAIL_SCOPE = "https://www.googleapis.com/auth/gmail.modify";
+const CREATED_AT = "2026-07-17T09:30:00.000Z";
 
 function providerFetch(provider: ProviderMock): typeof globalThis.fetch {
   const providerApp = createMockApp({ providers: [provider] });
@@ -49,6 +50,7 @@ function createHarness() {
       connectionIndex += 1;
       return createConnectionId(`dev_vault_${connectionIndex}`);
     },
+    now: () => new Date(CREATED_AT),
   });
   const engine = new ExecutionEngine({
     credentialProvider: vault,
@@ -101,6 +103,17 @@ function postConnection(
   });
 }
 
+function deleteConnection(
+  app: ReturnType<typeof createExecutorApp>,
+  connectionId: string,
+  apiKey = API_KEY_A,
+): Promise<Response> {
+  return app.request(`/v1/connections/${connectionId}`, {
+    method: "DELETE",
+    headers: { Authorization: `Bearer ${apiKey}` },
+  });
+}
+
 describe("OSS executor dev vault", () => {
   it("creates a fixture connection that the SDK can execute immediately", async () => {
     const { clientA } = createHarness();
@@ -144,6 +157,58 @@ describe("OSS executor dev vault", () => {
         },
       });
     }
+  });
+
+  it("lists project connections and revokes them without exposing credentials", async () => {
+    const { app, clientA, clientB } = createHarness();
+    const connectionA = await clientA.connections.create({ toolkit: "gmail" });
+    await clientB.connections.create({ toolkit: "gmail" });
+
+    const list = await app.request("/v1/connections", {
+      headers: { Authorization: `Bearer ${API_KEY_A}` },
+    });
+    expect(list.status).toBe(200);
+    await expect(list.json()).resolves.toEqual({
+      connections: [
+        {
+          connectionId: connectionA.connectionId,
+          createdAt: CREATED_AT,
+          status: "connected",
+          toolkit: "gmail",
+          userId: USER_ID,
+        },
+      ],
+    });
+
+    const crossProject = await deleteConnection(
+      app,
+      connectionA.connectionId,
+      API_KEY_B,
+    );
+    expect(crossProject.status).toBe(404);
+
+    const revoked = await deleteConnection(app, connectionA.connectionId);
+    expect(revoked.status).toBe(200);
+    await expect(revoked.json()).resolves.toEqual({
+      connectionId: connectionA.connectionId,
+      status: "revoked",
+    });
+
+    const afterRevoke = await app.request("/v1/connections", {
+      headers: { Authorization: `Bearer ${API_KEY_A}` },
+    });
+    await expect(afterRevoke.json()).resolves.toMatchObject({
+      connections: [{ status: "revoked" }],
+    });
+    await expect(
+      clientA.tools.execute("gmail.list_emails", {
+        connectionId: connectionA.connectionId,
+        input: {},
+      }),
+    ).resolves.toMatchObject({
+      error: { code: TOOL_ERROR_CODES.AUTH_MISSING },
+      status: "failed",
+    });
   });
 
   it("validates connection bodies and unsupported fixture toolkits", async () => {

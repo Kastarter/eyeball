@@ -2,6 +2,7 @@ export * from "./badge";
 export * from "./button";
 export * from "./card";
 export * from "./code-block";
+export * from "./copy-button";
 export * from "./empty-state";
 export * from "./form-controls";
 export * from "./icon";

@@ -2,7 +2,9 @@ import Link from "next/link";
 import type { ReactNode } from "react";
 import { Icon } from "@/src/components/ui/icon";
 import { StatusDot } from "@/src/components/ui/status-dot";
+import { getCatalogCommandIndex } from "@/src/lib/catalog";
 import { ApertureLogo } from "./aperture-logo";
+import { CommandPalette } from "./command-palette";
 import { SidebarNav } from "./sidebar-nav";
 import { ThemeToggle } from "./theme-toggle";
 
@@ -74,16 +76,10 @@ export function AppShell({ children, project }: AppShellProps) {
             </span>
           </div>
           <div className="topbar__actions">
-            <span
-              className="command-trigger"
-              title="Command palette arrives with entity search"
-            >
-              <Icon name="search" />
-              <span>Search or jump to</span>
-              <kbd>
-                <Icon name="command" />K
-              </kbd>
-            </span>
+            <CommandPalette
+              catalog={getCatalogCommandIndex()}
+              project={project}
+            />
             <ThemeToggle />
             <button
               aria-label="Open account menu"
