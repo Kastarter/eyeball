@@ -15,4 +15,5 @@ Status: pre-alpha, under active development.
 | `apps/executor` | Tool execution service |
 | `apps/mcp-gateway` | MCP gateway service |
 
-See the [product specification](./SPEC.md) and [project documentation](./docs/).
+See the [product specification](./SPEC.md), [tool search ranking design](./docs/TOOL-SEARCH.md),
+and [project documentation](./docs/).

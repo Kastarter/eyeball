@@ -23,11 +23,20 @@ import {
   getProviderCatalogEntry,
 } from "./catalog.js";
 import { deepFreeze } from "./immutable.js";
+import {
+  associateCatalogToolsWithSearchIndex,
+  CatalogToolSearchIndex,
+  type CatalogToolSearchOptions,
+  type EmbeddingProvider,
+  type HybridCatalogToolSearchOptions,
+} from "./search.js";
 
 export interface CatalogRegistryOptions {
   catalogVersion?: CatalogVersion;
   contracts?: readonly CapabilityToolContract[];
   manifests?: readonly ProviderManifest[];
+  /** Optional semantic provider for the registry's async hybrid search method. */
+  embeddingProvider?: EmbeddingProvider;
 }
 
 export interface ListToolsFilters {
@@ -433,11 +442,16 @@ export class CatalogRegistry {
   readonly catalogVersion: CatalogVersion;
   readonly #contracts = new Map<string, CapabilityToolContract>();
   readonly #manifests = new Map<string, ProviderManifest>();
+  readonly #embeddingProvider: EmbeddingProvider | undefined;
+  #searchIndex: CatalogToolSearchIndex | undefined;
+  readonly #searchIndexAccessor = (): CatalogToolSearchIndex =>
+    this.#getSearchIndex();
 
   constructor(options: CatalogRegistryOptions = {}) {
     const catalogVersion = options.catalogVersion ?? "1.1";
     assertCatalogVersion(catalogVersion, "Catalog registry");
     this.catalogVersion = catalogVersion;
+    this.#embeddingProvider = options.embeddingProvider;
     this.registerContracts(options.contracts ?? []);
     for (const manifest of options.manifests ?? []) {
       this.registerManifest(manifest);
@@ -478,6 +492,9 @@ export class CatalogRegistry {
 
     for (const [key, contract] of pending) {
       this.#contracts.set(key, contract);
+    }
+    if (pending.size > 0) {
+      this.#searchIndex = undefined;
     }
     return this;
   }
@@ -598,6 +615,7 @@ export class CatalogRegistry {
     }
 
     this.#manifests.set(manifest.toolkit.slug, clone(manifest));
+    this.#searchIndex = undefined;
     return this;
   }
 
@@ -685,7 +703,33 @@ export class CatalogRegistry {
       }
     }
 
-    return tools.sort((left, right) => left.name.localeCompare(right.name));
+    const sorted = tools.sort((left, right) =>
+      left.name.localeCompare(right.name),
+    );
+    associateCatalogToolsWithSearchIndex(sorted, this.#searchIndexAccessor);
+    return sorted;
+  }
+
+  /**
+   * Searches this registry's lazily cached index. Registries configured with an
+   * EmbeddingProvider use hybrid BM25F + cosine ranking; all others use BM25F.
+   */
+  async searchTools(
+    options: CatalogToolSearchOptions | HybridCatalogToolSearchOptions,
+  ): Promise<readonly ToolDefinition[]> {
+    const tools = this.listTools();
+    const index = this.#getSearchIndex();
+    if (this.#embeddingProvider === undefined) {
+      return index.search(tools, options);
+    }
+    return index.searchHybrid(tools, options, this.#embeddingProvider);
+  }
+
+  #getSearchIndex(): CatalogToolSearchIndex {
+    if (this.#searchIndex === undefined) {
+      this.#searchIndex = new CatalogToolSearchIndex(this.listTools());
+    }
+    return this.#searchIndex;
   }
 
   listContracts(

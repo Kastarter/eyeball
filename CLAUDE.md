@@ -6,7 +6,7 @@ authenticated tools across SaaS, messaging, voice, social data, and business sys
 ## Current State
 
 - Monorepo scaffold is green; `@eyeball/core` implements RFC 001 contracts and framework converters with 79 tests.
-- `@eyeball/catalog` keeps the frozen catalog 1.0 baseline and ships catalog 1.1 with email, calendar, messaging, voice, CRM, ERP/accounting, payments, e-commerce, customer-support, social-data, storage, spreadsheet/database, and PM/dev-tool contracts plus 37 provider manifests; catalog tests total 43.
+- `@eyeball/catalog` keeps the frozen catalog 1.0 baseline and ships catalog 1.1 with email, calendar, messaging, voice, CRM, ERP/accounting, payments, e-commerce, customer-support, social-data, storage, spreadsheet/database, and PM/dev-tool contracts plus 37 provider manifests; catalog tests total 85.
 - `@eyeball/executor` implements RFC 001 sync/async execution, polling, idempotency, API-key isolation, and adapter dispatch, including in-process integration flows and the formal manifest-derived contract suite.
 - The contract suite generates 457 provider/tool rows from 37 manifests: 218 smoke and 239 `not_supported`; 35 auth-expiry assertions pass and two auth-class-none assertions skip.
 - `@eyeball/toolkits` implements P0 email, messaging, voice, business, productivity, and ScrapeCreators social-data adapters, including the native `voice-agents` adapter.
@@ -38,6 +38,7 @@ authenticated tools across SaaS, messaging, voice, social data, and business sys
 - WhatsApp Business connections keep `phoneNumberId` beside `apiKey` in the resolved API-key credential tuple; messaging calls do not repeat it under `x_provider`.
 - Telegram Bot requests put the API key in the `bot{token}` path and also retain Bearer auth for the shared mock-kit triggers; Telegram ignores the extra header in production.
 - ScrapeCreators manifests mirror the provider matrix exactly; unsupported platform operations remain absent from the catalog and fail before credential resolution or provider fetch.
+- Tool search uses a deterministic BM25F index with 50 catalog-grounded agent-intent synonyms; SDK and MCP searches retain their existing interfaces.
 
 ## Architecture
 
@@ -58,6 +59,7 @@ authenticated tools across SaaS, messaging, voice, social data, and business sys
 - Catalog 1.0: 20 capabilities, 187 capability-scoped tools, 157 providers, 34 P0
   (72 P1, 51 P2). Catalog 1.1 additively introduces `voice-agents` plus the implemented productivity and social-data contracts/toolkits.
 - The catalog 1.1 registry accepts same-major 1.0 provider manifests while retaining catalog 1.0 identity and membership checks for those manifests.
+- Each catalog registry lazily caches one search index and invalidates it on contract or manifest registration; optional `EmbeddingProvider` configuration adds 80/20 BM25F-cosine hybrid ranking without shipping a model or network dependency.
 - Ordinary services run on Vercel; the voice worker runs on persistent container infrastructure.
 
 ## Build Order
