@@ -98,6 +98,34 @@ describe("Eyeball SDK", () => {
     );
   });
 
+  it("searches one deterministic local catalog view without an HTTP request", async () => {
+    const fetchImpl = testFetch(() => {
+      throw new Error("tool search must remain local");
+    });
+    const eb = client(fetchImpl);
+
+    const result = await eb.tools.search({
+      query: "gmail send email",
+      toolkits: ["gmail"],
+      capability: "email",
+      limit: 3,
+      userId: "user_search",
+    });
+
+    expect(result.tools[0]).toMatchObject({
+      name: "gmail.send_email",
+      inputSchema: { type: "object" },
+      outputSchema: { type: "object" },
+    });
+    expect(result.tools).toHaveLength(3);
+    await expect(
+      eb.tools.search({ query: "", limit: 3 }),
+    ).rejects.toMatchObject({
+      code: TOOL_ERROR_CODES.INVALID_INPUT,
+      message: "query must be a non-empty string.",
+    });
+  });
+
   it("includes async MCP tools only after Tasks support is negotiated", async () => {
     const eb = client(
       testFetch(() => {

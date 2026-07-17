@@ -47,4 +47,5 @@ export * from "./manifests/voice-agents.js";
 export * from "./manifests/whatsapp-business.js";
 export * from "./manifests/zendesk.js";
 export * from "./registry.js";
+export * from "./search.js";
 export * from "./types.js";

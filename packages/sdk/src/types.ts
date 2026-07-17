@@ -50,6 +50,20 @@ export interface GetToolsResult<Format extends EyeballToolFormat> {
   raw: readonly ToolDefinition[];
 }
 
+export interface SearchToolsOptions {
+  query: string;
+  limit?: number;
+  /** Optional local catalog filters, applied before ranking. */
+  toolkits?: readonly string[];
+  capability?: CapabilitySlug;
+  /** Accepted for parity with the future hosted project-scoped search surface. */
+  userId?: string;
+}
+
+export interface SearchToolsResult {
+  tools: readonly ToolDefinition[];
+}
+
 export interface ExecuteToolOptions {
   /** Uses the client-level userId when omitted. */
   userId?: string;

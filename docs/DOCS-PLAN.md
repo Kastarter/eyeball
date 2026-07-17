@@ -188,15 +188,16 @@ injecting that execution envelope into the canonical tool result.
 The positional `tools.execute(tool, options)` SDK overload constructs RFC 001's exact
 `{ tool, userId, connectionId?, input, mode }` request body. The API key supplies `projectId`;
 the SDK never adds it to that body. The idempotency key is an HTTP header, not an
-`ExecuteRequest` field. Its exact propagation through SDK calls, converter-owned wrappers,
-and MCP is an open decision in `SPEC.md` §9, so no mutation template is release-ready until
-its surface-specific mapping is finalized and shown explicitly.
+`ExecuteRequest` field. Direct SDK calls accept an explicit key, Anthropic/OpenAI dispatch
+helpers derive it from the stable framework call ID, and MCP derives it from the session and
+JSON-RPC request ID. Converter callbacks without a stable call ID remain an open decision in
+`SPEC.md` §9, so only those mutation templates are blocked.
 
 ### Anthropic SDK — draft template
 
 Install `@anthropic-ai/sdk` and `@eyeball/sdk`, set `ANTHROPIC_API_KEY` and
-`EYEBALL_API_KEY`, then run this application after adding the finalized SDK mapping for the
-required `Idempotency-Key`. The target TypeScript block remains below 30 lines.
+`EYEBALL_API_KEY`, then run this application. The target TypeScript block remains below 30
+lines and derives the required mutation key from Anthropic's stable tool-use ID.
 
 ```ts
 import Anthropic from "@anthropic-ai/sdk";
@@ -219,7 +220,8 @@ while (true) {
   if (reply.stop_reason !== "tool_use") { console.log(reply.content); break; }
   const results = await Promise.all(calls.map(async (call) => {
     const tool = bundle.nameMap.wireToCanonical[call.name];
-    const run = await eb.tools.execute(tool, { userId, input: call.input, mode: "sync" });
+    const run = await eb.tools.execute(tool, { userId, input: call.input, mode: "sync",
+      idempotencyKey: `anthropic:${call.id}` });
     return { type: "tool_result" as const, tool_use_id: call.id,
       content: JSON.stringify(run.status === "succeeded" ? run.output : run.error),
       is_error: run.status === "failed" };
@@ -238,8 +240,9 @@ explains that mock mode removes Gmail OAuth, not Anthropic or eyeball API authen
 2. Create the mock client and request `format: "openai"` for the Gmail toolkit.
 3. Pass `bundle.tools` to the Responses/agent loop.
 4. For each function call, look up the canonical name in `bundle.nameMap.wireToCanonical`.
-5. Call `eb.tools.execute` with the canonical name, scoped user, input, sync mode, and the
-   finalized stable idempotency option; submit canonical output or the normalized error as
+5. Call `eb.tools.execute` with the canonical name, scoped user, input, sync mode, and an
+   idempotency key formed from the `openai:` prefix plus `call.id`; submit canonical output or
+   the normalized error as
    function-call output until the model returns text.
 
 The code shape mirrors the Anthropic template and stays below 30 lines by using one small
@@ -251,9 +254,10 @@ dispatch path is visible once.
 1. Install `ai`, the chosen model-provider package, and `@eyeball/sdk`; export both keys.
 2. Request Gmail with `format: "ai-sdk"` from the mock client.
 3. Pass the returned tool set to `generateText` or `streamText` with bounded step execution.
-4. The converter's tool `execute` wrapper maps the wire name, propagates a stable per-call
-   idempotency key under the finalized contract, delegates to `eb.tools.execute`, and returns
-   canonical output rather than the execution envelope; surface the execution ID separately.
+4. The converter's tool `execute` wrapper maps the wire name and delegates to
+   `eb.tools.execute`. It currently receives a fresh SDK UUID per callback invocation; do not
+   publish the mutation template until the framework exposes, or the companion contract
+   defines, stable cross-invocation correlation.
 5. Print the final text and link to streaming UI patterns after the first success.
 
 The sample stays below 20 lines because the AI SDK owns the multi-step loop, but the page
@@ -285,9 +289,10 @@ schema/name-map conversion, invocation, error behavior, and mutation-idempotency
 
 The page includes one minimal server configuration and one prompt, together below 30 lines.
 It explains that async-only tools require negotiated MCP Tasks support; otherwise they are
-omitted from `tools/list` and remain available through REST/SDK execution.
-Because the example mutates external state, publication also waits for the gateway contract
-that maps one logical `tools/call` and its retries to a stable RFC 001 idempotency key.
+omitted from `tools/list` and remain available through REST/SDK execution. One logical
+`tools/call` and its transport retries reuse the session-scoped JSON-RPC request ID as the
+stable RFC 001 idempotency key; cross-session workflows can supply the namespaced metadata
+override documented by RFC 001.
 
 ## 4. Voice-agent showcase page
 

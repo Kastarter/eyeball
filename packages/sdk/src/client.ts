@@ -1,4 +1,8 @@
-import { defaultCatalog } from "@eyeball/catalog";
+import {
+  CatalogToolSearchInputError,
+  defaultCatalog,
+  searchCatalogTools,
+} from "@eyeball/catalog";
 import {
   buildNameMap,
   type ExecutionBase,
@@ -30,6 +34,8 @@ import type {
   GetToolsResult,
   ListExecutionsOptions,
   RunToolOptions,
+  SearchToolsOptions,
+  SearchToolsResult,
   WaitForExecutionOptions,
 } from "./types.js";
 
@@ -214,6 +220,45 @@ export class ToolsClient {
   constructor(context: ClientContext, executions: ExecutionsClient) {
     this.#context = context;
     this.#executions = executions;
+  }
+
+  /** Searches the local open-core catalog without contacting the executor. */
+  async search(options: SearchToolsOptions): Promise<SearchToolsResult> {
+    if (options.userId !== undefined && options.userId.trim().length === 0) {
+      return invalidInput("userId must not be empty when provided.");
+    }
+    const toolkitSet =
+      options.toolkits === undefined ? undefined : new Set(options.toolkits);
+    if (
+      toolkitSet !== undefined &&
+      [...toolkitSet].some((toolkit) => toolkit.trim().length === 0)
+    ) {
+      return invalidInput("toolkits must not contain empty values.");
+    }
+    const candidates = defaultCatalog
+      .listTools(
+        options.capability === undefined
+          ? {}
+          : { capability: options.capability },
+      )
+      .filter(
+        (tool) => toolkitSet === undefined || toolkitSet.has(tool.toolkit),
+      );
+    try {
+      return {
+        tools: Object.freeze(
+          searchCatalogTools(candidates, {
+            query: options.query,
+            ...(options.limit === undefined ? {} : { limit: options.limit }),
+          }),
+        ),
+      };
+    } catch (error) {
+      if (error instanceof CatalogToolSearchInputError) {
+        return invalidInput(error.message, error);
+      }
+      throw error;
+    }
   }
 
   /**

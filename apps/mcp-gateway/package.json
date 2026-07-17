@@ -13,6 +13,9 @@
     "lint": "biome check src test"
   },
   "dependencies": {
+    "@eyeball/catalog": "workspace:*",
+    "@eyeball/core": "workspace:*",
+    "@eyeball/sdk": "workspace:*",
     "@hono/node-server": "^1.16.0",
     "hono": "^4.8.10"
   }

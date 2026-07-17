@@ -512,11 +512,14 @@ The same key and request return the original `executionId` and latest state. The
 key with a different request returns HTTP 409 with `invalid_input`. Async retries never
 allocate a second job. Provider-native idempotency may supplement but never replace this.
 
-REST callers supply the header directly. SDK methods, converter-owned execution wrappers,
-and the MCP gateway MUST preserve the same scope, replay, conflict, and retry-reuse
-semantics. Their exact caller-facing key propagation is a deferred companion decision in
-Section 8; a surface cannot publish a runnable mutation quickstart until that mapping is
-specified and tested.
+REST callers supply the header directly. SDK direct calls accept `idempotencyKey`; when it
+is omitted for a mutation, the SDK generates a fresh UUID for that invocation. Anthropic and
+OpenAI dispatch helpers prefix the model provider's stable tool-call ID. The MCP gateway uses
+`mcp:<session-id>:<JSON-RPC-request-id>` and accepts an explicit
+`params._meta["dev.eyeball/idempotencyKey"]` override for correlation across sessions. These
+surface keys enter the same executor scope, replay, conflict, and retention rules above. A
+converter callback that does not receive a stable provider call ID still gets a fresh SDK UUID
+per invocation and remains subject to the deferred correlation decision in Section 8.
 
 ### 3.6 Terminal webhook delivery
 
@@ -901,8 +904,9 @@ window; aliases are discovery-only and resolve to one explicit definition before
 4. MCP 2025-11-25 Tasks are experimental and adapter-versioned; a future task wire profile
    may replace them without changing Eyeball's canonical execution records.
 5. Each converter needs a version-pinned schema compatibility fixture suite.
-6. SDK, converter-owned execution wrappers, and MCP need a caller-facing idempotency-key
-   propagation and retry-correlation contract for mutating tools.
+6. Converter-owned callbacks that do not receive a stable framework call ID, including the
+   current Vercel AI SDK callback shape, need an explicit cross-invocation retry-correlation
+   contract before their mutation quickstarts are release-ready.
 7. A version-pinned LangChain converter needs the same name-map, schema, invocation, and
    losslessness guarantees as the four formats specified in Section 6, or it must remain
    outside the advertised launch formats.

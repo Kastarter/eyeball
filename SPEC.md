@@ -248,11 +248,10 @@ polish, security/compliance program.
    plus an optional revision. Before implementation, RFC 002 must state whether the
    low-level field resolves the active revision, accepts a pinned revision, or is superseded
    for agent-driven calls by `voice-agents.start_agent_call`.
-5. **Non-REST idempotency propagation.** RFC 001 requires `Idempotency-Key` for every
-   mutating tool, but the SDK, converter-owned `execute` wrappers, and MCP gateway do not yet
-   say whether callers pass a dedicated option or the surface generates and persists a key
-   with explicit retry correlation. Finalize this before publishing runnable mutation
-   quickstarts on any framework surface.
+5. **AI SDK retry correlation.** Direct SDK calls, Anthropic/OpenAI dispatch helpers, and MCP
+   now have explicit idempotency mappings. Converter callbacks that do not receive a stable
+   framework call ID still generate one UUID per invocation, so cross-invocation mutation
+   retries need a companion contract before that quickstart is release-ready.
 6. **LangChain conversion contract.** Product and docs promise `format: "langchain"`, but
    RFC 001 does not yet define its version-pinned descriptor, schema compatibility, name-map,
    invocation, or error guarantees. Add that contract or remove LangChain from launch scope
