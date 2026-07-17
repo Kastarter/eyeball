@@ -139,7 +139,7 @@ ANTHROPIC_API_KEY=... pnpm demo:anthropic
 
 | Surface | Status in `0.1.0` |
 | --- | --- |
-| Activepieces bridge breadth spike | **Top pending item:** `packages/bridge` remains an empty compatibility stub; the five-piece spike and vendoring decision are not done |
+| Activepieces bridge breadth spike | Complete as a private experiment: five pinned pieces introspect, three actions execute in-process, and the decision is selective per-piece promotion with no wholesale vendoring; production isolation and certification remain pending ([RFC 003](./docs/rfcs/003-bridge-spike-findings.md)) |
 | 37 toolkits/provider manifests | Built in catalog `1.1` with canonical schemas and discovery |
 | 457-row contract matrix | Built: 218 smoke rows and 239 explicit `not_supported` rows |
 | Admin panel | Built as the local Next.js dashboard |
