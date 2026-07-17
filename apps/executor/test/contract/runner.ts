@@ -116,7 +116,7 @@ async function executeFixture(options: {
   const mode = fixture.mode ?? (contract.annotations.async ? "async" : "sync");
   const result = await options.targetHarness.harness.execute(
     `${options.provider}.${options.tool}`,
-    fixtureInput(fixture, context),
+    await fixtureInput(fixture, context),
     mode,
   );
   const output = assertCanonicalSuccess({
@@ -234,7 +234,7 @@ export function describeCapability(
             try {
               const result = await targetHarness.harness.execute(
                 `${provider}.${contract.name}`,
-                fixtureInput(fixture, context),
+                await fixtureInput(fixture, context),
               );
               assertNotSupported(result);
               expect(targetHarness.harness.providerRequestCount()).toBe(before);
@@ -359,7 +359,7 @@ export function describeCapability(
           });
           const result = await targetHarness.harness.execute(
             `${provider}.${probe}`,
-            fixtureInput(fixture, context),
+            await fixtureInput(fixture, context),
             fixture.mode ?? "sync",
           );
           assertAuthExpired(result);

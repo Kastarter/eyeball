@@ -5,6 +5,7 @@ import {
   type CredentialProvider,
   CredentialProviderError,
   createExecutionId,
+  createFileId,
   type ExecuteRequest,
   type ExecutionBase,
   type ExecutionId,
@@ -14,16 +15,19 @@ import {
   type ExecutionStatus,
   EyeballError,
   type EyeballErrorOptions,
+  type FileId,
   fromRestrictedToolName,
   isCanonicalToolName,
   isConnectionId,
   isExecutionId,
+  isFileId,
   type JsonValue,
   MockCredentialProvider,
   type NormalizedToolError,
   type ProviderManifest,
   type QualifiedToolName,
   type ResolvedCredential,
+  type StagedFileMetadata,
   TOOL_ERROR_CODES,
   type ToolDefinition,
   validateInput,
@@ -39,6 +43,12 @@ import {
   systemClock,
 } from "./adapters/index.js";
 import { PromiseTaskQueue, type TaskQueue } from "./queue.js";
+import {
+  DEFAULT_FILE_TTL_MS,
+  DEFAULT_MAX_FILE_SIZE_BYTES,
+  type FileStore,
+  InMemoryFileStore,
+} from "./staged-files.js";
 import {
   type ExecutionDetailRecord,
   type ExecutionListFilters,
@@ -95,24 +105,34 @@ export interface ListExecutionsQuery {
   limit?: number;
 }
 
+export interface StageFileInput {
+  name: string;
+  mimeType: string;
+  content: Uint8Array;
+}
+
 export interface ExecutionEngineOptions {
   catalog?: RuntimeCatalog;
   adapters?: AdapterRegistry;
   credentialProvider?: CredentialProvider;
   store?: ExecutionStore;
+  fileStore?: FileStore;
   queue?: TaskQueue;
   fetchImpl?: FetchImplementation;
   clock?: Clock;
   logger?: ExecutorLogger;
   env?: Readonly<Record<string, string | undefined>>;
   executionIdFactory?: () => ExecutionId;
+  fileIdFactory?: () => FileId;
+  fileTtlMs?: number;
+  maxFileSizeBytes?: number;
   idempotencyRetentionMs?: number;
 }
 
 export class ExecutionRequestError extends EyeballError {
-  readonly httpStatus: 404 | 409 | 422;
+  readonly httpStatus: 404 | 409 | 413 | 422;
 
-  constructor(httpStatus: 404 | 409 | 422, options: EyeballErrorOptions) {
+  constructor(httpStatus: 404 | 409 | 413 | 422, options: EyeballErrorOptions) {
     super(options);
     this.name = "ExecutionRequestError";
     this.httpStatus = httpStatus;
@@ -131,6 +151,20 @@ function notSupported(message: string): never {
     code: TOOL_ERROR_CODES.NOT_SUPPORTED,
     message,
   });
+}
+
+function positiveIntegerConfig(
+  explicit: number | undefined,
+  encoded: string | undefined,
+  fallback: number,
+  name: string,
+): number {
+  const value =
+    explicit ?? (encoded === undefined ? fallback : Number(encoded));
+  if (!Number.isSafeInteger(value) || value < 1) {
+    throw new TypeError(`${name} must be a positive safe integer.`);
+  }
+  return value;
 }
 
 function isObject(value: unknown): value is Readonly<Record<string, unknown>> {
@@ -373,12 +407,16 @@ export class ExecutionEngine {
   readonly adapters: AdapterRegistry;
   readonly credentialProvider: CredentialProvider;
   readonly store: ExecutionStore;
+  readonly fileStore: FileStore;
+  readonly fileTtlMs: number;
+  readonly maxFileSizeBytes: number;
   readonly queue: TaskQueue;
   readonly #fetchImpl: FetchImplementation;
   readonly #clock: Clock;
   readonly #logger: ExecutorLogger;
   readonly #env: Readonly<Record<string, string | undefined>>;
   readonly #executionIdFactory: () => ExecutionId;
+  readonly #fileIdFactory: () => FileId;
   readonly #idempotencyRetentionMs: number;
 
   constructor(options: ExecutionEngineOptions = {}) {
@@ -387,17 +425,126 @@ export class ExecutionEngine {
       options.adapters ?? new AdapterRegistry(defaultToolkitAdapters);
     this.credentialProvider =
       options.credentialProvider ?? new MockCredentialProvider([]);
+    this.#clock = options.clock ?? systemClock;
+    this.#env = options.env ?? process.env;
     this.store = options.store ?? new InMemoryExecutionStore();
+    this.fileStore =
+      options.fileStore ?? new InMemoryFileStore({ clock: this.#clock });
+    this.fileTtlMs = positiveIntegerConfig(
+      options.fileTtlMs,
+      this.#env.EYEBALL_FILE_TTL_MS,
+      DEFAULT_FILE_TTL_MS,
+      "fileTtlMs",
+    );
+    this.maxFileSizeBytes = positiveIntegerConfig(
+      options.maxFileSizeBytes,
+      this.#env.EYEBALL_FILE_MAX_BYTES,
+      DEFAULT_MAX_FILE_SIZE_BYTES,
+      "maxFileSizeBytes",
+    );
     this.queue = options.queue ?? new PromiseTaskQueue();
     this.#fetchImpl = options.fetchImpl ?? fetch;
-    this.#clock = options.clock ?? systemClock;
     this.#logger = options.logger ?? noopLogger;
-    this.#env = options.env ?? process.env;
     this.#executionIdFactory = options.executionIdFactory ?? createExecutionId;
+    this.#fileIdFactory = options.fileIdFactory ?? createFileId;
     this.#idempotencyRetentionMs = Math.max(
       DAY_MS,
       options.idempotencyRetentionMs ?? DAY_MS,
     );
+  }
+
+  async stageFile(
+    projectId: string,
+    input: StageFileInput,
+  ): Promise<StagedFileMetadata> {
+    if (projectId.trim().length === 0) {
+      return invalidRequest("Authenticated project ID must not be empty.");
+    }
+    const name = input.name.trim();
+    if (
+      name.length === 0 ||
+      Buffer.byteLength(name, "utf8") > 255 ||
+      name.includes("\0") ||
+      name.includes("\r") ||
+      name.includes("\n")
+    ) {
+      return invalidRequest(
+        "name must be 1-255 UTF-8 bytes without nulls or line breaks.",
+      );
+    }
+    const mimeType = input.mimeType.trim();
+    if (
+      mimeType.length === 0 ||
+      mimeType.length > 255 ||
+      mimeType.includes("\0") ||
+      mimeType.includes("\r") ||
+      mimeType.includes("\n") ||
+      !/^[^\s/;]+\/[^\s;]+(?:\s*;.*)?$/u.test(mimeType)
+    ) {
+      return invalidRequest("mimeType must be a valid MIME type.");
+    }
+    if (!(input.content instanceof Uint8Array)) {
+      return invalidRequest("content must decode to binary bytes.");
+    }
+    if (input.content.byteLength > this.maxFileSizeBytes) {
+      throw new ExecutionRequestError(413, {
+        code: TOOL_ERROR_CODES.INVALID_INPUT,
+        message: `File content exceeds the ${this.maxFileSizeBytes}-byte staging limit.`,
+      });
+    }
+    const fileId = this.#fileIdFactory();
+    if (!isFileId(fileId)) {
+      throw new Error("File ID factory returned an invalid file_* identifier.");
+    }
+    const now = this.#now();
+    const expiresAt = new Date(now.valueOf() + this.fileTtlMs);
+    if (Number.isNaN(expiresAt.valueOf())) {
+      throw new Error(
+        "Configured staged-file TTL exceeds the supported date range.",
+      );
+    }
+    const meta: StagedFileMetadata = {
+      fileId,
+      name,
+      mimeType,
+      size: input.content.byteLength,
+      expiresAt: expiresAt.toISOString(),
+    };
+    await this.fileStore.put(projectId, {
+      meta,
+      content: Uint8Array.from(input.content),
+    });
+    return structuredClone(meta);
+  }
+
+  async getFile(
+    projectId: string,
+    fileId: string,
+  ): Promise<{ meta: StagedFileMetadata; content: Uint8Array }> {
+    if (!isFileId(fileId)) {
+      throw new ExecutionRequestError(404, {
+        code: TOOL_ERROR_CODES.NOT_FOUND,
+        message: "Staged file was not found or has expired.",
+      });
+    }
+    const file = await this.fileStore.get(projectId, fileId);
+    if (file === undefined) {
+      throw new ExecutionRequestError(404, {
+        code: TOOL_ERROR_CODES.NOT_FOUND,
+        message: "Staged file was not found or has expired.",
+      });
+    }
+    const expiresAt = Date.parse(file.meta.expiresAt);
+    if (!Number.isFinite(expiresAt)) {
+      throw new Error("File store returned an invalid expiry timestamp.");
+    }
+    if (expiresAt <= this.#now().valueOf()) {
+      throw new ExecutionRequestError(404, {
+        code: TOOL_ERROR_CODES.NOT_FOUND,
+        message: "Staged file was not found or has expired.",
+      });
+    }
+    return file;
   }
 
   async execute(command: ExecuteCommand): Promise<ExecuteOutcome> {
@@ -708,6 +855,11 @@ export class ExecutionEngine {
         fetchImpl: this.#fetchImpl,
         clock: this.#clock,
         logger: this.#logger,
+        files: {
+          resolve: async (fileId) => {
+            return this.getFile(projectId, fileId);
+          },
+        },
       });
       const canonicalOutput = this.#validateOutput(tool, output);
       const completedAt = this.#now();

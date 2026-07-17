@@ -3,6 +3,7 @@ import type {
   JSONSchema202012,
   JSONSchemaObject202012,
   ObjectSchema202012,
+  SemVer,
 } from "@eyeball/core";
 import { deepFreeze } from "../immutable.js";
 import {
@@ -15,6 +16,7 @@ import {
 
 const CAPABILITY = "email" as const;
 const VERSION = "1.0.0" as const;
+const STAGED_ATTACHMENT_VERSION = "1.1.0" as const;
 
 function emailArray(description: string): JSONSchemaObject202012 {
   return {
@@ -34,27 +36,60 @@ function stagedAttachments(): JSONSchema202012 {
     description: "Previously staged Eyeball files to attach.",
     maxItems: 25,
     items: {
-      type: "object",
       description: "A staged file reference that the provider can attach.",
-      additionalProperties: false,
-      required: ["fileId", "fileName"],
-      properties: {
-        fileId: {
-          type: "string",
-          description: "Eyeball identifier of the previously staged file.",
-          minLength: 1,
+      anyOf: [
+        {
+          type: "object",
+          description: "Preferred staged-file reference shape.",
+          additionalProperties: false,
+          required: ["fileId"],
+          properties: {
+            fileId: {
+              type: "string",
+              description:
+                "Eyeball file_* identifier returned by POST /v1/files.",
+              pattern: "^file_[A-Za-z0-9][A-Za-z0-9_-]{0,127}$",
+            },
+            name: {
+              type: "string",
+              description:
+                "Optional recipient-visible name overriding staged metadata.",
+              minLength: 1,
+            },
+            mimeType: {
+              type: "string",
+              description:
+                "Optional MIME type overriding staged metadata for delivery.",
+              minLength: 1,
+            },
+          },
         },
-        fileName: {
-          type: "string",
-          description: "File name recipients should see for the attachment.",
-          minLength: 1,
+        {
+          type: "object",
+          description:
+            "Deprecated 1.0 staged-file reference retained for compatibility.",
+          additionalProperties: false,
+          required: ["fileId", "fileName"],
+          properties: {
+            fileId: {
+              type: "string",
+              description: "Eyeball identifier of the previously staged file.",
+              minLength: 1,
+            },
+            fileName: {
+              type: "string",
+              description:
+                "Deprecated recipient-visible name; use name in new calls.",
+              minLength: 1,
+            },
+            contentType: {
+              type: "string",
+              description: "Deprecated MIME type; use mimeType in new calls.",
+              minLength: 1,
+            },
+          },
         },
-        contentType: {
-          type: "string",
-          description: "MIME content type of the staged file when known.",
-          minLength: 1,
-        },
-      },
+      ],
     },
   };
 }
@@ -116,11 +151,13 @@ function bodyFormatProperty(): JSONSchema202012 {
 function deliveryOutputSchema(
   tool: string,
   description: string,
+  version: SemVer = VERSION,
 ): ObjectSchema202012 {
   return publishedObjectSchema({
     capability: CAPABILITY,
     tool,
     direction: "output",
+    version,
     description,
     required: ["messageId", "acceptedRecipients"],
     properties: {
@@ -219,6 +256,7 @@ const sendEmail = defineContract({
     capability: CAPABILITY,
     tool: "send_email",
     direction: "input",
+    version: STAGED_ATTACHMENT_VERSION,
     description: "Recipients, content, and staged attachments for a new email.",
     required: ["to", "subject", "body"],
     properties: {
@@ -248,6 +286,7 @@ const sendEmail = defineContract({
   outputSchema: deliveryOutputSchema(
     "send_email",
     "Identifiers and accepted recipients for the newly sent email.",
+    STAGED_ATTACHMENT_VERSION,
   ),
   annotations: {
     readOnly: false,
@@ -255,7 +294,7 @@ const sendEmail = defineContract({
     idempotent: false,
     async: false,
   },
-  version: VERSION,
+  version: STAGED_ATTACHMENT_VERSION,
 });
 
 const listEmails = defineContract({
@@ -502,6 +541,7 @@ const replyToEmail = defineContract({
     capability: CAPABILITY,
     tool: "reply_to_email",
     direction: "input",
+    version: STAGED_ATTACHMENT_VERSION,
     description:
       "Target message, reply content, recipient behavior, and staged attachments.",
     required: ["messageId", "body"],
@@ -530,6 +570,7 @@ const replyToEmail = defineContract({
   outputSchema: deliveryOutputSchema(
     "reply_to_email",
     "Identifiers and accepted recipients for the sent reply.",
+    STAGED_ATTACHMENT_VERSION,
   ),
   annotations: {
     readOnly: false,
@@ -537,7 +578,7 @@ const replyToEmail = defineContract({
     idempotent: false,
     async: false,
   },
-  version: VERSION,
+  version: STAGED_ATTACHMENT_VERSION,
 });
 
 const createDraft = defineContract({
@@ -549,6 +590,7 @@ const createDraft = defineContract({
     capability: CAPABILITY,
     tool: "create_draft",
     direction: "input",
+    version: STAGED_ATTACHMENT_VERSION,
     description:
       "Recipients, content, and staged attachments to save as an email draft.",
     required: ["body"],
@@ -580,6 +622,7 @@ const createDraft = defineContract({
     capability: CAPABILITY,
     tool: "create_draft",
     direction: "output",
+    version: STAGED_ATTACHMENT_VERSION,
     description: "Provider identifiers for the newly created unsent draft.",
     required: ["draftId"],
     properties: {
@@ -608,7 +651,7 @@ const createDraft = defineContract({
     idempotent: false,
     async: false,
   },
-  version: VERSION,
+  version: STAGED_ATTACHMENT_VERSION,
 });
 
 const searchEmails = defineContract({

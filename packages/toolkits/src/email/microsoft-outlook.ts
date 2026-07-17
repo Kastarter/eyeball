@@ -19,7 +19,9 @@ import {
   jsonRequest,
   numberValue,
   providerError,
+  type ResolvedEmailAttachment,
   requiredStringField,
+  resolveAttachments,
   stringArrayValue,
   stringValue,
   unique,
@@ -57,7 +59,21 @@ function graphBody(input: Readonly<Record<string, unknown>>) {
   };
 }
 
-function graphMessageInput(input: Readonly<Record<string, unknown>>) {
+function graphAttachments(
+  attachments: readonly ResolvedEmailAttachment[],
+): Readonly<Record<string, unknown>>[] {
+  return attachments.map((attachment) => ({
+    "@odata.type": "#microsoft.graph.fileAttachment",
+    name: attachment.name,
+    contentType: attachment.mimeType,
+    contentBytes: Buffer.from(attachment.content).toString("base64"),
+  }));
+}
+
+function graphMessageInput(
+  input: Readonly<Record<string, unknown>>,
+  attachments: readonly ResolvedEmailAttachment[] = [],
+) {
   const replyTo = stringValue(input, "replyTo");
   return {
     subject: stringValue(input, "subject") ?? "",
@@ -66,6 +82,9 @@ function graphMessageInput(input: Readonly<Record<string, unknown>>) {
     ccRecipients: graphRecipients(stringArrayValue(input, "cc")),
     bccRecipients: graphRecipients(stringArrayValue(input, "bcc")),
     replyTo: replyTo === undefined ? [] : [graphRecipient(replyTo)],
+    ...(attachments.length === 0
+      ? {}
+      : { attachments: graphAttachments(attachments) }),
   };
 }
 
@@ -264,12 +283,15 @@ export class MicrosoftOutlookAdapter implements ToolkitAdapter {
   }
 
   private async sendEmail(context: AdapterContext): Promise<JsonValue> {
-    assertNoAttachments(context);
     const input = context.canonicalInput;
+    const attachments = await resolveAttachments(context);
     const client = createProviderHttpClient(context);
     await client(
       "v1.0/me/sendMail",
-      jsonRequest({ message: graphMessageInput(input), saveToSentItems: true }),
+      jsonRequest({
+        message: graphMessageInput(input, attachments),
+        saveToSentItems: true,
+      }),
     );
     const subject = stringValue(input, "subject") ?? "";
     const created = await locateSentMessage(context, client, subject);

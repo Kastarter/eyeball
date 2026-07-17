@@ -70,6 +70,69 @@ describe("Gmail email adapter", () => {
     ).toContain("Subject: Gmail integration delivery\r\n");
   });
 
+  it("sends and drafts staged files as base64url MIME multipart attachments", async () => {
+    const { provider, harness } = gmailHarness();
+    const attachment = await harness.stageFile({
+      name: "invoice.pdf",
+      mimeType: "application/pdf",
+      content: Uint8Array.from([0, 1, 2, 255]),
+    });
+
+    executionOutput(
+      await harness.execute("gmail.send_email", {
+        to: ["recipient@example.com"],
+        subject: "Attached invoice",
+        body: "Please see the attachment.",
+        attachments: [attachment],
+      }),
+    );
+    const sentMessage = storeRecords<GmailMessage>(provider, "messages").find(
+      ({ labelIds }) => labelIds.includes("SENT"),
+    );
+    const sentRaw = Buffer.from(sentMessage?.raw ?? "", "base64url").toString(
+      "utf8",
+    );
+    expect(sentRaw).toContain("Content-Type: multipart/mixed;");
+    expect(sentRaw).toContain("Content-Type: application/pdf");
+    expect(sentRaw).toContain('filename="invoice.pdf"');
+    expect(sentRaw).toContain("AAEC/w==");
+
+    const draft = executionOutput(
+      await harness.execute("gmail.create_draft", {
+        to: ["reviewer@example.com"],
+        subject: "Review invoice",
+        body: "Check the attachment before sending.",
+        attachments: [attachment],
+      }),
+    );
+    const draftRecord = storeRecords<GmailDraft>(provider, "drafts").find(
+      ({ id }) => id === draft.draftId,
+    );
+    const draftMessage = storeRecords<GmailMessage>(provider, "messages").find(
+      ({ id }) => id === draftRecord?.messageId,
+    );
+    const draftRaw = Buffer.from(draftMessage?.raw ?? "", "base64url").toString(
+      "utf8",
+    );
+    expect(draftRaw).toContain('filename="invoice.pdf"');
+    expect(draftRaw).toContain("Content-Transfer-Encoding: base64");
+
+    const beforeReply = harness.providerRequests().length;
+    const unsupportedReply = await harness.execute("gmail.reply_to_email", {
+      messageId: "gmail_msg_000001",
+      body: "This path must fail before provider I/O.",
+      attachments: [attachment],
+    });
+    expect(unsupportedReply.body).toMatchObject({
+      status: "failed",
+      error: {
+        code: "not_supported",
+        message: expect.stringContaining("does not support staged attachments"),
+      },
+    });
+    expect(harness.providerRequests()).toHaveLength(beforeReply);
+  });
+
   it("gets, replies, labels, searches, drafts, and lists threads", async () => {
     const provider = createGmailMock();
     await provider.seed(gmailFixtures.default);

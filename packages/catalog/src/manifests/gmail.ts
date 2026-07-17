@@ -24,7 +24,7 @@ export const gmailManifest = deepFreeze({
     {
       capability: "email",
       canonicalTool: "send_email",
-      canonicalVersion: "1.0.0",
+      canonicalVersion: "1.1.0",
       operationId: "users.messages.send",
       inputExtensionSchema: {
         type: "object",
@@ -53,13 +53,13 @@ export const gmailManifest = deepFreeze({
     {
       capability: "email",
       canonicalTool: "reply_to_email",
-      canonicalVersion: "1.0.0",
+      canonicalVersion: "1.1.0",
       operationId: "users.messages.sendReply",
     },
     {
       capability: "email",
       canonicalTool: "create_draft",
-      canonicalVersion: "1.0.0",
+      canonicalVersion: "1.1.0",
       operationId: "users.drafts.create",
     },
     {

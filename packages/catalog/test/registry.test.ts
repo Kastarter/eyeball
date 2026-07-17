@@ -39,13 +39,13 @@ describe("catalog registry materialization", () => {
       capability: "email",
       description: emailContractsByName.send_email.description,
       annotations: emailContractsByName.send_email.annotations,
-      version: "1.0.0",
+      version: "1.1.0",
     });
     expect(tool?.inputSchema.$id).toBe(
-      "urn:eyeball:email:send_email:1.0.0:gmail",
+      "urn:eyeball:email:send_email:1.1.0:gmail",
     );
     expect(tool?.outputSchema?.$id).toBe(
-      "urn:eyeball:email:send_email:output:1.0.0:gmail",
+      "urn:eyeball:email:send_email:output:1.1.0:gmail",
     );
     expect(tool?.inputSchema.properties?.x_provider).toEqual({
       type: "object",
@@ -263,7 +263,7 @@ describe("catalog registry build errors", () => {
       {
         capability: "email",
         canonicalTool: "send_email",
-        canonicalVersion: "1.0.0",
+        canonicalVersion: "1.1.0",
         operationId: "users.messages.send",
         outputExtensionSchema: {
           type: "object",

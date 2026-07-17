@@ -316,6 +316,11 @@ function adapterContext(options: {
       warn: () => undefined,
       error: () => undefined,
     },
+    files: {
+      resolve: async () => {
+        throw new Error("The bridge compatibility tests do not stage files.");
+      },
+    },
   };
 }
 

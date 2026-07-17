@@ -14,6 +14,7 @@ Open-core tool and integration platform for AI agents: one typed, authenticated 
 - Public package exports use ESM `.js` specifiers from `src/index.ts` barrels.
 - Canonical tools use `toolkit.operation`; restricted names use reversible `toolkit__operation`.
 - `/v1/*` is API-key/project scoped; `/health` is public.
+- Staged-file uploads use padded-base64 JSON; defaults are 25 MiB and one hour via `EYEBALL_FILE_MAX_BYTES` / `EYEBALL_FILE_TTL_MS`.
 - Credential env vars use `EYEBALL_CRED_<TOOLKIT>_*`; `EYEBALL_API_KEYS` accepts `key:project[:user]`.
 - Manifest `endpoint.baseUrlOverrideEnv` values are the only trusted provider endpoint override seam.
 - HTTP and provider tests prefer Hono `app.request`; do not require loopback sockets.
@@ -30,6 +31,7 @@ Open-core tool and integration platform for AI agents: one typed, authenticated 
 - `@eyeball/catalog` owns manifests, auth metadata, versions, and deterministic tool search.
 - `@eyeball/toolkits` owns adapters; the executor resolves one manifest and credential per call.
 - Execution storage and scheduling sit behind `ExecutionStore` and `TaskQueue`.
+- Staged bytes sit behind project-scoped `FileStore`; adapters resolve them only through execution-bound `AdapterContext.files`.
 - The MCP gateway delegates execution to the executor and preserves child execution identities.
 - Project keys authorize all project users unless user-pinned; executor and MCP reject conflicting identities.
 - MCP inbound key policy and its downstream executor key are separate trust boundaries.
@@ -54,13 +56,13 @@ Open-core tool and integration platform for AI agents: one typed, authenticated 
 - Deterministic MCP and restaurant voice demos run in-process; the Anthropic episode is optional.
 - The nested mocks repository has eight workspaces and 163 tests.
 - The private Activepieces bridge spike imports five pinned pieces, introspects 67 actions and 23 triggers, hydrates Airtable dynamic fields, and executes Gmail, Slack, and Airtable against in-process mocks.
+- Staged files flow through Gmail and Outlook send/reply/draft operations plus Google Drive upload; other email providers fail non-empty attachments explicitly as `not_supported`.
 
 ## Known Issues
 
 - The Activepieces spike is not a production breadth layer: pieces need per-tool canonical mappings, isolated execution/egress, auth alignment, license provenance, and mock/real certification before catalog promotion; do not vendor the monorepo wholesale.
 - Hosted OAuth vault, billing, license finalization, and real-provider certification are not complete.
 - Voice sessions need durable state and a persistent production media worker.
-- Attachments await an executor-to-adapter staged-file resolver.
 - Provider idempotency propagation is separate from working executor-level replay protection.
 - The stock executor uses process-local store/queue defaults; production 24-hour idempotency requires injected durable implementations.
 - The local vault serializes only within one process; do not share one file across executors.

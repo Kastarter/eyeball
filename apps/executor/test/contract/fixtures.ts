@@ -3,7 +3,7 @@ import type { InProcessExecutorHarness } from "../helpers/executor-harness.js";
 
 export type ContractTarget = "mock" | "real";
 export type CanonicalInput = Readonly<Record<string, JsonValue>>;
-export const CANONICAL_FIXTURE_VERSION = "1.0.0";
+export const CANONICAL_FIXTURE_VERSION = "1.1.0";
 
 export class MissingRealConfigurationError extends Error {
   readonly envName: string;
@@ -21,13 +21,18 @@ export interface FixtureContext {
   value(name: string, mockValue: string): string;
   output(tool: string): Readonly<Record<string, unknown>>;
   field(tool: string, ...path: readonly string[]): string;
+  stageFile(options: {
+    name: string;
+    mimeType?: string;
+    content: string | Uint8Array;
+  }): Promise<CanonicalInput>;
   advanceClock(milliseconds: number): Promise<void>;
 }
 
 export interface CanonicalFixture {
   readonly input:
     | CanonicalInput
-    | ((context: FixtureContext) => CanonicalInput);
+    | ((context: FixtureContext) => CanonicalInput | Promise<CanonicalInput>);
   readonly dependencies?: readonly string[];
   readonly mode?: "sync" | "async";
   readonly after?: (context: FixtureContext) => Promise<void>;
@@ -121,15 +126,25 @@ export function createFixtureContext(options: {
       }
       return nestedField(output, path);
     },
+    async stageFile(file) {
+      const reference = await options.harness.stageFile(file);
+      return {
+        fileId: reference.fileId,
+        ...(reference.name === undefined ? {} : { name: reference.name }),
+        ...(reference.mimeType === undefined
+          ? {}
+          : { mimeType: reference.mimeType }),
+      };
+    },
     advanceClock: (milliseconds) => options.harness.advanceClock(milliseconds),
   };
 }
 
-export function fixtureInput(
+export async function fixtureInput(
   fixture: CanonicalFixture,
   context: FixtureContext,
-): CanonicalInput {
+): Promise<CanonicalInput> {
   return typeof fixture.input === "function"
-    ? fixture.input(context)
+    ? await fixture.input(context)
     : fixture.input;
 }

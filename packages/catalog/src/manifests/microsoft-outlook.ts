@@ -26,7 +26,7 @@ export const microsoftOutlookManifest = deepFreeze({
     {
       capability: "email",
       canonicalTool: "send_email",
-      canonicalVersion: "1.0.0",
+      canonicalVersion: "1.1.0",
       operationId: "me.sendMail",
       requiredScopes: [MAIL_READ_SCOPE, MAIL_SEND_SCOPE],
     },
@@ -47,14 +47,14 @@ export const microsoftOutlookManifest = deepFreeze({
     {
       capability: "email",
       canonicalTool: "reply_to_email",
-      canonicalVersion: "1.0.0",
+      canonicalVersion: "1.1.0",
       operationId: "me.messages.reply",
       requiredScopes: [MAIL_READ_SCOPE, MAIL_SEND_SCOPE],
     },
     {
       capability: "email",
       canonicalTool: "create_draft",
-      canonicalVersion: "1.0.0",
+      canonicalVersion: "1.1.0",
       operationId: "me.messages.create",
       requiredScopes: [MAIL_READ_WRITE_SCOPE],
     },

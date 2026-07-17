@@ -1,4 +1,5 @@
 import type { ResolvedCredential } from "./credentials.js";
+import type { FileId, StagedFileMetadata } from "./types/execution.js";
 import type { JsonValue, ToolDefinition, ToolkitSlug } from "./types/tool.js";
 
 export interface Clock {
@@ -25,6 +26,20 @@ export const noopLogger: ExecutorLogger = {
 
 export type FetchImplementation = typeof fetch;
 
+/** Immutable file bytes resolved within the authenticated project boundary. */
+export interface ResolvedFile {
+  meta: StagedFileMetadata;
+  content: Uint8Array;
+}
+
+/**
+ * Execution-bound resolver. The executor captures project identity when it creates
+ * this object, so adapters can select only a file ID, never a tenant.
+ */
+export interface FileResolver {
+  resolve(fileId: FileId): Promise<ResolvedFile>;
+}
+
 export interface AdapterContext {
   /** Trusted project scope from the authenticated executor request. */
   projectId: string;
@@ -37,6 +52,7 @@ export interface AdapterContext {
   fetchImpl: FetchImplementation;
   clock: Clock;
   logger: ExecutorLogger;
+  files: FileResolver;
 }
 
 export interface ToolkitAdapter {

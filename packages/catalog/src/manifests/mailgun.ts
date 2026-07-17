@@ -28,7 +28,7 @@ export const mailgunManifest = deepFreeze({
     {
       capability: "email",
       canonicalTool: "send_email",
-      canonicalVersion: "1.0.0",
+      canonicalVersion: "1.1.0",
       operationId: "messages.create",
       inputExtensionSchema: {
         type: "object",

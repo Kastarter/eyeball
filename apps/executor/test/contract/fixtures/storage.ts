@@ -45,11 +45,18 @@ export const storageFixtures = defineCapabilityFixtures("file_storage_docs", {
     }),
   },
   upload_file: {
-    input: {
-      name: "contract-fixture.txt",
-      mimeType: "text/plain",
-      content: "Canonical contract fixture content.",
-      contentEncoding: "utf8",
-    },
+    input: async (context) =>
+      context.provider === "google-drive"
+        ? await context.stageFile({
+            name: "contract-fixture.txt",
+            mimeType: "text/plain",
+            content: "Canonical contract fixture content.",
+          })
+        : {
+            name: "contract-fixture.txt",
+            mimeType: "text/plain",
+            content: "Canonical contract fixture content.",
+            contentEncoding: "utf8",
+          },
   },
 });

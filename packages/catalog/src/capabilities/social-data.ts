@@ -276,7 +276,8 @@ const getProfile = defineContract({
 const getPosts = defineContract({
   capability: CAPABILITY,
   name: "get_posts",
-  description: "List public posts or media for a profile or community.",
+  description:
+    "List public posts or media published by a creator profile or community.",
   inputSchema: publishedObjectSchema({
     capability: CAPABILITY,
     tool: "get_posts",

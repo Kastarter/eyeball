@@ -1,4 +1,8 @@
-import type { JsonValue, ResolvedCredential } from "@eyeball/core";
+import type {
+  JsonValue,
+  ResolvedCredential,
+  StagedFileReference,
+} from "@eyeball/core";
 import type { ProviderMock } from "../../../../mocks/packages/mock-kit/dist/index.js";
 import {
   createInProcessExecutorHarness,
@@ -15,6 +19,16 @@ export interface EmailMockHarness {
     tool: string,
     input: Readonly<Record<string, JsonValue>>,
   ): Promise<ExecuteResult>;
+  stageFile(options: {
+    name: string;
+    mimeType?: string;
+    content: string | Uint8Array;
+  }): Promise<StagedFileReference>;
+  providerRequests(): readonly {
+    url: string;
+    method: string;
+    body: string;
+  }[];
 }
 
 export function createEmailMockHarness(
@@ -36,6 +50,8 @@ export function createEmailMockHarness(
       const result = await harness.execute(tool, input);
       return { status: result.initialStatus, body: result.terminal };
     },
+    stageFile: (options) => harness.stageFile(options),
+    providerRequests: () => harness.providerRequests(),
   };
 }
 

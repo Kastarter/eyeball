@@ -31,7 +31,7 @@ export const googleDriveManifest = deepFreeze({
   ).map(([canonicalTool, operationId]) => ({
     capability: "file_storage_docs",
     canonicalTool,
-    canonicalVersion: "1.0.0",
+    canonicalVersion: canonicalTool === "upload_file" ? "1.1.0" : "1.0.0",
     operationId,
   })),
 } as const satisfies ProviderManifest);

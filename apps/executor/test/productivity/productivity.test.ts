@@ -212,13 +212,17 @@ describe("productivity adapters", () => {
     const provider = createGoogleDriveMock();
     await provider.seed(googleDriveFixtures.default);
     const harness = createProductivityMockHarness(provider, OAUTH_CREDENTIAL);
+    const staged = await harness.stageFile({
+      name: "integration-notes.txt",
+      mimeType: "text/plain",
+      content: "deterministic integration payload",
+    });
 
     const uploaded = executionOutput(
       await harness.execute("google-drive.upload_file", {
         name: "integration-notes.txt",
         mimeType: "text/plain",
-        content: "deterministic integration payload",
-        contentEncoding: "utf8",
+        fileId: staged.fileId,
         parentId: "drive_folder_000001",
       }),
     );
@@ -260,6 +264,36 @@ describe("productivity adapters", () => {
     expect(searched.files).toEqual([
       expect.objectContaining({ fileId: file.fileId }),
     ]);
+  });
+
+  it("preserves staged binary bytes in a Google Drive multipart upload", async () => {
+    const provider = createGoogleDriveMock();
+    const harness = createProductivityMockHarness(provider, OAUTH_CREDENTIAL);
+    const content = Uint8Array.from([0, 255, 1, 254, 2, 253]);
+    const staged = await harness.stageFile({
+      name: "binary-fixture.bin",
+      mimeType: "application/octet-stream",
+      content,
+    });
+
+    const uploaded = executionOutput(
+      await harness.execute("google-drive.upload_file", {
+        fileId: staged.fileId,
+      }),
+    );
+    expect(uploaded.file).toMatchObject({
+      name: "binary-fixture.bin",
+      mimeType: "application/octet-stream",
+    });
+
+    const request = harness
+      .providerRequests()
+      .find(({ url }) => url.includes("/upload/drive/v3/files"));
+    expect(request).toMatchObject({ method: "POST" });
+    expect(request?.contentType).toMatch(/^multipart\/related; boundary=/u);
+    const body = Buffer.from(request?.bodyBase64 ?? "", "base64");
+    expect(body.indexOf(Buffer.from(content))).toBeGreaterThanOrEqual(0);
+    expect(body.toString("utf8")).toContain('"name":"binary-fixture.bin"');
   });
 
   it("lists and retrieves seeded Google Drive metadata", async () => {

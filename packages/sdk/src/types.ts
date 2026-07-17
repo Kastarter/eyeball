@@ -105,6 +105,13 @@ export interface ExecutionPage {
   nextCursor?: string;
 }
 
+export interface UploadFileOptions {
+  name: string;
+  mimeType?: string;
+  /** Strings are staged as UTF-8; byte arrays (including Node Buffers) are preserved. */
+  content: Uint8Array | string;
+}
+
 export interface CreateConnectionOptions {
   /** Uses the client-level userId when omitted. */
   userId?: string;

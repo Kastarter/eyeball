@@ -5,6 +5,7 @@ export * from "./dev-voice-sessions.js";
 export * from "./engine.js";
 export * from "./queue.js";
 export * from "./routes.js";
+export * from "./staged-files.js";
 export * from "./store.js";
 
 import { createExecutorApp } from "./routes.js";

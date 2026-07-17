@@ -131,6 +131,66 @@ describe("Eyeball SDK", () => {
     });
   });
 
+  it("uploads file content and reuses the returned attachment reference", async () => {
+    const requests: Request[] = [];
+    const fetchImpl = testFetch(async (request) => {
+      const pathname = new URL(request.url).pathname;
+      if (pathname === "/v1/files") {
+        return jsonResponse(
+          {
+            fileId: "file_sdk_attachment",
+            name: "hello.txt",
+            mimeType: "text/plain",
+            size: 5,
+            expiresAt: "2026-07-17T01:00:00.000Z",
+          },
+          201,
+        );
+      }
+      const body = (await request.json()) as { tool: string };
+      return immediateSuccess(body.tool, {
+        messageId: "msg_sdk_attachment",
+        acceptedRecipients: ["recipient@example.com"],
+      });
+    }, requests);
+    const eb = client(fetchImpl, { userId: "user_sdk" });
+
+    const attachment = await eb.files.upload({
+      name: "hello.txt",
+      mimeType: "text/plain",
+      content: "hello",
+    });
+    await eb.tools.execute("gmail.send_email", {
+      input: {
+        to: ["recipient@example.com"],
+        subject: "SDK attachment",
+        body: "Attached through the SDK.",
+        attachments: [attachment],
+      },
+      idempotencyKey: "sdk-attachment",
+    });
+
+    expect(attachment).toEqual({
+      fileId: "file_sdk_attachment",
+      name: "hello.txt",
+      mimeType: "text/plain",
+    });
+    expect(requests).toHaveLength(2);
+    expect(new URL(requests[0]?.url ?? "").pathname).toBe("/v1/files");
+    expect(requests[0]?.headers.get("Authorization")).toBe(
+      "Bearer ey_test_sdk",
+    );
+    await expect(requests[0]?.json()).resolves.toEqual({
+      name: "hello.txt",
+      mimeType: "text/plain",
+      content: "aGVsbG8=",
+    });
+    await expect(requests[1]?.json()).resolves.toMatchObject({
+      tool: "gmail.send_email",
+      input: { attachments: [attachment] },
+    });
+  });
+
   it("includes async MCP tools only after Tasks support is negotiated", async () => {
     const eb = client(
       testFetch(() => {

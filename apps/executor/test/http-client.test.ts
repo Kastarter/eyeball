@@ -29,6 +29,12 @@ const tool: ToolDefinition = {
   version: "1.0.0",
 };
 
+const unavailableFiles: AdapterContext["files"] = {
+  resolve: async () => {
+    throw new Error("No staged files are used by HTTP client tests.");
+  },
+};
+
 async function authorizationFor(
   credential: ResolvedCredential,
 ): Promise<string | null> {
@@ -47,6 +53,7 @@ async function authorizationFor(
     fetchImpl,
     clock: systemClock,
     logger: noopLogger,
+    files: unavailableFiles,
   };
 
   await createProviderHttpClient(context)("operation");
@@ -93,6 +100,7 @@ describe("provider HTTP client", () => {
       }) as typeof fetch,
       clock: systemClock,
       logger: noopLogger,
+      files: unavailableFiles,
     };
 
     await expect(
@@ -126,6 +134,7 @@ describe("provider HTTP client", () => {
         )) as typeof fetch,
       clock: systemClock,
       logger: noopLogger,
+      files: unavailableFiles,
     };
 
     await expect(
@@ -163,6 +172,7 @@ describe("provider HTTP client", () => {
         )) as typeof fetch,
       clock: systemClock,
       logger: noopLogger,
+      files: unavailableFiles,
     };
 
     let thrown: unknown;
@@ -193,6 +203,7 @@ describe("provider HTTP client", () => {
         Response.json({ error: secret }, { status: 401 })) as typeof fetch,
       clock: systemClock,
       logger: noopLogger,
+      files: unavailableFiles,
     };
 
     let thrown: unknown;
@@ -229,6 +240,7 @@ describe("provider HTTP client", () => {
       fetchImpl,
       clock: systemClock,
       logger: noopLogger,
+      files: unavailableFiles,
     };
 
     await expect(

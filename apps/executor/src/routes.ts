@@ -21,6 +21,7 @@ import {
   ExecutionRequestError,
   type ListExecutionsQuery,
 } from "./engine.js";
+import type { FileStore } from "./staged-files.js";
 
 const EXECUTION_STATUSES = new Set<ExecutionStatus>([
   "pending",
@@ -43,6 +44,7 @@ type ExecutorContext = Context<{ Variables: ExecutorVariables }>;
 
 export interface ExecutorAppOptions {
   engine?: ExecutionEngine;
+  fileStore?: FileStore;
   apiKeys?: ApiKeyringInput;
   env?: Readonly<Record<string, string | undefined>>;
   requestIdFactory?: () => string;
@@ -63,12 +65,31 @@ function bearerToken(header: string | undefined): string | undefined {
 function requestFailure(
   context: ExecutorContext,
   error: EyeballError,
-  status: 401 | 403 | 404 | 409 | 422 | 500,
+  status: 401 | 403 | 404 | 409 | 413 | 422 | 500,
 ): Response {
   return context.json(
     createErrorEnvelope(error, context.get("requestId")),
     status,
   );
+}
+
+function isRecord(value: unknown): value is Readonly<Record<string, unknown>> {
+  return typeof value === "object" && value !== null && !Array.isArray(value);
+}
+
+function decodeBase64(value: string): Uint8Array | undefined {
+  if (
+    value.length % 4 !== 0 ||
+    !/^(?:[A-Za-z0-9+/]{4})*(?:[A-Za-z0-9+/]{2}==|[A-Za-z0-9+/]{3}=)?$/u.test(
+      value,
+    )
+  ) {
+    return undefined;
+  }
+  const content = Buffer.from(value, "base64");
+  return content.toString("base64") === value
+    ? Uint8Array.from(content)
+    : undefined;
 }
 
 function pinnedUserFailure(context: ExecutorContext): Response {
@@ -187,9 +208,20 @@ export function createExecutorApp(options: ExecutorAppOptions = {}): Hono<{
     options.engine ??
     new ExecutionEngine({
       env,
+      ...(options.fileStore === undefined
+        ? {}
+        : { fileStore: options.fileStore }),
       credentialProvider:
         options.devVault ?? createConfiguredCredentialProvider({ env }),
     });
+  if (
+    options.fileStore !== undefined &&
+    engine.fileStore !== options.fileStore
+  ) {
+    throw new Error(
+      "The executor engine and file route must use the same file store.",
+    );
+  }
   if (
     options.devVault !== undefined &&
     engine.credentialProvider !== options.devVault
@@ -243,6 +275,62 @@ export function createExecutorApp(options: ExecutorAppOptions = {}): Hono<{
       return pinnedUserFailure(context);
     }
     await next();
+  });
+
+  app.post("/v1/files", async (context) => {
+    let request: unknown;
+    try {
+      request = await context.req.json();
+    } catch {
+      return invalidQuery(context, "Request body must be valid JSON.");
+    }
+    if (!isRecord(request)) {
+      return invalidQuery(context, "File upload must be a JSON object.");
+    }
+    const unknownKey = Object.keys(request).find(
+      (key) => key !== "name" && key !== "mimeType" && key !== "content",
+    );
+    if (unknownKey !== undefined) {
+      return invalidQuery(context, `Unknown file upload field: ${unknownKey}.`);
+    }
+    if (typeof request.name !== "string") {
+      return invalidQuery(context, "name must be a string.");
+    }
+    if (
+      request.mimeType !== undefined &&
+      typeof request.mimeType !== "string"
+    ) {
+      return invalidQuery(context, "mimeType must be a string.");
+    }
+    if (typeof request.content !== "string") {
+      return invalidQuery(context, "content must be a base64 string.");
+    }
+    const content = decodeBase64(request.content);
+    if (content === undefined) {
+      return invalidQuery(context, "content must be canonical padded base64.");
+    }
+    try {
+      const file = await engine.stageFile(context.get("projectId"), {
+        name: request.name,
+        mimeType: request.mimeType ?? "application/octet-stream",
+        content,
+      });
+      return context.json(file, 201);
+    } catch (error) {
+      return handleRouteError(context, error);
+    }
+  });
+
+  app.get("/v1/files/:id", async (context) => {
+    try {
+      const file = await engine.getFile(
+        context.get("projectId"),
+        context.req.param("id"),
+      );
+      return context.json(file.meta);
+    } catch (error) {
+      return handleRouteError(context, error);
+    }
   });
 
   app.post("/v1/execute", async (context) => {

@@ -10,6 +10,7 @@ import {
 
 const CAPABILITY = "file_storage_docs" as const;
 const VERSION = "1.0.0" as const;
+const STAGED_UPLOAD_VERSION = "1.1.0" as const;
 const READ_ONLY = {
   readOnly: true,
   destructive: false,
@@ -190,48 +191,69 @@ const uploadFile = defineContract({
   capability: CAPABILITY,
   name: "upload_file",
   description:
-    "Upload a new file from UTF-8 or base64-encoded content. This creates externally visible stored data.",
-  inputSchema: publishedObjectSchema({
-    capability: CAPABILITY,
-    tool: "upload_file",
-    direction: "input",
-    description: "File metadata and encoded content.",
-    required: ["name", "content"],
-    properties: {
-      name: id("File name."),
-      mimeType: {
-        type: "string",
-        description: "Content MIME type.",
-        default: "application/octet-stream",
-        minLength: 1,
+    "Upload a new file from inline content or a staged Eyeball file. This creates externally visible stored data.",
+  inputSchema: {
+    ...publishedObjectSchema({
+      capability: CAPABILITY,
+      tool: "upload_file",
+      direction: "input",
+      version: STAGED_UPLOAD_VERSION,
+      description:
+        "File metadata and exactly one inline or staged content source.",
+      properties: {
+        name: id("File name."),
+        mimeType: {
+          type: "string",
+          description:
+            "Content MIME type; staged uploads default to staged metadata and inline uploads default to application/octet-stream.",
+          minLength: 1,
+        },
+        content: {
+          type: "string",
+          description: "File content using the selected encoding.",
+        },
+        contentEncoding: {
+          type: "string",
+          description: "Serialization used for inline content.",
+          enum: ["utf8", "base64"],
+          default: "utf8",
+        },
+        fileId: {
+          type: "string",
+          description: "Eyeball file_* identifier returned by POST /v1/files.",
+          pattern: "^file_[A-Za-z0-9][A-Za-z0-9_-]{0,127}$",
+        },
+        parentId: id("Parent folder identifier."),
+        description: {
+          type: "string",
+          description: "Optional file description.",
+        },
       },
-      content: {
-        type: "string",
-        description: "File content using the selected encoding.",
+    }),
+    oneOf: [
+      {
+        description: "Use inline content.",
+        required: ["name", "content"],
+        properties: { name: true, content: true, fileId: false },
       },
-      contentEncoding: {
-        type: "string",
-        description: "Serialization used for content.",
-        enum: ["utf8", "base64"],
-        default: "utf8",
+      {
+        description: "Use content from a staged Eyeball file.",
+        required: ["fileId"],
+        properties: { content: false, fileId: true },
       },
-      parentId: id("Parent folder identifier."),
-      description: {
-        type: "string",
-        description: "Optional file description.",
-      },
-    },
-  }),
+    ],
+  },
   outputSchema: publishedObjectSchema({
     capability: CAPABILITY,
     tool: "upload_file",
     direction: "output",
+    version: STAGED_UPLOAD_VERSION,
     description: "Newly uploaded file metadata.",
     required: ["file"],
     properties: { file: fileSchema() },
   }),
   annotations: CREATE,
-  version: VERSION,
+  version: STAGED_UPLOAD_VERSION,
 });
 
 const downloadFile = defineContract({

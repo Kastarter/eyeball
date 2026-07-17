@@ -59,3 +59,51 @@ console.log(terminal.status);
 ```
 
 Use [`GET /v1/executions/:id`](/api/executions/get-execution) to poll outside the SDK.
+
+## Staged files and attachments
+
+Stage bytes once, then pass the returned reference directly to a tool. The SDK accepts a
+`Buffer`, `Uint8Array`, or UTF-8 string and uploads it through `POST /v1/files`:
+
+```ts
+import { readFile } from "node:fs/promises";
+import { Eyeball } from "@eyeball/sdk";
+
+const eyeball = new Eyeball({
+  apiKey: process.env.EYEBALL_API_KEY!,
+  baseUrl: process.env.EYEBALL_EXECUTOR_URL!,
+});
+
+const attachment = await eyeball.files.upload({
+  name: "receipt.pdf",
+  mimeType: "application/pdf",
+  content: await readFile("./receipt.pdf"),
+});
+
+await eyeball.tools.run(
+  "gmail.send_email",
+  {
+    to: ["buyer@example.com"],
+    subject: "Your receipt",
+    body: "The receipt is attached.",
+    attachments: [attachment],
+  },
+  { userId: "demo_user" },
+);
+```
+
+The primary REST upload format is JSON with padded base64 content:
+
+```json
+{"name":"receipt.pdf","mimeType":"application/pdf","content":"JVBERi0xLjcK...=="}
+```
+
+The response is `{ fileId, name, mimeType, size, expiresAt }`. `GET /v1/files/:id` returns
+metadata, but file bytes are internal-only and can be resolved only by an adapter executing
+inside the authenticated project. Files expire after one hour by default, and the decoded
+size limit defaults to 25 MiB. Self-hosted executors can override those limits with
+`EYEBALL_FILE_TTL_MS` and `EYEBALL_FILE_MAX_BYTES`.
+
+Staged files currently flow through Gmail and Microsoft Outlook `send_email`,
+`reply_to_email`, and `create_draft`, plus Google Drive `upload_file`. Other email providers
+return a clear `not_supported` error when non-empty attachments are supplied.

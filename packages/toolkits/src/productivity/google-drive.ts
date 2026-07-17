@@ -1,4 +1,14 @@
-import type { AdapterContext, JsonValue, ToolkitAdapter } from "@eyeball/core";
+import { createHash } from "node:crypto";
+import {
+  type AdapterContext,
+  EyeballError,
+  type FileId,
+  isFileId,
+  type JsonValue,
+  TOOL_ERROR_CODES,
+  type ToolkitAdapter,
+} from "@eyeball/core";
+import { createProviderHttpClient } from "../http-client.js";
 import {
   asJson,
   booleanValue,
@@ -20,6 +30,9 @@ import {
 } from "./common.js";
 
 const FOLDER_MIME_TYPE = "application/vnd.google-apps.folder";
+const MULTIPART_UPLOAD_MAX_BYTES = 5 * 1_024 * 1_024;
+const UPLOAD_FIELDS =
+  "id,name,mimeType,parents,size,webViewLink,createdTime,modifiedTime";
 
 function file(
   context: AdapterContext,
@@ -54,6 +67,102 @@ function decodedContent(content: string, encoding: string): string {
   return encoding === "base64"
     ? Buffer.from(content, "base64").toString("utf8")
     : content;
+}
+
+function validMimeType(value: string): boolean {
+  return (
+    !value.includes("\0") &&
+    !value.includes("\r") &&
+    !value.includes("\n") &&
+    /^[^\s/;]+\/[^\s;]+(?:\s*;.*)?$/u.test(value)
+  );
+}
+
+function multipartUploadBody(options: {
+  fileId: FileId;
+  metadata: Readonly<Record<string, unknown>>;
+  mimeType: string;
+  content: Uint8Array;
+}): { body: Uint8Array; boundary: string } {
+  const digest = createHash("sha256")
+    .update(options.fileId, "utf8")
+    .update(options.content)
+    .digest("hex")
+    .slice(0, 32);
+  const boundary = `eyeball_${digest}`;
+  const prefix = Buffer.from(
+    [
+      `--${boundary}`,
+      "Content-Type: application/json; charset=UTF-8",
+      "",
+      JSON.stringify(options.metadata),
+      `--${boundary}`,
+      `Content-Type: ${options.mimeType}`,
+      "",
+      "",
+    ].join("\r\n"),
+    "utf8",
+  );
+  const suffix = Buffer.from(`\r\n--${boundary}--\r\n`, "utf8");
+  return {
+    boundary,
+    body: Uint8Array.from(Buffer.concat([prefix, options.content, suffix])),
+  };
+}
+
+async function uploadStagedFile(options: {
+  context: AdapterContext;
+  fileId: FileId;
+  metadata: Readonly<Record<string, unknown>>;
+  mimeType: string;
+  content: Uint8Array;
+}): Promise<Readonly<Record<string, unknown>>> {
+  if (options.content.byteLength <= MULTIPART_UPLOAD_MAX_BYTES) {
+    const upload = multipartUploadBody(options);
+    return jsonObject(
+      options.context,
+      queryPath("upload/drive/v3/files", {
+        uploadType: "multipart",
+        fields: UPLOAD_FIELDS,
+      }),
+      {
+        method: "POST",
+        headers: {
+          "Content-Type": `multipart/related; boundary=${upload.boundary}`,
+        },
+        body: upload.body,
+      },
+    );
+  }
+
+  const initiation = await createProviderHttpClient(options.context)(
+    queryPath("upload/drive/v3/files", {
+      uploadType: "resumable",
+      fields: UPLOAD_FIELDS,
+    }),
+    {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json; charset=UTF-8",
+        "X-Upload-Content-Type": options.mimeType,
+        "X-Upload-Content-Length": String(options.content.byteLength),
+      },
+      body: JSON.stringify(options.metadata),
+    },
+  );
+  const location = initiation.headers.get("Location");
+  if (location === null) {
+    throw new EyeballError({
+      code: TOOL_ERROR_CODES.PROVIDER_ERROR,
+      message: "Google Drive did not return a resumable upload location.",
+      providerDetail: { toolkit: options.context.tool.toolkit },
+    });
+  }
+  return jsonObject(options.context, location, {
+    method: "PUT",
+    headers: { "Content-Type": options.mimeType },
+    body: Uint8Array.from(options.content),
+  });
 }
 
 function escapeDriveQuery(value: string): string {
@@ -170,6 +279,42 @@ export class GoogleDriveAdapter implements ToolkitAdapter {
   ): Promise<JsonValue> {
     const input = context.canonicalInput;
     const parentId = stringValue(input, "parentId");
+    const stagedFileId = stringValue(input, "fileId");
+    if (!folder && stagedFileId !== undefined) {
+      if (!isFileId(stagedFileId)) {
+        throw new EyeballError({
+          code: TOOL_ERROR_CODES.INVALID_INPUT,
+          message:
+            "google-drive.upload_file fileId must be a file_* identifier.",
+        });
+      }
+      const staged = await context.files.resolve(stagedFileId);
+      const name = stringValue(input, "name") ?? staged.meta.name;
+      const mimeType = stringValue(input, "mimeType") ?? staged.meta.mimeType;
+      if (!validMimeType(mimeType)) {
+        throw new EyeballError({
+          code: TOOL_ERROR_CODES.INVALID_INPUT,
+          message:
+            "google-drive.upload_file mimeType must be a valid MIME type.",
+        });
+      }
+      const metadata = {
+        name,
+        mimeType,
+        ...(parentId === undefined ? {} : { parents: [parentId] }),
+        ...(stringValue(input, "description") === undefined
+          ? {}
+          : { description: stringValue(input, "description") }),
+      };
+      const result = await uploadStagedFile({
+        context,
+        fileId: staged.meta.fileId,
+        metadata,
+        mimeType,
+        content: staged.content,
+      });
+      return asJson({ file: file(context, result) });
+    }
     const content = folder
       ? ""
       : decodedContent(

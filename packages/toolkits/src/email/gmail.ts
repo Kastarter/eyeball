@@ -1,3 +1,4 @@
+import { createHash } from "node:crypto";
 import type { AdapterContext, JsonValue, ToolkitAdapter } from "@eyeball/core";
 import {
   createProviderHttpClient,
@@ -14,7 +15,9 @@ import {
   numberValue,
   optionalProviderString,
   providerError,
+  type ResolvedEmailAttachment,
   requiredStringField,
+  resolveAttachments,
   splitAddresses,
   stringArrayValue,
   stringValue,
@@ -44,6 +47,46 @@ function decodeBase64Url(value: string): string {
 
 function sanitizeHeader(value: string): string {
   return value.replace(/[\r\n]+/gu, " ").trim();
+}
+
+function quotedHeaderParameter(value: string): string {
+  return value
+    .replace(/[^\u0020-\u007e]/gu, "_")
+    .replaceAll("\\", "\\\\")
+    .replaceAll('"', '\\"');
+}
+
+function encodedHeaderParameter(value: string): string {
+  return [...Buffer.from(value, "utf8")]
+    .map((byte) => {
+      const character = String.fromCharCode(byte);
+      return /[A-Za-z0-9!#$&+.^_`|~-]/u.test(character)
+        ? character
+        : `%${byte.toString(16).toUpperCase().padStart(2, "0")}`;
+    })
+    .join("");
+}
+
+function wrappedBase64(content: Uint8Array): string {
+  return (
+    Buffer.from(content)
+      .toString("base64")
+      .match(/.{1,76}/gu)
+      ?.join("\r\n") ?? ""
+  );
+}
+
+function mimeBoundary(
+  input: Readonly<Record<string, unknown>>,
+  attachments: readonly ResolvedEmailAttachment[],
+): string {
+  const digest = createHash("sha256");
+  digest.update(stringValue(input, "body") ?? "", "utf8");
+  for (const attachment of attachments) {
+    digest.update(attachment.fileId, "utf8");
+    digest.update(attachment.content);
+  }
+  return `eyeball_${digest.digest("hex").slice(0, 32)}`;
 }
 
 function headersOf(message: Readonly<Record<string, unknown>>): GmailHeader[] {
@@ -209,6 +252,7 @@ function composeRaw(
     cc?: readonly string[];
     bcc?: readonly string[];
   } = {},
+  attachments: readonly ResolvedEmailAttachment[] = [],
 ): string {
   const to = options.to ?? stringArrayValue(input, "to");
   const cc = options.cc ?? stringArrayValue(input, "cc");
@@ -233,13 +277,42 @@ function composeRaw(
   headers.push(
     `Subject: ${sanitizeHeader(options.subject ?? stringValue(input, "subject") ?? "")}`,
     "MIME-Version: 1.0",
-    `Content-Type: ${
-      stringValue(input, "bodyFormat") === "html" ? "text/html" : "text/plain"
-    }; charset=UTF-8`,
-    "Content-Transfer-Encoding: 8bit",
   );
+  const bodyType =
+    stringValue(input, "bodyFormat") === "html" ? "text/html" : "text/plain";
+  const body = stringValue(input, "body") ?? "";
+  if (attachments.length === 0) {
+    headers.push(
+      `Content-Type: ${bodyType}; charset=UTF-8`,
+      "Content-Transfer-Encoding: 8bit",
+    );
+    return encodeBase64Url(`${headers.join("\r\n")}\r\n\r\n${body}`);
+  }
+
+  const boundary = mimeBoundary(input, attachments);
+  headers.push(`Content-Type: multipart/mixed; boundary="${boundary}"`);
+  const parts = [
+    [
+      `--${boundary}`,
+      `Content-Type: ${bodyType}; charset=UTF-8`,
+      "Content-Transfer-Encoding: 8bit",
+      "",
+      body,
+    ].join("\r\n"),
+    ...attachments.map((attachment) =>
+      [
+        `--${boundary}`,
+        `Content-Type: ${attachment.mimeType}`,
+        `Content-Disposition: attachment; filename="${quotedHeaderParameter(attachment.name)}"; filename*=UTF-8''${encodedHeaderParameter(attachment.name)}`,
+        "Content-Transfer-Encoding: base64",
+        "",
+        wrappedBase64(attachment.content),
+      ].join("\r\n"),
+    ),
+    `--${boundary}--`,
+  ];
   return encodeBase64Url(
-    `${headers.join("\r\n")}\r\n\r\n${stringValue(input, "body") ?? ""}`,
+    `${headers.join("\r\n")}\r\n\r\n${parts.join("\r\n")}\r\n`,
   );
 }
 
@@ -368,8 +441,8 @@ export class GmailAdapter implements ToolkitAdapter {
   }
 
   private async sendEmail(context: AdapterContext): Promise<JsonValue> {
-    assertNoAttachments(context);
     const input = context.canonicalInput;
+    const attachments = await resolveAttachments(context);
     const recipients = unique([
       ...stringArrayValue(input, "to"),
       ...stringArrayValue(input, "cc"),
@@ -379,9 +452,13 @@ export class GmailAdapter implements ToolkitAdapter {
     const response = await createProviderHttpClient(context)(
       "gmail/v1/users/me/messages/send",
       jsonRequest({
-        raw: composeRaw(input, {
-          ...(sendAs === undefined ? {} : { from: sendAs }),
-        }),
+        raw: composeRaw(
+          input,
+          {
+            ...(sendAs === undefined ? {} : { from: sendAs }),
+          },
+          attachments,
+        ),
       }),
     );
     const body = await jsonObject(context, response);
@@ -492,10 +569,12 @@ export class GmailAdapter implements ToolkitAdapter {
   }
 
   private async createDraft(context: AdapterContext): Promise<JsonValue> {
-    assertNoAttachments(context);
+    const attachments = await resolveAttachments(context);
     const response = await createProviderHttpClient(context)(
       "gmail/v1/users/me/drafts",
-      jsonRequest({ message: { raw: composeRaw(context.canonicalInput) } }),
+      jsonRequest({
+        message: { raw: composeRaw(context.canonicalInput, {}, attachments) },
+      }),
     );
     const body = await jsonObject(context, response);
     const message = isRecord(body.message) ? body.message : {};

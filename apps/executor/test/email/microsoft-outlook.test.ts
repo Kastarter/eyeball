@@ -66,6 +66,69 @@ describe("Microsoft Outlook email adapter", () => {
     expect(storeRecords<OutlookMessage>(provider, "messages")).toHaveLength(1);
   });
 
+  it("maps a staged file to a Graph send attachment", async () => {
+    const provider = createMicrosoftOutlookMock();
+    await provider.seed(microsoftOutlookFixtures.default);
+    const { harness } = outlookHarness(provider);
+    const attachment = await harness.stageFile({
+      name: "notes.txt",
+      mimeType: "text/plain",
+      content: "hello outlook",
+    });
+    executionOutput(
+      await harness.execute("microsoft-outlook.send_email", {
+        to: ["recipient@example.com"],
+        subject: "Outlook attachment",
+        body: "The file is attached.",
+        attachments: [attachment],
+      }),
+    );
+    const expected = {
+      "@odata.type": "#microsoft.graph.fileAttachment",
+      name: "notes.txt",
+      contentType: "text/plain",
+      contentBytes: Buffer.from("hello outlook", "utf8").toString("base64"),
+    };
+    const requests = harness.providerRequests();
+    const sendRequest = requests.find((request) =>
+      request.url.endsWith("/v1.0/me/sendMail"),
+    );
+    expect(JSON.parse(sendRequest?.body ?? "{}")).toMatchObject({
+      message: { attachments: [expected] },
+    });
+
+    const beforeUnsupported = harness.providerRequests().length;
+    for (const [tool, input] of [
+      [
+        "microsoft-outlook.reply_to_email",
+        {
+          messageId: "outlook_msg_default_000001",
+          body: "This path must fail before provider I/O.",
+          attachments: [attachment],
+        },
+      ],
+      [
+        "microsoft-outlook.create_draft",
+        {
+          body: "This path must fail before provider I/O.",
+          attachments: [attachment],
+        },
+      ],
+    ] as const) {
+      const unsupported = await harness.execute(tool, input);
+      expect(unsupported.body).toMatchObject({
+        status: "failed",
+        error: {
+          code: "not_supported",
+          message: expect.stringContaining(
+            "does not support staged attachments",
+          ),
+        },
+      });
+    }
+    expect(harness.providerRequests()).toHaveLength(beforeUnsupported);
+  });
+
   it("gets, searches with $search, replies, drafts, groups threads, and resolves folders", async () => {
     const provider = createMicrosoftOutlookMock();
     await provider.seed(microsoftOutlookFixtures.default);

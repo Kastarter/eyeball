@@ -37,11 +37,22 @@ export const emailFixtures = defineCapabilityFixtures("email", {
     }),
   },
   create_draft: {
-    input: {
+    input: async (context) => ({
       to: ["contract-recipient@example.com"],
       subject: "Contract fixture draft",
       body: "Canonical contract draft body.",
-    },
+      ...(context.provider === "gmail"
+        ? {
+            attachments: [
+              await context.stageFile({
+                name: "contract-draft.txt",
+                mimeType: "text/plain",
+                content: "Canonical contract draft attachment.",
+              }),
+            ],
+          }
+        : {}),
+    }),
   },
   get_email: {
     dependencies: ["send_email"],
@@ -71,10 +82,22 @@ export const emailFixtures = defineCapabilityFixtures("email", {
   },
   search_emails: { input: { query: "fixture", pageSize: 10 } },
   send_email: {
-    input: (context) => ({
+    input: async (context) => ({
       to: ["contract-recipient@example.com"],
       subject: "Contract fixture delivery",
       body: "Canonical contract delivery body.",
+      ...(context.provider === "gmail" ||
+      context.provider === "microsoft-outlook"
+        ? {
+            attachments: [
+              await context.stageFile({
+                name: "contract-attachment.txt",
+                mimeType: "text/plain",
+                content: "Canonical contract attachment.",
+              }),
+            ],
+          }
+        : {}),
       ...sendingExtension(context.provider),
     }),
   },

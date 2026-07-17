@@ -13,11 +13,14 @@ export type PollingExecutionStatus = ExecutionStatus;
 
 export type ExecutionId = `exe_${string}`;
 export type ConnectionId = `conn_${string}`;
+export type FileId = `file_${string}`;
+/** @deprecated Use FileId. */
+export type StagedFileId = FileId;
 export type IdempotencyKey = string;
 
 const ID_SEED_PATTERN = /^[A-Za-z0-9][A-Za-z0-9_-]{0,127}$/;
 
-function createPrefixedId<Prefix extends "exe" | "conn">(
+function createPrefixedId<Prefix extends "exe" | "conn" | "file">(
   prefix: Prefix,
   seed?: string,
 ): `${Prefix}_${string}` {
@@ -40,12 +43,52 @@ export function createConnectionId(seed?: string): ConnectionId {
   return createPrefixedId("conn", seed);
 }
 
+/** Creates a `file_*` ID; passing a seed makes the result deterministic for tests. */
+export function createFileId(seed?: string): FileId {
+  return createPrefixedId("file", seed);
+}
+
+/** @deprecated Use createFileId. */
+export const createStagedFileId = createFileId;
+
 export function isExecutionId(value: string): value is ExecutionId {
   return value.startsWith("exe_") && ID_SEED_PATTERN.test(value.slice(4));
 }
 
 export function isConnectionId(value: string): value is ConnectionId {
   return value.startsWith("conn_") && ID_SEED_PATTERN.test(value.slice(5));
+}
+
+export function isFileId(value: string): value is FileId {
+  return value.startsWith("file_") && ID_SEED_PATTERN.test(value.slice(5));
+}
+
+/** @deprecated Use isFileId. */
+export const isStagedFileId = isFileId;
+
+/** Preferred canonical reference to bytes staged through the files API. */
+export interface StagedFileReference {
+  fileId: FileId;
+  /** Optional consumer-visible name overriding the staged metadata. */
+  name?: string;
+  /** Optional MIME type overriding the staged metadata. */
+  mimeType?: string;
+}
+
+/** Catalog 1.0 reference shape retained for backward-compatible inputs. */
+export interface LegacyStagedFileReference {
+  fileId: FileId;
+  fileName: string;
+  contentType?: string;
+}
+
+/** Public metadata returned by the project-scoped staged-file API. */
+export interface StagedFileMetadata {
+  fileId: FileId;
+  name: string;
+  mimeType: string;
+  size: number;
+  expiresAt: string;
 }
 
 export interface ExecuteRequest {

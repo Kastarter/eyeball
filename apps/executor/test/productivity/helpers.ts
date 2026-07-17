@@ -1,4 +1,8 @@
-import type { JsonValue, ResolvedCredential } from "@eyeball/core";
+import type {
+  JsonValue,
+  ResolvedCredential,
+  StagedFileReference,
+} from "@eyeball/core";
 import type { ProviderMock } from "../../../../mocks/packages/mock-kit/dist/index.js";
 import {
   createInProcessExecutorHarness,
@@ -15,7 +19,19 @@ export interface ProductivityMockHarness {
     tool: string,
     input: Readonly<Record<string, JsonValue>>,
   ): Promise<ExecuteResult>;
+  stageFile(options: {
+    name: string;
+    mimeType?: string;
+    content: string | Uint8Array;
+  }): Promise<StagedFileReference>;
   providerRequestCount(): number;
+  providerRequests(): readonly {
+    url: string;
+    method: string;
+    body: string;
+    bodyBase64: string;
+    contentType: string | null;
+  }[];
 }
 
 export function createProductivityMockHarness(
@@ -37,7 +53,9 @@ export function createProductivityMockHarness(
       const result = await harness.execute(tool, input);
       return { status: result.initialStatus, body: result.terminal };
     },
+    stageFile: (options) => harness.stageFile(options),
     providerRequestCount: harness.providerRequestCount,
+    providerRequests: harness.providerRequests,
   };
 }
 

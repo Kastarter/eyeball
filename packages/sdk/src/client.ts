@@ -10,10 +10,13 @@ import {
   type ExecutionRecord,
   type ExecutionResult,
   EyeballError,
+  type FileId,
   fromRestrictedToolName,
   isCanonicalToolName,
   type JsonValue,
   type QualifiedToolName,
+  type StagedFileMetadata,
+  type StagedFileReference,
   TOOL_ERROR_CODES,
   type ToolDefinition,
   toAiSdkTools,
@@ -39,6 +42,7 @@ import type {
   RunToolOptions,
   SearchToolsOptions,
   SearchToolsResult,
+  UploadFileOptions,
   WaitForExecutionOptions,
 } from "./types.js";
 
@@ -123,6 +127,52 @@ function systemSleep(milliseconds: number): Promise<void> {
 }
 
 const systemClock: EyeballClock = { now: Date.now };
+
+function base64Content(content: UploadFileOptions["content"]): string {
+  const bytes =
+    typeof content === "string" ? new TextEncoder().encode(content) : content;
+  let binary = "";
+  const chunkSize = 32_768;
+  for (let offset = 0; offset < bytes.byteLength; offset += chunkSize) {
+    binary += String.fromCharCode(
+      ...bytes.subarray(offset, Math.min(offset + chunkSize, bytes.byteLength)),
+    );
+  }
+  return btoa(binary);
+}
+
+export class FilesClient {
+  readonly #context: ClientContext;
+
+  constructor(context: ClientContext) {
+    this.#context = context;
+  }
+
+  async upload(options: UploadFileOptions): Promise<StagedFileReference> {
+    const metadata = await this.#context.http.request<StagedFileMetadata>(
+      "/v1/files",
+      {
+        method: "POST",
+        body: JSON.stringify({
+          name: options.name,
+          mimeType: options.mimeType ?? "application/octet-stream",
+          content: base64Content(options.content),
+        }),
+      },
+    );
+    return {
+      fileId: metadata.fileId,
+      name: metadata.name,
+      mimeType: metadata.mimeType,
+    };
+  }
+
+  get(fileId: FileId): Promise<StagedFileMetadata> {
+    return this.#context.http.request(
+      `/v1/files/${encodeURIComponent(fileId)}`,
+    );
+  }
+}
 
 export class ExecutionsClient {
   readonly #context: ClientContext;
@@ -461,6 +511,7 @@ export class Eyeball {
   readonly tools: ToolsClient;
   readonly executions: ExecutionsClient;
   readonly connections: ConnectionsClient;
+  readonly files: FilesClient;
 
   constructor(options: EyeballOptions) {
     const fetchImpl = options.fetch ?? globalThis.fetch;
@@ -490,5 +541,6 @@ export class Eyeball {
     this.executions = new ExecutionsClient(context);
     this.tools = new ToolsClient(context, this.executions);
     this.connections = new ConnectionsClient(context);
+    this.files = new FilesClient(context);
   }
 }

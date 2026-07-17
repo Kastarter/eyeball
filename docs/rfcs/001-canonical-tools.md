@@ -153,7 +153,7 @@ export const gmailSendEmail: ToolDefinition = {
     "content to external recipients; verify recipients, subject, and body first.",
   inputSchema: {
     $schema: "https://json-schema.org/draft/2020-12/schema",
-    $id: "urn:eyeball:email:send_email:1.0.0:gmail",
+    $id: "urn:eyeball:email:send_email:1.1.0:gmail",
     type: "object",
     additionalProperties: false,
     required: ["to", "subject", "body"],
@@ -187,14 +187,29 @@ export const gmailSendEmail: ToolDefinition = {
         maxItems: 25,
         description: "Previously staged Eyeball files to attach.",
         items: {
-          type: "object",
-          additionalProperties: false,
-          required: ["fileId", "fileName"],
-          properties: {
-            fileId: { type: "string", minLength: 1 },
-            fileName: { type: "string", minLength: 1 },
-            contentType: { type: "string" },
-          },
+          anyOf: [
+            {
+              type: "object",
+              additionalProperties: false,
+              required: ["fileId"],
+              properties: {
+                fileId: { type: "string", pattern: "^file_" },
+                name: { type: "string", minLength: 1 },
+                mimeType: { type: "string", minLength: 1 },
+              },
+            },
+            {
+              type: "object",
+              additionalProperties: false,
+              required: ["fileId", "fileName"],
+              deprecated: true,
+              properties: {
+                fileId: { type: "string", minLength: 1 },
+                fileName: { type: "string", minLength: 1 },
+                contentType: { type: "string" },
+              },
+            },
+          ],
         },
       },
       x_provider: {
@@ -218,7 +233,7 @@ export const gmailSendEmail: ToolDefinition = {
   },
   outputSchema: {
     $schema: "https://json-schema.org/draft/2020-12/schema",
-    $id: "urn:eyeball:email:send_email:output:1.0.0:gmail",
+    $id: "urn:eyeball:email:send_email:output:1.1.0:gmail",
     type: "object",
     additionalProperties: false,
     required: ["messageId", "acceptedRecipients"],
@@ -237,7 +252,7 @@ export const gmailSendEmail: ToolDefinition = {
     idempotent: false,
     async: false,
   },
-  version: "1.0.0",
+  version: "1.1.0",
 };
 ```
 
@@ -456,7 +471,37 @@ platform authentication envelope defined by the control-plane API, outside this 
 request for an `async: true` tool is rejected before allocation with HTTP 422 and
 `invalid_input`.
 
-### 3.2 Annotation-driven async behavior
+### 3.2 Project-scoped staged files
+
+`POST /v1/files` stages bytes for later adapter use. The primary wire format is JSON with
+canonical padded base64 content:
+
+```http
+POST /v1/files
+Authorization: Bearer ey_live_...
+Content-Type: application/json
+
+{"name":"receipt.pdf","mimeType":"application/pdf","content":"JVBERi0xLjcK...=="}
+```
+
+```json
+{"fileId":"file_01JZ7F4Y8E7H48H3Y2NQ4J5H8P","name":"receipt.pdf","mimeType":"application/pdf","size":18422,"expiresAt":"2026-07-17T14:00:00.000Z"}
+```
+
+`GET /v1/files/:id` returns that metadata only. There is no public content-download route:
+adapter execution resolves bytes through the project-bound `AdapterContext.files` resolver.
+The `FileStore` lookup key includes the authenticated project, and a missing, expired, or
+cross-project identifier returns the same `not_found` response. The API uses the same API-key
+and pinned-user middleware as every `/v1/*` route.
+
+The process-local defaults are a 25 MiB decoded-byte limit and a one-hour TTL. Operators may
+set `EYEBALL_FILE_MAX_BYTES` and `EYEBALL_FILE_TTL_MS`; durable disk/object-store implementations
+replace `InMemoryFileStore` behind the same `FileStore` interface. Expiry is evaluated against
+the injected executor clock. Canonical email attachments use `{ fileId, name?, mimeType? }`.
+`file_storage_docs.upload_file` accepts `fileId` instead of inline `content`, with exactly one
+content source per call.
+
+### 3.3 Annotation-driven async behavior
 
 If `annotations.async` is true, `mode: "sync"` fails as described above. A tool with
 `async: false` accepts either mode; async mode queues it. The SDK defaults the mode from
@@ -468,7 +513,7 @@ Catalog 1.0 marks these capability contracts async by nature:
 - `voice_telephony.start_voice_pipeline`
 - `web_search_scraping.crawl_site`
 
-### 3.3 `gmail.send_email` sync example
+### 3.4 `gmail.send_email` sync example
 
 ```http
 POST /v1/execute
@@ -480,10 +525,10 @@ Content-Type: application/json
 ```
 
 ```json
-{"executionId":"exe_01JZ6W8V3Y8XKJX2W4ZJ6C6M7P","tool":"gmail.send_email","toolVersion":"1.0.0","catalogVersion":"1.0","status":"succeeded","output":{"messageId":"18f7b31a52","threadId":"18f7b31a52","acceptedRecipients":["buyer@example.com"]},"latencyMs":842}
+{"executionId":"exe_01JZ6W8V3Y8XKJX2W4ZJ6C6M7P","tool":"gmail.send_email","toolVersion":"1.1.0","catalogVersion":"1.1","status":"succeeded","output":{"messageId":"18f7b31a52","threadId":"18f7b31a52","acceptedRecipients":["buyer@example.com"]},"latencyMs":842}
 ```
 
-### 3.4 `twilio.start_call` async example
+### 3.5 `twilio.start_call` async example
 
 The separate Voice Agent RFC owns the referenced agent's model, prompt, speech,
 transport, tools, safety policy, and recording policy.
@@ -507,7 +552,7 @@ Polling later may return:
 {"executionId":"exe_01JZ6WA0Q73ZQ5B51SRYB6M4Z8","tool":"twilio.start_call","toolVersion":"1.0.0","catalogVersion":"1.0","userId":"customer_481","createdAt":"2026-07-16T00:00:00Z","startedAt":"2026-07-16T00:00:01Z","completedAt":"2026-07-16T00:01:35Z","status":"succeeded","output":{"callId":"call_01JZ6WA6T6J78X7W39P4Q7J12K","state":"completed","durationSeconds":94},"latencyMs":95231}
 ```
 
-### 3.5 Idempotency
+### 3.6 Idempotency
 
 `Idempotency-Key` is REQUIRED when `annotations.readOnly` is false and OPTIONAL for
 reads. Keys are scoped to project, qualified tool, user, caller-supplied connection (or an
@@ -528,7 +573,7 @@ surface keys enter the same executor scope, replay, conflict, and retention rule
 converter callback that does not receive a stable provider call ID still gets a fresh SDK UUID
 per invocation and remains subject to the deferred correlation decision in Section 8.
 
-### 3.6 Terminal webhook delivery
+### 3.7 Terminal webhook delivery
 
 Webhook endpoints are project configuration, not fields in `ExecuteRequest`.
 
@@ -919,19 +964,25 @@ safety, or execution change. Catalog minor increments for additive providers/too
 compatible revisions. Old catalog majors remain executable for the published deprecation
 window; aliases are discovery-only and resolve to one explicit definition before execution.
 
+The staged-file revision is input widening, not a breaking replacement: email retains the
+deprecated `{ fileId, fileName, contentType? }` branch while adding the preferred
+`{ fileId, name?, mimeType? }` branch, and storage adds `fileId` as an alternative to inline
+content. Those tools therefore move to `1.1.0`, not `2.0.0`. The source catalog remains `1.1`
+because this repository is still the unpublished package preview; a published catalog would
+receive the next compatible catalog minor before this revision shipped.
+
 ## 8. Deferred companion decisions
 
 1. The Voice Agent RFC must finalize how catalog 1.0 `voiceAgentId` maps to catalog 1.1
    agent IDs and immutable revisions.
-2. A file-transfer RFC must define staged `fileId` upload/download and retention.
-3. The control-plane RFC must define webhook endpoint CRUD and secret rotation.
-4. MCP 2025-11-25 Tasks are experimental and adapter-versioned; a future task wire profile
+2. The control-plane RFC must define webhook endpoint CRUD and secret rotation.
+3. MCP 2025-11-25 Tasks are experimental and adapter-versioned; a future task wire profile
    may replace them without changing Eyeball's canonical execution records.
-5. Each converter needs a version-pinned schema compatibility fixture suite.
-6. Converter-owned callbacks that do not receive a stable framework call ID, including the
+4. Each converter needs a version-pinned schema compatibility fixture suite.
+5. Converter-owned callbacks that do not receive a stable framework call ID, including the
    current Vercel AI SDK callback shape, need an explicit cross-invocation retry-correlation
    contract before their mutation quickstarts are release-ready.
-7. A version-pinned LangChain converter needs the same name-map, schema, invocation, and
+6. A version-pinned LangChain converter needs the same name-map, schema, invocation, and
    losslessness guarantees as the four formats specified in Section 6, or it must remain
    outside the advertised launch formats.
 

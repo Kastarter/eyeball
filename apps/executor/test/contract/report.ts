@@ -1,7 +1,7 @@
 import { writeFileSync } from "node:fs";
 
 export type ContractOutcome = "pass" | "not_supported" | "skipped" | "fail";
-export const CONTRACT_SUITE_VERSION = "1.0.0";
+export const CONTRACT_SUITE_VERSION = "1.1.0";
 
 export interface ContractReportRow {
   readonly capability: string;

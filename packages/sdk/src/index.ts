@@ -9,9 +9,12 @@ export {
   type ExecutionResult,
   type ExecutionStatus,
   EyeballError,
+  type FileId,
   type JsonValue,
   type NormalizedToolError,
   type QualifiedToolName,
+  type StagedFileMetadata,
+  type StagedFileReference,
   TOOL_ERROR_CODES,
   type ToolDefinition,
   type ToolNameMap,
@@ -20,6 +23,7 @@ export {
   ConnectionsClient,
   ExecutionsClient,
   Eyeball,
+  FilesClient,
   ToolsClient,
 } from "./client.js";
 export { executeToolCalls } from "./tool-calls.js";

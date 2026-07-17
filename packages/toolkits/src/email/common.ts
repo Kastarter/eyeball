@@ -1,6 +1,8 @@
 import {
   type AdapterContext,
   EyeballError,
+  type FileId,
+  isFileId,
   type JsonValue,
   TOOL_ERROR_CODES,
 } from "@eyeball/core";
@@ -117,10 +119,80 @@ export function assertNoAttachments(context: AdapterContext): void {
   if (Array.isArray(attachments) && attachments.length > 0) {
     throw new EyeballError({
       code: TOOL_ERROR_CODES.NOT_SUPPORTED,
-      message:
-        "Staged email attachments require a file-content resolver that is not available to this adapter runtime.",
+      message: `${context.tool.name} does not support staged attachments.`,
     });
   }
+}
+
+export interface ResolvedEmailAttachment {
+  fileId: FileId;
+  name: string;
+  mimeType: string;
+  content: Uint8Array;
+}
+
+/** Resolves canonical attachment references within the executor-bound project. */
+export async function resolveAttachments(
+  context: AdapterContext,
+): Promise<ResolvedEmailAttachment[]> {
+  const values = context.canonicalInput.attachments;
+  if (values === undefined) return [];
+  if (!Array.isArray(values)) {
+    throw new EyeballError({
+      code: TOOL_ERROR_CODES.INVALID_INPUT,
+      message: "attachments must be an array of staged-file references.",
+    });
+  }
+
+  const attachments: ResolvedEmailAttachment[] = [];
+  for (const [index, value] of values.entries()) {
+    if (!isRecord(value)) {
+      throw new EyeballError({
+        code: TOOL_ERROR_CODES.INVALID_INPUT,
+        message: `attachments[${index}] must be an object.`,
+      });
+    }
+    const fileId = stringValue(value, "fileId");
+    if (fileId === undefined || !isFileId(fileId)) {
+      throw new EyeballError({
+        code: TOOL_ERROR_CODES.INVALID_INPUT,
+        message: `attachments[${index}].fileId must be a file_* identifier.`,
+      });
+    }
+    const file = await context.files.resolve(fileId);
+    const name =
+      stringValue(value, "name") ??
+      stringValue(value, "fileName") ??
+      file.meta.name;
+    const mimeType =
+      stringValue(value, "mimeType") ??
+      stringValue(value, "contentType") ??
+      file.meta.mimeType;
+    if (name.includes("\0") || name.includes("\r") || name.includes("\n")) {
+      throw new EyeballError({
+        code: TOOL_ERROR_CODES.INVALID_INPUT,
+        message: `attachments[${index}].name contains unsafe characters.`,
+      });
+    }
+    if (
+      mimeType.includes("\0") ||
+      mimeType.includes("\r") ||
+      mimeType.includes("\n") ||
+      !/^[^\s/;]+\/[^\s;]+(?:\s*;.*)?$/u.test(mimeType)
+    ) {
+      throw new EyeballError({
+        code: TOOL_ERROR_CODES.INVALID_INPUT,
+        message: `attachments[${index}].mimeType is invalid.`,
+      });
+    }
+    attachments.push({
+      fileId: file.meta.fileId,
+      name,
+      mimeType,
+      content: Uint8Array.from(file.content),
+    });
+  }
+  return attachments;
 }
 
 export function jsonRequest(
