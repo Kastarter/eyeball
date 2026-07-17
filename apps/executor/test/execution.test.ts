@@ -427,8 +427,11 @@ describe("RFC 001 execution API", () => {
     expect(poll.status).toBe(200);
     expect(await poll.json()).toMatchObject({
       executionId: "exe_test1",
+      projectId: PROJECT_A,
       userId: USER_1,
       status: "succeeded",
+      input: { message: "queued", uppercase: false },
+      mode: "async",
       output: { echo: "queued", uppercase: false },
       createdAt: expect.any(String),
       startedAt: expect.any(String),
@@ -475,6 +478,16 @@ describe("RFC 001 execution API", () => {
     expect((await first.json()) as object).toEqual(await second.json());
     expect(harness.calls).toHaveLength(1);
     expect(harness.credentialResolveCalls).toBe(1);
+    const detail = await authenticatedGet(
+      harness.app,
+      "/v1/executions/exe_test1",
+    );
+    await expect(detail.json()).resolves.toMatchObject({
+      projectId: PROJECT_A,
+      idempotencyKey: "same-request",
+      input: { message: "same", uppercase: false },
+      mode: "sync",
+    });
   });
 
   it("preserves a trusted reserved ID across idempotent worker retries", async () => {

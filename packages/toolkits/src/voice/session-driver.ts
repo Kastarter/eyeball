@@ -124,6 +124,15 @@ export interface VoiceSessionDriverOptions
   timeoutMs?: number;
 }
 
+export interface VoiceSessionDriverTickOptions
+  extends VoiceSessionExecutionTargetOptions {
+  sessionRef: VoiceSessionRef;
+  agentRevision: VoiceSessionAgentRevision;
+  pipecatBaseUrl: string;
+  fetch?: typeof globalThis.fetch;
+  turnHandler?: VoiceSessionTurnHandler;
+}
+
 export interface VoiceSessionHumanTurn {
   sessionId: string;
   eventSequence: number;
@@ -159,6 +168,16 @@ export interface VoiceSessionDriverResult {
   sessionId: string;
   state: Extract<VoiceAgentSessionState, "completed" | "failed" | "abandoned">;
   lastSequence: number;
+  dispatches: readonly VoiceSessionDispatchRecord[];
+  agentTurns: readonly VoiceSessionAgentTurn[];
+}
+
+/** One bounded worker pass for request-driven development harnesses. */
+export interface VoiceSessionDriverTickResult {
+  sessionId: string;
+  state: VoiceAgentSessionState;
+  lastSequence: number;
+  terminal: boolean;
   dispatches: readonly VoiceSessionDispatchRecord[];
   agentTurns: readonly VoiceSessionAgentTurn[];
 }
@@ -821,6 +840,188 @@ function terminalState(
   state: VoiceAgentSessionState,
 ): state is VoiceSessionDriverResult["state"] {
   return TERMINAL_SESSION_STATES.has(state);
+}
+
+/**
+ * Processes the currently durable Pipecat events and performs at most one
+ * external action (a tool dispatch or an agent turn). It never sleeps or
+ * advances time; callers own scheduling and persist the returned cursor.
+ */
+export async function runVoiceSessionDriverTick(
+  options: VoiceSessionDriverTickOptions,
+): Promise<VoiceSessionDriverTickResult> {
+  executionTarget(options);
+  const initialSequence = options.sessionRef.afterSequence ?? 0;
+  if (!Number.isSafeInteger(initialSequence) || initialSequence < 0) {
+    throw new VoiceSessionDriverError(
+      "sessionRef.afterSequence must be a non-negative integer.",
+    );
+  }
+  const fetchImpl = options.fetch ?? globalThis.fetch;
+  const before = await sessionSnapshot(
+    fetchImpl,
+    options.pipecatBaseUrl,
+    options.sessionRef.sessionId,
+  );
+  assertSessionScope(before, options.sessionRef, options.agentRevision);
+  if (initialSequence > before.lastEventSequence) {
+    throw new VoiceSessionDriverError(
+      "The voice-session event cursor is ahead of Pipecat's durable sequence.",
+    );
+  }
+
+  const observedEvents = new Map<number, VoiceAgentSessionEvent>();
+  const dispatches: VoiceSessionDispatchRecord[] = [];
+  const agentTurns: VoiceSessionAgentTurn[] = [];
+  let cursor = initialSequence;
+  for (;;) {
+    const page = await eventPage(
+      fetchImpl,
+      options.pipecatBaseUrl,
+      options.sessionRef.sessionId,
+      cursor,
+    );
+    for (const event of page.events) {
+      if (
+        event.sessionId !== options.sessionRef.sessionId ||
+        event.sequence !== cursor + 1
+      ) {
+        throw new VoiceSessionDriverError(
+          "Pipecat returned events outside the requested gap-free session sequence.",
+        );
+      }
+      observedEvents.set(event.sequence, event);
+      cursor = event.sequence;
+    }
+    if (page.nextSequence !== cursor) {
+      throw new VoiceSessionDriverError(
+        "Pipecat returned an inconsistent event cursor.",
+      );
+    }
+    if (!page.hasMore) {
+      break;
+    }
+    if (page.events.length === 0) {
+      throw new VoiceSessionDriverError(
+        "Pipecat returned an event page that cannot make progress.",
+      );
+    }
+  }
+
+  async function loadHistory(): Promise<void> {
+    for (const event of await eventHistory(
+      fetchImpl,
+      options.pipecatBaseUrl,
+      options.sessionRef.sessionId,
+    )) {
+      observedEvents.set(event.sequence, event);
+    }
+  }
+
+  let pendingEvent = [...observedEvents.values()].find((event) => {
+    const call = toolCallFromEvent(event);
+    return call?.eventExecutionId === before.pendingToolCall?.executionId;
+  });
+  if (before.pendingToolCall !== undefined && pendingEvent === undefined) {
+    await loadHistory();
+    pendingEvent = [...observedEvents.values()].find((event) => {
+      const call = toolCallFromEvent(event);
+      return call?.eventExecutionId === before.pendingToolCall?.executionId;
+    });
+  }
+
+  const pendingToolCall =
+    pendingEvent === undefined ? undefined : toolCallFromEvent(pendingEvent);
+  if (before.pendingToolCall !== undefined) {
+    if (pendingToolCall === undefined) {
+      throw new VoiceSessionDriverError(
+        "Pipecat's pending tool call has no matching durable event.",
+      );
+    }
+    const result =
+      options.executionEngine === undefined
+        ? await dispatchVoiceSessionToolCall({
+            agentRevision: options.agentRevision,
+            toolCall: pendingToolCall,
+            executorClient:
+              options.executorClient as VoiceSessionExecutorClient,
+          })
+        : await dispatchVoiceSessionToolCall({
+            agentRevision: options.agentRevision,
+            toolCall: pendingToolCall,
+            executionEngine: options.executionEngine,
+          });
+    await postToolResult(
+      fetchImpl,
+      options.pipecatBaseUrl,
+      pendingToolCall,
+      result,
+    );
+    dispatches.push({
+      eventSequence: pendingToolCall.sequence,
+      eventExecutionId: pendingToolCall.eventExecutionId,
+      tool: pendingToolCall.tool,
+      result,
+    });
+  } else if (before.awaitingAgentTurn && options.turnHandler !== undefined) {
+    let humanTurn = [...observedEvents.values()]
+      .map(humanTurnFromEvent)
+      .filter((turn): turn is VoiceSessionHumanTurn => turn !== undefined)
+      .sort((left, right) => right.eventSequence - left.eventSequence)[0];
+    if (humanTurn === undefined) {
+      await loadHistory();
+      humanTurn = [...observedEvents.values()]
+        .map(humanTurnFromEvent)
+        .filter((turn): turn is VoiceSessionHumanTurn => turn !== undefined)
+        .sort((left, right) => right.eventSequence - left.eventSequence)[0];
+    }
+    if (humanTurn === undefined) {
+      throw new VoiceSessionDriverError(
+        "Pipecat is awaiting an agent turn without a durable human transcript.",
+      );
+    }
+    let turn: VoiceSessionAgentTurn;
+    try {
+      turn = await options.turnHandler.respond({
+        agentRevision: options.agentRevision,
+        humanTurn,
+      });
+    } catch {
+      throw new VoiceSessionDriverError(
+        "The voice-session turn handler failed unexpectedly.",
+      );
+    }
+    if (turn.toolCall !== undefined) {
+      qualifiedToolName(turn.toolCall.tool);
+      if (!isRecord(turn.toolCall.input)) {
+        throw new VoiceSessionDriverError(
+          "The voice-session turn handler returned invalid tool input.",
+        );
+      }
+    }
+    await postAgentTurn(
+      fetchImpl,
+      options.pipecatBaseUrl,
+      options.sessionRef.sessionId,
+      turn,
+    );
+    agentTurns.push(turn);
+  }
+
+  const after = await sessionSnapshot(
+    fetchImpl,
+    options.pipecatBaseUrl,
+    options.sessionRef.sessionId,
+  );
+  assertSessionScope(after, options.sessionRef, options.agentRevision);
+  return {
+    sessionId: after.id,
+    state: after.state,
+    lastSequence: cursor,
+    terminal: terminalState(after.state),
+    dispatches,
+    agentTurns,
+  };
 }
 
 /** Polls Pipecat's mock event stream and dispatches every durable tool call exactly once. */

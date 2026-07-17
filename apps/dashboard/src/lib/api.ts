@@ -12,6 +12,14 @@ export interface NormalizedToolError {
   code: string;
   message: string;
   retryable: boolean;
+  retryAfterSeconds?: number;
+  provider?: {
+    toolkit: string;
+    status?: number;
+    code?: string;
+    requestId?: string;
+    detail?: JsonValue;
+  };
 }
 
 export interface ExecutorErrorEnvelope {
@@ -36,6 +44,14 @@ export type ExecutionRecord = ExecutionRecordBase &
     | { latencyMs: number; output: JsonValue; status: "succeeded" }
     | { error: NormalizedToolError; latencyMs: number; status: "failed" }
   );
+
+export type ExecutionDetail = ExecutionRecord & {
+  projectId: string;
+  input: Readonly<Record<string, JsonValue>>;
+  mode: "async" | "sync";
+  connectionId?: string;
+  idempotencyKey?: string;
+};
 
 export interface ExecutionPage {
   executions: readonly ExecutionRecord[];
@@ -91,6 +107,26 @@ export interface ExecuteToolRequest {
   mode: "async" | "sync";
   tool: string;
   userId: string;
+}
+
+export interface ExecuteToolOptions {
+  idempotencyKey?: string;
+  signal?: AbortSignal;
+}
+
+export interface DevVoiceSessionAdvanceResponse {
+  sessionId: string;
+  state:
+    | "created"
+    | "connecting"
+    | "in-progress"
+    | "wrap-up"
+    | "completed"
+    | "failed"
+    | "abandoned";
+  lastSequence: number;
+  terminal: boolean;
+  advancedByMs: number;
 }
 
 export type ExecuteToolResponse =
@@ -209,6 +245,16 @@ export class ExecutorClient {
     );
   }
 
+  getExecution(
+    executionId: string,
+    signal?: AbortSignal,
+  ): Promise<ExecutionDetail> {
+    return this.#request<ExecutionDetail>(
+      `/v1/executions/${encodeURIComponent(executionId)}`,
+      signal === undefined ? {} : { signal },
+    );
+  }
+
   listConnections(signal?: AbortSignal): Promise<ConnectionPage> {
     return this.#request<ConnectionPage>(
       "/v1/connections",
@@ -243,14 +289,34 @@ export class ExecutorClient {
 
   execute(
     request: ExecuteToolRequest,
-    signal?: AbortSignal,
+    options: ExecuteToolOptions = {},
   ): Promise<ExecuteToolResponse> {
+    const headers = new Headers({ "Content-Type": "application/json" });
+    if (options.idempotencyKey !== undefined) {
+      headers.set("Idempotency-Key", options.idempotencyKey);
+    }
     return this.#request<ExecuteToolResponse>("/v1/execute", {
       method: "POST",
-      headers: { "Content-Type": "application/json" },
+      headers,
       body: JSON.stringify(request),
-      ...(signal === undefined ? {} : { signal }),
+      ...(options.signal === undefined ? {} : { signal: options.signal }),
     });
+  }
+
+  advanceVoiceSession(
+    sessionId: string,
+    request: { userId: string; milliseconds?: number; end?: boolean },
+    signal?: AbortSignal,
+  ): Promise<DevVoiceSessionAdvanceResponse> {
+    return this.#request<DevVoiceSessionAdvanceResponse>(
+      `/v1/dev/voice-sessions/${encodeURIComponent(sessionId)}/advance`,
+      {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(request),
+        ...(signal === undefined ? {} : { signal }),
+      },
+    );
   }
 
   async #request<T>(path: string, init: RequestInit = {}): Promise<T> {

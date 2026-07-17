@@ -1,8 +1,10 @@
 import type {
   ConnectionId,
+  ExecuteRequest,
   ExecutionId,
   ExecutionRecord,
   ExecutionStatus,
+  JsonValue,
   QualifiedToolName,
 } from "@eyeball/core";
 
@@ -29,6 +31,7 @@ export interface StoredIdempotencyRecord extends IdempotencyReservation {
 export interface ExecutionAllocation {
   projectId: string;
   record: ExecutionRecord & { status: "pending" };
+  request: ExecuteRequest;
   idempotency?: IdempotencyReservation;
 }
 
@@ -50,6 +53,15 @@ export interface ExecutionPage {
   nextCursor?: string;
 }
 
+/** Executor-only detail shape used by the admin API. */
+export type ExecutionDetailRecord = ExecutionRecord & {
+  projectId: string;
+  input: Readonly<Record<string, JsonValue>>;
+  mode: ExecuteRequest["mode"];
+  connectionId?: ConnectionId;
+  idempotencyKey?: string;
+};
+
 export class InvalidExecutionCursorError extends Error {
   constructor() {
     super("Execution cursor is invalid.");
@@ -63,6 +75,10 @@ export interface ExecutionStore {
     projectId: string,
     executionId: ExecutionId,
   ): Promise<ExecutionRecord | undefined>;
+  getDetail(
+    projectId: string,
+    executionId: ExecutionId,
+  ): Promise<ExecutionDetailRecord | undefined>;
   update(projectId: string, record: ExecutionRecord): Promise<void>;
   setResolvedConnection(
     projectId: string,
@@ -77,6 +93,9 @@ export interface ExecutionStore {
 
 interface StoredExecution {
   record: ExecutionRecord;
+  request: ExecuteRequest;
+  idempotencyKey?: string;
+  resolvedConnectionId?: ConnectionId;
 }
 
 function clone<T>(value: T): T {
@@ -217,6 +236,10 @@ export class InMemoryExecutionStore implements ExecutionStore {
     }
     projectExecutions.set(allocation.record.executionId, {
       record: clone(allocation.record),
+      request: clone(allocation.request),
+      ...(allocation.idempotency === undefined
+        ? {}
+        : { idempotencyKey: allocation.idempotency.scope.key }),
     });
     return { kind: "allocated", record: clone(allocation.record) };
   }
@@ -227,6 +250,32 @@ export class InMemoryExecutionStore implements ExecutionStore {
   ): Promise<ExecutionRecord | undefined> {
     const stored = this.#executions.get(projectId)?.get(executionId);
     return stored === undefined ? undefined : clone(stored.record);
+  }
+
+  async getDetail(
+    projectId: string,
+    executionId: ExecutionId,
+  ): Promise<ExecutionDetailRecord | undefined> {
+    const stored = this.#executions.get(projectId)?.get(executionId);
+    if (stored === undefined) {
+      return undefined;
+    }
+    return clone({
+      ...stored.record,
+      projectId,
+      input: stored.request.input,
+      mode: stored.request.mode,
+      ...(stored.resolvedConnectionId === undefined &&
+      stored.request.connectionId === undefined
+        ? {}
+        : {
+            connectionId:
+              stored.resolvedConnectionId ?? stored.request.connectionId,
+          }),
+      ...(stored.idempotencyKey === undefined
+        ? {}
+        : { idempotencyKey: stored.idempotencyKey }),
+    });
   }
 
   async update(projectId: string, record: ExecutionRecord): Promise<void> {
@@ -243,6 +292,16 @@ export class InMemoryExecutionStore implements ExecutionStore {
     executionId: ExecutionId,
     connectionId: ConnectionId | undefined,
   ): Promise<void> {
+    const execution = this.#executions.get(projectId)?.get(executionId);
+    if (execution === undefined) {
+      throw new Error(`Unknown execution ID: ${executionId}`);
+    }
+    if (connectionId === undefined) {
+      delete execution.resolvedConnectionId;
+    } else {
+      execution.resolvedConnectionId = connectionId;
+    }
+
     const storageKey = this.#idempotencyByExecution.get(
       executionStorageKey(projectId, executionId),
     );

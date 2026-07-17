@@ -4,6 +4,7 @@ import { createPipecatMock } from "../../../../mocks/packages/mocks-voice/dist/i
 import {
   dispatchVoiceSessionToolCall,
   runVoiceSessionDriver,
+  runVoiceSessionDriverTick,
   type VoiceSessionExecutionEngine,
   voiceSessionIdempotencyKey,
   voiceSessionToolNotAllowedError,
@@ -86,6 +87,74 @@ async function createPendingToolCall(
 }
 
 describe("voice session tool dispatch", () => {
+  it("runs one bounded turn per development-driver tick", async () => {
+    const provider = createPipecatMock();
+    const created = await provider.app.request("/sessions", {
+      method: "POST",
+      headers: PIPECAT_HEADERS,
+      body: JSON.stringify({
+        agentConfig: {
+          projectId: PROJECT_ID,
+          userId: USER_ID,
+          agentId: AGENT_ID,
+          agentRevision: 3,
+          transport: "chat",
+        },
+        script: [{ caller: "Hello from the dashboard." }],
+      }),
+    });
+    const session = (await created.json()) as { id: string };
+    provider.advanceClock(2_000);
+    const execute = vi.fn();
+
+    const first = await runVoiceSessionDriverTick({
+      sessionRef: { sessionId: session.id },
+      agentRevision: {
+        id: AGENT_ID,
+        revision: 3,
+        projectId: PROJECT_ID,
+        userId: USER_ID,
+        tools: [],
+      },
+      executionEngine: { execute } as VoiceSessionExecutionEngine,
+      pipecatBaseUrl: "http://pipecat.test",
+      fetch: pipecatFetch(provider),
+      turnHandler: {
+        async respond({ humanTurn }) {
+          return { text: `Reply to: ${humanTurn.text}` };
+        },
+      },
+    });
+
+    expect(first).toMatchObject({
+      sessionId: session.id,
+      state: "in-progress",
+      terminal: false,
+      agentTurns: [{ text: "Reply to: Hello from the dashboard." }],
+    });
+    expect(execute).not.toHaveBeenCalled();
+
+    provider.advanceClock(2_000);
+    const second = await runVoiceSessionDriverTick({
+      sessionRef: {
+        sessionId: session.id,
+        afterSequence: first.lastSequence,
+      },
+      agentRevision: {
+        id: AGENT_ID,
+        revision: 3,
+        projectId: PROJECT_ID,
+        userId: USER_ID,
+        tools: [],
+      },
+      executionEngine: { execute } as VoiceSessionExecutionEngine,
+      pipecatBaseUrl: "http://pipecat.test",
+      fetch: pipecatFetch(provider),
+    });
+    expect(second).toMatchObject({ state: "completed", terminal: true });
+    expect(second.lastSequence).toBeGreaterThan(first.lastSequence);
+  });
+
   it("resumes and rejects a disallowed durable tool call without executing it", async () => {
     const provider = createPipecatMock();
     const { sessionId, toolCallSequence } =

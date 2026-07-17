@@ -10,6 +10,7 @@ import {
 } from "@eyeball/core";
 import { type Context, Hono } from "hono";
 import type { DevVaultCredentialProvider } from "./dev-vault.js";
+import type { DevVoiceSessionAdvancer } from "./dev-voice-sessions.js";
 import {
   ExecutionEngine,
   ExecutionRequestError,
@@ -41,6 +42,8 @@ export interface ExecutorAppOptions {
   requestIdFactory?: () => string;
   /** Enables the process-local fixture connection route. Never use as a cloud vault. */
   devVault?: DevVaultCredentialProvider;
+  /** Enables request-driven mock voice progression; requires devVault. */
+  devVoiceSessions?: DevVoiceSessionAdvancer;
 }
 
 export function parseApiKeyring(
@@ -201,6 +204,14 @@ export function createExecutorApp(options: ExecutorAppOptions = {}): Hono<{
       "The executor engine and dev-vault route must use the same credential provider.",
     );
   }
+  if (
+    options.devVoiceSessions !== undefined &&
+    options.devVault === undefined
+  ) {
+    throw new Error(
+      "The development voice-session route requires the development vault.",
+    );
+  }
   const keyring =
     options.apiKeys === undefined
       ? parseApiKeyring(env.EYEBALL_API_KEYS)
@@ -359,6 +370,80 @@ export function createExecutorApp(options: ExecutorAppOptions = {}): Hono<{
         return handleRouteError(context, error);
       }
     });
+
+    const devVoiceSessions = options.devVoiceSessions;
+    if (devVoiceSessions !== undefined) {
+      app.post("/v1/dev/voice-sessions/:id/advance", async (context) => {
+        let request: unknown;
+        try {
+          request = await context.req.json();
+        } catch {
+          return invalidQuery(context, "Request body must be valid JSON.");
+        }
+        if (
+          typeof request !== "object" ||
+          request === null ||
+          Array.isArray(request)
+        ) {
+          return invalidQuery(
+            context,
+            "Advance request must be a JSON object.",
+          );
+        }
+        const record = request as Readonly<Record<string, unknown>>;
+        const unknownKey = Object.keys(record).find(
+          (key) => key !== "userId" && key !== "milliseconds" && key !== "end",
+        );
+        if (unknownKey !== undefined) {
+          return invalidQuery(
+            context,
+            `Unknown advance request field: ${unknownKey}.`,
+          );
+        }
+        if (
+          typeof record.userId !== "string" ||
+          record.userId.trim().length === 0
+        ) {
+          return invalidQuery(context, "userId must be a non-empty string.");
+        }
+        const milliseconds = record.milliseconds ?? 1_000;
+        if (
+          !Number.isSafeInteger(milliseconds) ||
+          Number(milliseconds) < 1 ||
+          Number(milliseconds) > 60_000
+        ) {
+          return invalidQuery(
+            context,
+            "milliseconds must be an integer from 1 through 60000.",
+          );
+        }
+        if (record.end !== undefined && typeof record.end !== "boolean") {
+          return invalidQuery(context, "end must be a boolean.");
+        }
+
+        try {
+          const result = await devVoiceSessions.advance({
+            projectId: context.get("projectId"),
+            userId: record.userId,
+            sessionId: context.req.param("id"),
+            milliseconds: Number(milliseconds),
+            ...(record.end === true ? { end: true } : {}),
+          });
+          return context.json(result);
+        } catch (error) {
+          if (
+            error instanceof EyeballError &&
+            error.code === TOOL_ERROR_CODES.NOT_FOUND
+          ) {
+            return requestFailure(context, error, 404);
+          }
+          if (error instanceof EyeballError) {
+            return requestFailure(context, error, 422);
+          }
+          return handleRouteError(context, error);
+        }
+      });
+    }
   }
 
   app.get("/v1/executions", async (context) => {
@@ -376,7 +461,7 @@ export function createExecutorApp(options: ExecutorAppOptions = {}): Hono<{
 
   app.get("/v1/executions/:id", async (context) => {
     try {
-      const execution = await engine.getExecution(
+      const execution = await engine.getExecutionDetail(
         context.get("projectId"),
         context.req.param("id"),
       );

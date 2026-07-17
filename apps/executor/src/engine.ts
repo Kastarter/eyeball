@@ -36,6 +36,7 @@ import {
 } from "./adapters/index.js";
 import { PromiseTaskQueue, type TaskQueue } from "./queue.js";
 import {
+  type ExecutionDetailRecord,
   type ExecutionListFilters,
   type ExecutionPage,
   type ExecutionStore,
@@ -430,6 +431,7 @@ export class ExecutionEngine {
     const allocation = await this.store.allocate({
       projectId: command.projectId,
       record: pending,
+      request: canonicalRequest,
       ...(idempotency === undefined ? {} : { idempotency }),
     });
     if (allocation.kind === "conflict") {
@@ -531,6 +533,26 @@ export class ExecutionEngine {
     return execution;
   }
 
+  async getExecutionDetail(
+    projectId: string,
+    executionId: string,
+  ): Promise<ExecutionDetailRecord> {
+    if (!isExecutionId(executionId)) {
+      throw new ExecutionRequestError(404, {
+        code: TOOL_ERROR_CODES.NOT_FOUND,
+        message: "Execution was not found.",
+      });
+    }
+    const execution = await this.store.getDetail(projectId, executionId);
+    if (execution === undefined) {
+      throw new ExecutionRequestError(404, {
+        code: TOOL_ERROR_CODES.NOT_FOUND,
+        message: "Execution was not found.",
+      });
+    }
+    return execution;
+  }
+
   async listExecutions(
     projectId: string,
     query: ListExecutionsQuery = {},
@@ -608,17 +630,17 @@ export class ExecutionEngine {
           ? {}
           : { connectionId: request.connectionId }),
       });
+      await this.store.setResolvedConnection(
+        projectId,
+        pending.executionId,
+        credential.connectionId,
+      );
       validateCredential(
         credential,
         request,
         manifest,
         requiredScopes,
         this.#now(),
-      );
-      await this.store.setResolvedConnection(
-        projectId,
-        pending.executionId,
-        credential.connectionId,
       );
       const output = await adapter.execute({
         projectId,

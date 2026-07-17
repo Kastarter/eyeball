@@ -10,6 +10,8 @@ authenticated tools across SaaS, messaging, voice, social data, and business sys
 - `@eyeball/executor` implements RFC 001 sync/async execution, polling, idempotency, API-key isolation, and adapter dispatch, including in-process integration flows and the formal manifest-derived contract suite.
 - `@eyeball/dashboard` is a Next.js 16 App Router admin scaffold with the seven-section shell, teaching empty states, reusable UI primitives, and a `/design` visual QA gallery.
 - Dashboard Overview reads toolkit/tool counts from `@eyeball/catalog` and checks the executor's public `/health` route client-side with a graceful offline state.
+- Dashboard Executions ships filter/pagination polling, URL-deep-linked forensic detail, and canonical cURL reconstruction; Voice Agents ships revision-aware authoring plus scripted or chat session testing.
+- Execution detail reads retain canonical input, mode, project, resolved connection, and idempotency metadata while execution-list payloads stay compact.
 - The contract suite generates 457 provider/tool rows from 37 manifests: 218 smoke and 239 `not_supported`; 35 auth-expiry assertions pass and two auth-class-none assertions skip.
 - `@eyeball/toolkits` implements P0 email, messaging, voice, business, productivity, and ScrapeCreators social-data adapters, including the native `voice-agents` adapter.
 - The eight-document spec suite is:
@@ -57,6 +59,7 @@ authenticated tools across SaaS, messaging, voice, social data, and business sys
 - Adapter contexts pin trusted project/user scope; the native voice-agent adapter keeps immutable revisions and bindings behind an injectable `AgentStore`, while Pipecat owns session lifecycle and ordered events.
 - Voice child calls use the reusable session-dispatch contract in `packages/toolkits/src/voice/session-driver.ts`: revision allowlist first, then the ordinary executor under pinned project/user scope with `voice-session:<sessionId>:event:<sequence>` idempotency.
 - The mock voice worker polls Pipecat with an injected advancing clock; a production worker can replace polling with streaming while retaining `dispatchVoiceSessionToolCall`.
+- `runVoiceSessionDriverTick` is the bounded worker seam; the executor exposes it to dashboard demos only through a dev-vault-gated, injected `/v1/dev/voice-sessions/:id/advance` runtime.
 - Mocks-first testing: build deterministic provider APIs and manifest-derived contracts before
   executor/toolkit implementation; unchanged suites certify real providers last.
 - MCP discovery omits async-by-nature tools by default; `includeAsync` represents negotiated Tasks support and emits required/optional task support.

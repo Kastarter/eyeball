@@ -145,12 +145,15 @@ describe("ExecutorClient", () => {
     });
 
     await expect(
-      client.execute({
-        input: { query: "invoice" },
-        mode: "sync",
-        tool: "gmail.search_emails",
-        userId: "user_123",
-      }),
+      client.execute(
+        {
+          input: { query: "invoice" },
+          mode: "sync",
+          tool: "gmail.search_emails",
+          userId: "user_123",
+        },
+        { idempotencyKey: "dashboard:try-it:1" },
+      ),
     ).rejects.toMatchObject({
       code: "auth_missing",
       message: "Connect this user first.",
@@ -160,9 +163,67 @@ describe("ExecutorClient", () => {
     });
     expect(request?.method).toBe("POST");
     expect(request?.headers.get("Content-Type")).toBe("application/json");
+    expect(request?.headers.get("Idempotency-Key")).toBe("dashboard:try-it:1");
     await expect(request?.json()).resolves.toMatchObject({
       tool: "gmail.search_emails",
       userId: "user_123",
     });
+  });
+
+  it("reads execution detail and advances the dev voice-session harness", async () => {
+    const requests: Request[] = [];
+    const fetch: typeof globalThis.fetch = async (input, init) => {
+      const request = new Request(input, init);
+      requests.push(request);
+      if (request.method === "POST") {
+        return Response.json({
+          sessionId: "session_demo",
+          state: "in-progress",
+          lastSequence: 4,
+          terminal: false,
+          advancedByMs: 1_000,
+        });
+      }
+      return Response.json({
+        executionId: "exe_detail",
+        projectId: "proj_demo",
+        tool: "gmail.send_email",
+        toolVersion: "1.0.0",
+        catalogVersion: "1.1",
+        userId: "user_123",
+        status: "succeeded",
+        createdAt: "2026-07-17T09:00:00.000Z",
+        completedAt: "2026-07-17T09:00:00.100Z",
+        latencyMs: 100,
+        input: { to: ["sam@example.com"] },
+        mode: "sync",
+        output: { messageId: "msg_1" },
+      });
+    };
+    const client = new ExecutorClient({
+      baseUrl: "https://executor.example",
+      fetch,
+    });
+
+    await expect(client.getExecution("exe_detail")).resolves.toMatchObject({
+      projectId: "proj_demo",
+      input: { to: ["sam@example.com"] },
+    });
+    await expect(
+      client.advanceVoiceSession("session_demo", {
+        userId: "user_123",
+        milliseconds: 1_000,
+      }),
+    ).resolves.toMatchObject({ sessionId: "session_demo" });
+    expect(requests.map(({ method, url }) => ({ method, url }))).toEqual([
+      {
+        method: "GET",
+        url: "https://executor.example/v1/executions/exe_detail",
+      },
+      {
+        method: "POST",
+        url: "https://executor.example/v1/dev/voice-sessions/session_demo/advance",
+      },
+    ]);
   });
 });
