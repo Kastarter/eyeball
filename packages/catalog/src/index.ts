@@ -1,4 +1,4 @@
-export const VERSION = "0.0.1";
+export const VERSION = "0.1.0";
 
 export * from "./capabilities/calendar.js";
 export * from "./capabilities/crm.js";

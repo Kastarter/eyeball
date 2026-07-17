@@ -1,3 +1,5 @@
+import { resolve } from "node:path";
+import { pathToFileURL } from "node:url";
 import { buildNameMap, type ExecutionId, isExecutionId } from "@eyeball/core";
 import { createMcpDemoEnvironment, type InProcessMcpClient } from "./mcp.js";
 
@@ -303,5 +305,30 @@ export async function runLiveAnthropicMcpDemo(
       ...(options.fetch === undefined ? {} : { fetch: options.fetch }),
     }),
     ...(options.model === undefined ? {} : { model: options.model }),
+  });
+}
+
+async function runCli(): Promise<void> {
+  const apiKey = process.env.ANTHROPIC_API_KEY;
+  if (apiKey === undefined || apiKey.length === 0) {
+    process.stdout.write(
+      "Anthropic demo skipped: ANTHROPIC_API_KEY is not set.\n",
+    );
+    return;
+  }
+  const result = await runLiveAnthropicMcpDemo({ apiKey });
+  process.stdout.write(`${JSON.stringify(result, null, 2)}\n`);
+}
+
+const entryPoint = process.argv[1];
+if (
+  entryPoint !== undefined &&
+  import.meta.url === pathToFileURL(resolve(entryPoint)).href
+) {
+  runCli().catch((error: unknown) => {
+    const message =
+      error instanceof Error ? (error.stack ?? error.message) : String(error);
+    process.stderr.write(`${message}\n`);
+    process.exitCode = 1;
   });
 }

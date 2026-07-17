@@ -1,3 +1,5 @@
+import { resolve } from "node:path";
+import { pathToFileURL } from "node:url";
 import {
   createExecutionId,
   type ExecutionId,
@@ -367,4 +369,35 @@ export async function runRestaurantVoiceDemo(): Promise<RestaurantVoiceDemoResul
     emailMessageId: String(emailOutput.messageId),
     transcript,
   };
+}
+
+async function runCli(): Promise<void> {
+  const result = await runRestaurantVoiceDemo();
+  process.stdout.write(
+    `${JSON.stringify(
+      {
+        agent: result.agent,
+        session: result.session,
+        childExecutions: result.childExecutions,
+        calendarEventId: result.calendarEventId,
+        emailMessageId: result.emailMessageId,
+        transcriptKeys: Object.keys(result.transcript).sort(),
+      },
+      null,
+      2,
+    )}\n`,
+  );
+}
+
+const entryPoint = process.argv[1];
+if (
+  entryPoint !== undefined &&
+  import.meta.url === pathToFileURL(resolve(entryPoint)).href
+) {
+  runCli().catch((error: unknown) => {
+    const message =
+      error instanceof Error ? (error.stack ?? error.message) : String(error);
+    process.stderr.write(`${message}\n`);
+    process.exitCode = 1;
+  });
 }

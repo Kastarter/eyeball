@@ -22,7 +22,7 @@ import {
 
 export const MCP_PROTOCOL_VERSION = "2025-11-25" as const;
 export const MCP_SERVER_NAME = "eyeball-mcp-gateway" as const;
-export const MCP_SERVER_VERSION = "0.0.1" as const;
+export const MCP_SERVER_VERSION = "0.1.0" as const;
 
 const EXECUTION_META_KEY = "dev.eyeball/execution";
 const TOOL_META_KEY = "dev.eyeball/tool";

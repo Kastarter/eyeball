@@ -11,6 +11,9 @@ importers:
       '@biomejs/biome':
         specifier: ^2.1.2
         version: 2.5.3
+      '@hono/node-server':
+        specifier: ^1.16.0
+        version: 1.19.14(hono@4.12.30)
       '@types/node':
         specifier: ^24.0.15
         version: 24.13.3

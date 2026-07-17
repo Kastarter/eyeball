@@ -1,3 +1,5 @@
+import { resolve } from "node:path";
+import { pathToFileURL } from "node:url";
 import {
   createExecutionId,
   type ExecutionId,
@@ -426,4 +428,22 @@ export async function runScriptedMcpDemo(): Promise<ScriptedMcpDemoResult> {
       ).some(({ text }) => text === announcementText),
     },
   };
+}
+
+async function runCli(): Promise<void> {
+  const result = await runScriptedMcpDemo();
+  process.stdout.write(`${JSON.stringify(result, null, 2)}\n`);
+}
+
+const entryPoint = process.argv[1];
+if (
+  entryPoint !== undefined &&
+  import.meta.url === pathToFileURL(resolve(entryPoint)).href
+) {
+  runCli().catch((error: unknown) => {
+    const message =
+      error instanceof Error ? (error.stack ?? error.message) : String(error);
+    process.stderr.write(`${message}\n`);
+    process.exitCode = 1;
+  });
 }

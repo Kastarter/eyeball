@@ -87,7 +87,7 @@ describe("MCP Streamable HTTP gateway", () => {
       result: {
         protocolVersion: MCP_PROTOCOL_VERSION,
         capabilities: { tools: { listChanged: false } },
-        serverInfo: { name: "eyeball-mcp-gateway", version: "0.0.1" },
+        serverInfo: { name: "eyeball-mcp-gateway", version: "0.1.0" },
         instructions:
           "Use eyeball.search_tools to find canonical provider tools. Tool failures are returned as normalized MCP tool results.",
       },
