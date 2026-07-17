@@ -585,7 +585,7 @@ export interface WebhookEndpointConfig {
   url: string;
   events: readonly TerminalEventType[];
   secretReference: string;
-  enabled: boolean;
+  active: boolean;
 }
 
 export interface ExecutionWebhookEvent {
@@ -598,9 +598,25 @@ export interface ExecutionWebhookEvent {
 ```
 
 Delivery is at least once; receivers deduplicate by event `id`. The sender signs
-`<timestamp>.<raw-body>` with HMAC-SHA256 and sends `Eyeball-Timestamp` plus
-`Eyeball-Signature: v1=<hex>`. Any 2xx acknowledges delivery; other results receive
-bounded exponential retries. Endpoint CRUD and secret rotation belong to the control plane.
+`<timestamp>.<raw-body>` with HMAC-SHA256. Any 2xx acknowledges delivery; other results
+receive bounded exponential retries. Endpoint CRUD belongs to the project control plane.
+
+**Companion decision — signed delivery profile (2026-07-17).** The timestamp is decimal
+Unix seconds and the raw body is the exact UTF-8 JSON byte sequence sent on the wire. The
+signature is lowercase hexadecimal in `v1=<64 hex characters>` form. New senders emit
+`Eyeball-Webhook-Id`, `Eyeball-Webhook-Timestamp`, and `Eyeball-Webhook-Signature`;
+they also emit the original `Eyeball-Timestamp` and `Eyeball-Signature` names during the
+source-preview compatibility window. Verification accepts either timestamp/signature pair
+with a five-minute tolerance. The webhook ID is the stable event `id`, not an attempt ID.
+
+The implemented retry delays before attempts are `0s`, `30s`, `2m`, `10m`, and `1h`;
+each receiver request has a 10-second default timeout.
+Retries and later events are serialized at concurrency one per endpoint, providing
+best-effort per-endpoint order but no global ordering. Delivery scheduling is asynchronous
+after the terminal record update and never waits for receiver I/O or retries. The source preview
+ships in-memory project endpoint and delivery stores; production deployments must inject
+durable stores and queue implementations. `execution.completed` is a subscription-only
+convenience selector that matches both terminal event types without changing envelope types.
 
 ## 4. Error taxonomy
 
@@ -975,7 +991,8 @@ receive the next compatible catalog minor before this revision shipped.
 
 1. The Voice Agent RFC must finalize how catalog 1.0 `voiceAgentId` maps to catalog 1.1
    agent IDs and immutable revisions.
-2. The control-plane RFC must define webhook endpoint CRUD and secret rotation.
+2. Project endpoint create/list/get/update/delete, signing-secret rotation, and delivery-log
+   reads use `/v1/webhooks` in the source preview.
 3. MCP 2025-11-25 Tasks are experimental and adapter-versioned; a future task wire profile
    may replace them without changing Eyeball's canonical execution records.
 4. Each converter needs a version-pinned schema compatibility fixture suite.

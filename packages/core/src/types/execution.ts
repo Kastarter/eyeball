@@ -162,7 +162,7 @@ export interface WebhookEndpointConfig {
   url: string;
   events: readonly TerminalEventType[];
   secretReference: string;
-  enabled: boolean;
+  active: boolean;
 }
 
 export interface ExecutionWebhookEvent {

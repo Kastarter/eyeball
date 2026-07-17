@@ -1,0 +1,119 @@
+---
+title: "Webhooks"
+description: "Receive signed execution and voice events with bounded retries and project-scoped endpoints."
+---
+
+Webhooks deliver terminal execution and selected voice-session events after the source record is durable. Delivery is asynchronous: a slow or unavailable receiver never delays an execution from becoming terminal.
+
+## Create an endpoint
+
+Use an unpinned project API key. The endpoint must be an HTTPS URL and must subscribe to at least one event.
+
+```bash
+curl --request POST "$EYEBALL_EXECUTOR_URL/v1/webhooks" \
+  --header "Authorization: Bearer $EYEBALL_API_KEY" \
+  --header "Content-Type: application/json" \
+  --data '{
+    "url": "https://example.com/webhooks/eyeball",
+    "events": ["execution.completed", "voice.session.event"],
+    "active": true
+  }'
+```
+
+The creation response contains a `whsec_...` signing secret. It is returned exactly once. Persist it in your secret manager; later list and get responses expose only `secretPrefix`.
+
+<Warning>
+  Do not log the creation or rotation response or put the signing secret in source control. Rotate the endpoint secret if it is lost or exposed.
+</Warning>
+
+## Event types
+
+| Subscription | Delivered envelope type | Availability |
+| --- | --- | --- |
+| `execution.completed` | `execution.succeeded` or `execution.failed` | Convenience selector for both terminal outcomes. |
+| `execution.succeeded` | `execution.succeeded` | Emitted after a successful execution record is durable. |
+| `execution.failed` | `execution.failed` | Emitted after a failed execution record is durable. |
+| `voice.session.event` | `voice.session.event` | Carries a selected durable `VoiceAgentSessionEvent`. The development session driver is wired; the production worker must call the same delivery seam. |
+| `voice.transcript.ready` | `voice.transcript.ready` | Delivery seam is defined; production transcript publication awaits the persistent voice worker. |
+
+Voice-agent definitions still select granular session events such as `session.lifecycle`, `tool_call`, and `tool_result`, and reference one or more project endpoint IDs. The endpoint itself subscribes to the outer `voice.session.event` class.
+
+Every request body uses this envelope:
+
+```ts
+type WebhookEvent = {
+  id: string;
+  type:
+    | "execution.succeeded"
+    | "execution.failed"
+    | "voice.session.event"
+    | "voice.transcript.ready";
+  createdAt: string;
+  projectId: string;
+  data: unknown;
+};
+```
+
+## Verify the signature
+
+Read the exact raw request body before parsing JSON. The SDK helper checks the HMAC in constant time and rejects timestamps more than five minutes from the current time.
+
+```ts
+import { verifyWebhookSignature } from "@eyeball/sdk";
+
+export async function POST(request: Request): Promise<Response> {
+  const payload = await request.text();
+  const valid = verifyWebhookSignature({
+    payload,
+    headers: request.headers,
+    secret: process.env.EYEBALL_WEBHOOK_SECRET!,
+  });
+
+  if (!valid) {
+    return new Response("Invalid webhook signature", { status: 401 });
+  }
+
+  const event = JSON.parse(payload) as { id: string; type: string };
+  await handleWebhook(event);
+  return new Response(null, { status: 204 });
+}
+
+async function handleWebhook(event: { id: string; type: string }): Promise<void> {
+  // Persist event.id and apply the event in one idempotent transaction.
+  console.log(event.type, event.id);
+}
+```
+
+Eyeball signs the UTF-8 bytes of `<timestamp>.<raw-body>` with HMAC-SHA256. The timestamp is decimal Unix seconds and the signature is `v1=<64 lowercase hexadecimal characters>`.
+
+| Header | Meaning |
+| --- | --- |
+| `Eyeball-Webhook-Id` | Stable event ID used for receiver deduplication. |
+| `Eyeball-Webhook-Timestamp` | Decimal Unix time in seconds. |
+| `Eyeball-Webhook-Signature` | HMAC value in `v1=<hex>` form. |
+
+For compatibility with the original RFC 001 names, the sender also emits `Eyeball-Timestamp` and `Eyeball-Signature`; the SDK accepts either pair.
+
+## Acknowledgement and retries
+
+Any `2xx` response acknowledges the event. Each receiver request has a 10-second default timeout. A non-`2xx` response, timeout, or transport failure uses this fixed, bounded schedule:
+
+| Attempt | Delay before attempt | Earliest cumulative time |
+| --- | ---: | ---: |
+| 1 | Immediate | `0s` |
+| 2 | `30s` | `30s` |
+| 3 | `2m` | `2m 30s` |
+| 4 | `10m` | `12m 30s` |
+| 5 | `1h` | `1h 12m 30s` |
+
+After attempt five, the delivery is marked `failed`. Inspect attempts, status codes, and `nextRetryAt` with `GET /v1/webhooks/:endpointId/deliveries`.
+
+Delivery is at least once. Store processed event IDs and make handlers idempotent, because an acknowledgement can be lost after your handler commits its work.
+
+## Ordering and durability
+
+Eyeball processes one delivery at a time per endpoint. Retries for an earlier event finish or exhaust before a later event is attempted on that same endpoint. This is best-effort per-endpoint order, not global order: different endpoints progress independently, and duplicate delivery remains possible.
+
+The stock executor uses process-local endpoint, delivery-log, and queue implementations. They are suitable for development and tests, but a restart loses pending deliveries. Production self-hosters must inject durable `WebhookEndpointStore`, `WebhookDeliveryStore`, and queue implementations and add delivery metrics and alerting.
+
+See the [webhook API reference](/api/webhooks) for route shapes.

@@ -11,6 +11,8 @@ import {
   parseApiKeyring,
   type QualifiedToolName,
   TOOL_ERROR_CODES,
+  WEBHOOK_SUBSCRIPTION_EVENT_TYPES,
+  type WebhookSubscriptionEventType,
 } from "@eyeball/core";
 import { type Context, Hono } from "hono";
 import { createConfiguredCredentialProvider } from "./credential-provider.js";
@@ -22,6 +24,8 @@ import {
   type ListExecutionsQuery,
 } from "./engine.js";
 import type { FileStore } from "./staged-files.js";
+import { WebhookDeliveryInputError } from "./webhooks/delivery-store.js";
+import { WebhookEndpointInputError } from "./webhooks/endpoint-store.js";
 
 const EXECUTION_STATUSES = new Set<ExecutionStatus>([
   "pending",
@@ -33,6 +37,7 @@ const EXECUTION_STATUSES = new Set<ExecutionStatus>([
 export { parseApiKeyring } from "@eyeball/core";
 
 const USER_ID_HEADER = "X-Eyeball-User-Id";
+const WEBHOOK_EVENT_TYPES = new Set<string>(WEBHOOK_SUBSCRIPTION_EVENT_TYPES);
 
 export interface ExecutorVariables {
   projectId: string;
@@ -103,6 +108,29 @@ function pinnedUserFailure(context: ExecutorContext): Response {
   );
 }
 
+function projectAuthorityFailure(context: ExecutorContext): Response {
+  return requestFailure(
+    context,
+    new EyeballError({
+      code: TOOL_ERROR_CODES.AUTH_INSUFFICIENT_SCOPE,
+      message:
+        "Project-scoped webhook management requires an unpinned project API key.",
+    }),
+    403,
+  );
+}
+
+function webhookNotFound(context: ExecutorContext): Response {
+  return requestFailure(
+    context,
+    new EyeballError({
+      code: TOOL_ERROR_CODES.NOT_FOUND,
+      message: "Webhook endpoint was not found.",
+    }),
+    404,
+  );
+}
+
 function rejectsPinnedUser(
   context: ExecutorContext,
   ...candidates: readonly (string | undefined)[]
@@ -131,6 +159,12 @@ function handleRouteError(context: ExecutorContext, error: unknown): Response {
   if (error instanceof ExecutionRequestError) {
     return requestFailure(context, error, error.httpStatus);
   }
+  if (
+    error instanceof WebhookEndpointInputError ||
+    error instanceof WebhookDeliveryInputError
+  ) {
+    return invalidQuery(context, error.message);
+  }
   return requestFailure(
     context,
     new EyeballError({
@@ -141,6 +175,21 @@ function handleRouteError(context: ExecutorContext, error: unknown): Response {
     }),
     500,
   );
+}
+
+function parseWebhookPageQuery(
+  context: ExecutorContext,
+): { cursor?: string; limit: number } | Response {
+  const limitValue = context.req.query("limit");
+  const limit = limitValue === undefined ? 100 : Number(limitValue);
+  if (!Number.isInteger(limit) || limit < 1 || limit > 100) {
+    return invalidQuery(
+      context,
+      "limit must be an integer from 1 through 100.",
+    );
+  }
+  const cursor = context.req.query("cursor");
+  return { limit, ...(cursor === undefined ? {} : { cursor }) };
 }
 
 function parseListQuery(
@@ -275,6 +324,275 @@ export function createExecutorApp(options: ExecutorAppOptions = {}): Hono<{
       return pinnedUserFailure(context);
     }
     await next();
+  });
+
+  app.post("/v1/webhooks", async (context) => {
+    if (context.get("pinnedUserId") !== undefined) {
+      return projectAuthorityFailure(context);
+    }
+    let request: unknown;
+    try {
+      request = await context.req.json();
+    } catch {
+      return invalidQuery(context, "Request body must be valid JSON.");
+    }
+    if (!isRecord(request)) {
+      return invalidQuery(context, "Webhook endpoint must be a JSON object.");
+    }
+    const unknownKey = Object.keys(request).find(
+      (key) => key !== "url" && key !== "events" && key !== "active",
+    );
+    if (unknownKey !== undefined) {
+      return invalidQuery(
+        context,
+        `Unknown webhook endpoint field: ${unknownKey}.`,
+      );
+    }
+    if (typeof request.url !== "string" || request.url.trim().length === 0) {
+      return invalidQuery(context, "url must be a non-empty string.");
+    }
+    let url: URL;
+    try {
+      url = new URL(request.url.trim());
+    } catch {
+      return invalidQuery(context, "url must be an absolute HTTPS URL.");
+    }
+    if (
+      url.protocol !== "https:" ||
+      url.username.length > 0 ||
+      url.password.length > 0 ||
+      url.hash.length > 0
+    ) {
+      return invalidQuery(
+        context,
+        "url must be an HTTPS URL without credentials or a fragment.",
+      );
+    }
+    if (
+      !Array.isArray(request.events) ||
+      request.events.length === 0 ||
+      request.events.some(
+        (event) => typeof event !== "string" || !WEBHOOK_EVENT_TYPES.has(event),
+      )
+    ) {
+      return invalidQuery(
+        context,
+        `events must contain one or more supported values: ${WEBHOOK_SUBSCRIPTION_EVENT_TYPES.join(
+          ", ",
+        )}.`,
+      );
+    }
+    const events = request.events as WebhookSubscriptionEventType[];
+    if (new Set(events).size !== events.length) {
+      return invalidQuery(context, "events must not contain duplicates.");
+    }
+    if (request.active !== undefined && typeof request.active !== "boolean") {
+      return invalidQuery(context, "active must be a boolean.");
+    }
+
+    try {
+      const endpoint = await engine.webhookDeliverer.endpointStore.create(
+        context.get("projectId"),
+        {
+          url: request.url.trim(),
+          events,
+          active: request.active ?? true,
+          createdAt: new Date().toISOString(),
+        },
+      );
+      return context.json(endpoint, 201);
+    } catch (error) {
+      return handleRouteError(context, error);
+    }
+  });
+
+  app.get("/v1/webhooks", async (context) => {
+    if (context.get("pinnedUserId") !== undefined) {
+      return projectAuthorityFailure(context);
+    }
+    const query = parseWebhookPageQuery(context);
+    if (query instanceof Response) return query;
+    try {
+      const page = await engine.webhookDeliverer.endpointStore.list(
+        context.get("projectId"),
+        query,
+      );
+      return context.json(page);
+    } catch (error) {
+      return handleRouteError(context, error);
+    }
+  });
+
+  app.patch("/v1/webhooks/:id", async (context) => {
+    if (context.get("pinnedUserId") !== undefined) {
+      return projectAuthorityFailure(context);
+    }
+    let request: unknown;
+    try {
+      request = await context.req.json();
+    } catch {
+      return invalidQuery(context, "Request body must be valid JSON.");
+    }
+    if (!isRecord(request)) {
+      return invalidQuery(context, "Webhook update must be a JSON object.");
+    }
+    const unknownKey = Object.keys(request).find(
+      (key) => key !== "url" && key !== "events" && key !== "active",
+    );
+    if (unknownKey !== undefined) {
+      return invalidQuery(
+        context,
+        `Unknown webhook update field: ${unknownKey}.`,
+      );
+    }
+    if (
+      request.url === undefined &&
+      request.events === undefined &&
+      request.active === undefined
+    ) {
+      return invalidQuery(
+        context,
+        "Webhook update must change url, events, or active.",
+      );
+    }
+    if (request.url !== undefined) {
+      if (typeof request.url !== "string" || request.url.trim().length === 0) {
+        return invalidQuery(context, "url must be a non-empty string.");
+      }
+      let url: URL;
+      try {
+        url = new URL(request.url.trim());
+      } catch {
+        return invalidQuery(context, "url must be an absolute HTTPS URL.");
+      }
+      if (
+        url.protocol !== "https:" ||
+        url.username.length > 0 ||
+        url.password.length > 0 ||
+        url.hash.length > 0
+      ) {
+        return invalidQuery(
+          context,
+          "url must be an HTTPS URL without credentials or a fragment.",
+        );
+      }
+    }
+    let events: WebhookSubscriptionEventType[] | undefined;
+    if (request.events !== undefined) {
+      if (
+        !Array.isArray(request.events) ||
+        request.events.length === 0 ||
+        request.events.some(
+          (event) =>
+            typeof event !== "string" || !WEBHOOK_EVENT_TYPES.has(event),
+        )
+      ) {
+        return invalidQuery(
+          context,
+          `events must contain one or more supported values: ${WEBHOOK_SUBSCRIPTION_EVENT_TYPES.join(
+            ", ",
+          )}.`,
+        );
+      }
+      events = request.events as WebhookSubscriptionEventType[];
+      if (new Set(events).size !== events.length) {
+        return invalidQuery(context, "events must not contain duplicates.");
+      }
+    }
+    if (request.active !== undefined && typeof request.active !== "boolean") {
+      return invalidQuery(context, "active must be a boolean.");
+    }
+
+    try {
+      const endpoint = await engine.webhookDeliverer.endpointStore.update(
+        context.get("projectId"),
+        context.req.param("id"),
+        {
+          ...(request.url === undefined ? {} : { url: request.url.trim() }),
+          ...(events === undefined ? {} : { events }),
+          ...(request.active === undefined ? {} : { active: request.active }),
+          updatedAt: new Date().toISOString(),
+        },
+      );
+      return endpoint === undefined
+        ? webhookNotFound(context)
+        : context.json(endpoint);
+    } catch (error) {
+      return handleRouteError(context, error);
+    }
+  });
+
+  app.post("/v1/webhooks/:id/rotate-secret", async (context) => {
+    if (context.get("pinnedUserId") !== undefined) {
+      return projectAuthorityFailure(context);
+    }
+    try {
+      const rotated = await engine.webhookDeliverer.endpointStore.rotateSecret(
+        context.get("projectId"),
+        context.req.param("id"),
+        new Date().toISOString(),
+      );
+      return rotated === undefined
+        ? webhookNotFound(context)
+        : context.json(rotated);
+    } catch (error) {
+      return handleRouteError(context, error);
+    }
+  });
+
+  app.get("/v1/webhooks/:id/deliveries", async (context) => {
+    if (context.get("pinnedUserId") !== undefined) {
+      return projectAuthorityFailure(context);
+    }
+    const query = parseWebhookPageQuery(context);
+    if (query instanceof Response) return query;
+    try {
+      const endpoint = await engine.webhookDeliverer.endpointStore.get(
+        context.get("projectId"),
+        context.req.param("id"),
+      );
+      if (endpoint === undefined) return webhookNotFound(context);
+      const page = await engine.webhookDeliverer.deliveryStore.list(
+        context.get("projectId"),
+        endpoint.endpointId,
+        query,
+      );
+      return context.json(page);
+    } catch (error) {
+      return handleRouteError(context, error);
+    }
+  });
+
+  app.get("/v1/webhooks/:id", async (context) => {
+    if (context.get("pinnedUserId") !== undefined) {
+      return projectAuthorityFailure(context);
+    }
+    try {
+      const endpoint = await engine.webhookDeliverer.endpointStore.get(
+        context.get("projectId"),
+        context.req.param("id"),
+      );
+      return endpoint === undefined
+        ? webhookNotFound(context)
+        : context.json(endpoint);
+    } catch (error) {
+      return handleRouteError(context, error);
+    }
+  });
+
+  app.delete("/v1/webhooks/:id", async (context) => {
+    if (context.get("pinnedUserId") !== undefined) {
+      return projectAuthorityFailure(context);
+    }
+    try {
+      const deleted = await engine.webhookDeliverer.endpointStore.delete(
+        context.get("projectId"),
+        context.req.param("id"),
+      );
+      return deleted ? context.body(null, 204) : webhookNotFound(context);
+    } catch (error) {
+      return handleRouteError(context, error);
+    }
   });
 
   app.post("/v1/files", async (context) => {

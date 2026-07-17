@@ -1,25 +1,52 @@
 ---
-title: "Webhooks"
-description: "Current webhook configuration surface and the boundary that is not implemented by the OSS HTTP API."
+title: "Webhooks API"
+description: "Register project webhook endpoints and inspect signed-delivery attempts."
 ---
 
-Voice-agent drafts can reference pre-provisioned webhook endpoint IDs and select event classes:
+All routes require `Authorization: Bearer <project-api-key>`. Because endpoints receive project-wide execution events, user-pinned keys receive `403 auth_insufficient_scope`.
+
+## Create an endpoint
+
+`POST /v1/webhooks`
 
 ```json
 {
-  "webhooks": {
-    "endpointIds": ["endpoint_restaurant_ops"],
-    "transcript": true,
-    "events": [
-      "session.lifecycle",
-      "turn.transcript",
-      "tool_call",
-      "tool_result"
-    ]
-  }
+  "url": "https://example.com/webhooks/eyeball",
+  "events": ["execution.completed", "voice.session.event"],
+  "active": true
 }
 ```
 
-The open-source executor and gateway do **not** expose a generic endpoint-registration or webhook-delivery REST API. Endpoint provisioning, signing secrets, retries, and hosted delivery are deployment/cloud responsibilities.
+The `201` response includes `endpointId`, normalized `url`, `events`, `active`, `createdAt`, `updatedAt`, `secretPrefix`, and the complete `secret`. The complete secret appears only in this response.
 
-For OSS applications, poll [execution records](/api/executions/get-execution) and `voice-agents.get_agent_session`, or implement a deployment-specific dispatcher around the durable session events. Do not invent an `/v1/webhooks` route.
+Supported subscriptions are `execution.completed`, `execution.succeeded`, `execution.failed`, `voice.session.event`, and `voice.transcript.ready`.
+
+## List and get endpoints
+
+- `GET /v1/webhooks?limit=100&cursor=...` returns `{ webhooks, nextCursor? }`.
+- `GET /v1/webhooks/:endpointId` returns one endpoint or `404`.
+
+List and get responses never include `secret`.
+
+## Update an endpoint
+
+`PATCH /v1/webhooks/:endpointId` accepts any non-empty combination of `url`, `events`, and `active`. The response contains the updated endpoint without its signing secret.
+
+## Rotate a signing secret
+
+`POST /v1/webhooks/:endpointId/rotate-secret` replaces the secret used when new deliveries are scheduled. The response includes the new `secret` and `secretPrefix`; the complete secret appears only in this rotation response. Deliveries already queued retain their original endpoint snapshot, so keep the previous secret available until those deliveries finish or exhaust their retries.
+
+## Delete an endpoint
+
+`DELETE /v1/webhooks/:endpointId` returns `204` or `404`. Deletion prevents new scheduling; it does not rewrite historical delivery records.
+
+## Inspect deliveries
+
+`GET /v1/webhooks/:endpointId/deliveries?limit=100&cursor=...` returns `{ deliveries, nextCursor? }`. Each delivery includes:
+
+- `deliveryId`, `eventId`, `eventType`, and `endpointId`;
+- `status`: `pending`, `delivering`, `succeeded`, or `failed`;
+- append-only attempts with timestamps, response status code, or a sanitized transport error;
+- `nextRetryAt` while another attempt is scheduled and `completedAt` after success or give-up.
+
+Read [Webhooks](/concepts/webhooks) for signature verification, event envelopes, retries, ordering, and production durability requirements.

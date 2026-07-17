@@ -12,7 +12,7 @@ Before production:
 - keep provider credentials out of logs, traces, errors, and client bundles;
 - provide metrics for queue age, execution latency, retry codes, and provider saturation;
 - back up execution/voice history according to retention policy;
-- decide how webhook delivery is signed, retried, and observed.
+- replace the process-local webhook stores/queue, retain pending jobs across restarts, and alert on exhausted deliveries; signing and retry semantics are fixed by RFC 001.
 
 The dashboard uses a server-side proxy; keep `EYEBALL_API_KEY` server-only. Mockhouse and `/_mock` must stay on loopback or an isolated test network.
 

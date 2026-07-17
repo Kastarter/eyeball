@@ -11,7 +11,30 @@ import type {
   OpenAIFunctionToolDescriptor,
   ToolDefinition,
   ToolNameMap,
+  WebhookSubscriptionEventType,
 } from "@eyeball/core";
+
+export interface CreateWebhookEndpointOptions {
+  url: string;
+  events: readonly WebhookSubscriptionEventType[];
+  active?: boolean;
+}
+
+export interface UpdateWebhookEndpointOptions {
+  url?: string;
+  events?: readonly WebhookSubscriptionEventType[];
+  active?: boolean;
+}
+
+export interface ListWebhookEndpointsOptions {
+  cursor?: string;
+  limit?: number;
+}
+
+export interface ListWebhookDeliveriesOptions {
+  cursor?: string;
+  limit?: number;
+}
 
 export type EyeballToolFormat =
   | "canonical"

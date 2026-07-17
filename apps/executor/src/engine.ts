@@ -58,6 +58,7 @@ import {
   InMemoryExecutionStore,
   InvalidExecutionCursorError,
 } from "./store.js";
+import { WebhookDeliverer } from "./webhooks/deliverer.js";
 
 const DAY_MS = 24 * 60 * 60 * 1_000;
 const EXECUTE_REQUEST_KEYS = new Set([
@@ -127,6 +128,7 @@ export interface ExecutionEngineOptions {
   fileTtlMs?: number;
   maxFileSizeBytes?: number;
   idempotencyRetentionMs?: number;
+  webhookDeliverer?: WebhookDeliverer;
 }
 
 export class ExecutionRequestError extends EyeballError {
@@ -411,6 +413,7 @@ export class ExecutionEngine {
   readonly fileTtlMs: number;
   readonly maxFileSizeBytes: number;
   readonly queue: TaskQueue;
+  readonly webhookDeliverer: WebhookDeliverer;
   readonly #fetchImpl: FetchImplementation;
   readonly #clock: Clock;
   readonly #logger: ExecutorLogger;
@@ -445,6 +448,13 @@ export class ExecutionEngine {
     this.queue = options.queue ?? new PromiseTaskQueue();
     this.#fetchImpl = options.fetchImpl ?? fetch;
     this.#logger = options.logger ?? noopLogger;
+    this.webhookDeliverer =
+      options.webhookDeliverer ??
+      new WebhookDeliverer({
+        fetchImpl: this.#fetchImpl,
+        clock: this.#clock,
+        logger: this.#logger,
+      });
     this.#executionIdFactory = options.executionIdFactory ?? createExecutionId;
     this.#fileIdFactory = options.fileIdFactory ?? createFileId;
     this.#idempotencyRetentionMs = Math.max(
@@ -863,7 +873,7 @@ export class ExecutionEngine {
       });
       const canonicalOutput = this.#validateOutput(tool, output);
       const completedAt = this.#now();
-      await this.store.update(projectId, {
+      const terminal: ExecutionRecord & { status: "succeeded" } = {
         executionId: running.executionId,
         tool: running.tool,
         toolVersion: running.toolVersion,
@@ -875,7 +885,9 @@ export class ExecutionEngine {
         completedAt: completedAt.toISOString(),
         output: canonicalOutput,
         latencyMs: Math.max(0, completedAt.valueOf() - startedAt.valueOf()),
-      });
+      };
+      await this.store.update(projectId, terminal);
+      this.webhookDeliverer.enqueueExecution(projectId, terminal);
     } catch (error) {
       const completedAt = this.#now();
       this.#logger.warn("Execution completed with a normalized failure.", {
@@ -883,7 +895,7 @@ export class ExecutionEngine {
         tool: tool.name,
         errorName: error instanceof Error ? error.name : "unknown",
       });
-      await this.store.update(projectId, {
+      const terminal: ExecutionRecord & { status: "failed" } = {
         executionId: running.executionId,
         tool: running.tool,
         toolVersion: running.toolVersion,
@@ -895,7 +907,9 @@ export class ExecutionEngine {
         completedAt: completedAt.toISOString(),
         error: normalizedError(error),
         latencyMs: Math.max(0, completedAt.valueOf() - startedAt.valueOf()),
-      });
+      };
+      await this.store.update(projectId, terminal);
+      this.webhookDeliverer.enqueueExecution(projectId, terminal);
       if (error instanceof UnexpectedCredentialProviderError) throw error;
     }
   }

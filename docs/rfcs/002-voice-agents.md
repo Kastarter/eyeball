@@ -567,9 +567,12 @@ Streaming workers retain the same dispatch rule and differ only in event deliver
 Selected events and transcript readiness are delivered to the definition's referenced
 project endpoints. The envelope adds `projectId` and either a `VoiceAgentSessionEvent` or a
 final `TranscriptArtifact`. Delivery is at least once and uses RFC 001 exactly: sign
-`<timestamp>.<raw-body>` with HMAC-SHA256, send `Eyeball-Timestamp` and
-`Eyeball-Signature: v1=<hex>`, accept any 2xx, and retry other outcomes with bounded
-exponential backoff. Execution-terminal webhooks remain the RFC 001 event types.
+`<timestamp>.<raw-body>` with HMAC-SHA256, send the RFC 001 expanded headers and compatibility
+aliases, accept any 2xx, and retry other outcomes with the fixed bounded schedule.
+Execution-terminal webhooks remain the RFC 001 event types. The request-driven development
+session driver publishes selected durable session events through this path today; the
+persistent production voice worker must publish the same events and final transcript artifacts
+when its durable worker loop is implemented.
 
 In the restaurant transcript, the tool turns reference the child execution IDs for
 `google-calendar.create_event` and `gmail.send_email`. Sensitive provider detail is absent,

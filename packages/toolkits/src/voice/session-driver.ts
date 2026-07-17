@@ -168,6 +168,7 @@ export interface VoiceSessionDriverResult {
   sessionId: string;
   state: Extract<VoiceAgentSessionState, "completed" | "failed" | "abandoned">;
   lastSequence: number;
+  events: readonly VoiceAgentSessionEvent[];
   dispatches: readonly VoiceSessionDispatchRecord[];
   agentTurns: readonly VoiceSessionAgentTurn[];
 }
@@ -178,6 +179,7 @@ export interface VoiceSessionDriverTickResult {
   state: VoiceAgentSessionState;
   lastSequence: number;
   terminal: boolean;
+  events: readonly VoiceAgentSessionEvent[];
   dispatches: readonly VoiceSessionDispatchRecord[];
   agentTurns: readonly VoiceSessionAgentTurn[];
 }
@@ -1014,11 +1016,49 @@ export async function runVoiceSessionDriverTick(
     options.sessionRef.sessionId,
   );
   assertSessionScope(after, options.sessionRef, options.agentRevision);
+  if (terminalState(after.state) && cursor < after.lastEventSequence) {
+    for (;;) {
+      const page = await eventPage(
+        fetchImpl,
+        options.pipecatBaseUrl,
+        options.sessionRef.sessionId,
+        cursor,
+      );
+      for (const event of page.events) {
+        if (
+          event.sessionId !== options.sessionRef.sessionId ||
+          event.sequence !== cursor + 1
+        ) {
+          throw new VoiceSessionDriverError(
+            "Pipecat returned terminal events outside the requested gap-free session sequence.",
+          );
+        }
+        observedEvents.set(event.sequence, event);
+        cursor = event.sequence;
+      }
+      if (page.nextSequence !== cursor) {
+        throw new VoiceSessionDriverError(
+          "Pipecat returned an inconsistent terminal event cursor.",
+        );
+      }
+      if (!page.hasMore) break;
+      if (page.events.length === 0) {
+        throw new VoiceSessionDriverError(
+          "Pipecat returned a terminal event page that cannot make progress.",
+        );
+      }
+    }
+  }
   return {
     sessionId: after.id,
     state: after.state,
     lastSequence: cursor,
     terminal: terminalState(after.state),
+    events: [...observedEvents.values()]
+      .filter(
+        (event) => event.sequence > initialSequence && event.sequence <= cursor,
+      )
+      .sort((left, right) => left.sequence - right.sequence),
     dispatches,
     agentTurns,
   };
@@ -1223,6 +1263,12 @@ export async function runVoiceSessionDriver(
         sessionId: after.id,
         state: after.state,
         lastSequence: cursor,
+        events: [...observedEvents.values()]
+          .filter(
+            (event) =>
+              event.sequence > initialSequence && event.sequence <= cursor,
+          )
+          .sort((left, right) => left.sequence - right.sequence),
         dispatches,
         agentTurns,
       };

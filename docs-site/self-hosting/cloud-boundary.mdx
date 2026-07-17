@@ -8,6 +8,7 @@ description: "Know exactly which capabilities ship in the repository and which r
 - canonical capability contracts and 37-toolkit default catalog;
 - provider adapters and execution engine;
 - validation, normalized errors, idempotency, in-memory records and queue;
+- signed webhook endpoint registry, asynchronous delivery engine, delivery log, and verification helper;
 - TypeScript SDK;
 - Streamable HTTP MCP gateway and `eyeball.search_tools`;
 - Next.js dashboard;
@@ -23,7 +24,7 @@ description: "Know exactly which capabilities ship in the repository and which r
 
 ## Bring your own
 
-Self-hosters can implement the exported credential, store, and queue boundaries, plus their own TLS, identity, authorization, persistence, observability, webhook delivery, and secret management.
+Self-hosters can implement the exported credential, execution, webhook endpoint, webhook delivery-log, and queue boundaries, plus their own TLS, identity, authorization, persistence, observability, egress policy, and secret management. The stock webhook stores and queues are process-local development defaults.
 
 <Note>
   “Open core” here is a product boundary, not an API fiction. The OSS `connections.create` route is a fixture seam; it never pretends to return a hosted OAuth redirect.

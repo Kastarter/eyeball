@@ -1,4 +1,6 @@
+import { verifyWebhookSignature } from "@eyeball/core";
 import { defaultToolkitAdapters, InMemoryAgentStore } from "@eyeball/toolkits";
+import { Hono } from "hono";
 import { describe, expect, it, vi } from "vitest";
 import {
   createMockApp,
@@ -73,6 +75,7 @@ describe("development voice-session route", () => {
       state: "in-progress" as const,
       lastSequence: 4,
       terminal: false,
+      events: [],
       dispatches: [],
       agentTurns: [],
       advancedByMs: 1_500,
@@ -114,15 +117,38 @@ describe("development voice-session route", () => {
 
   it("drives a Pipecat script through its tool call and terminal transcript", async () => {
     const origin = "http://mockhouse.dev-voice-route";
+    const webhookOrigin = "https://voice-webhook.example.test";
     const clock = createMockClock();
     const pipecat = createPipecatMock({ clock });
     const gmail = createGmailMock({ clock });
     const mockhouse = createMockApp({ providers: [pipecat, gmail] });
+    let webhookSecret = "";
+    const webhookEvents: Array<{
+      body: Readonly<Record<string, unknown>>;
+      valid: boolean;
+    }> = [];
+    const receiver = new Hono();
+    receiver.post("/events", async (context) => {
+      const rawBody = await context.req.text();
+      webhookEvents.push({
+        body: JSON.parse(rawBody) as Readonly<Record<string, unknown>>,
+        valid: verifyWebhookSignature({
+          payload: rawBody,
+          headers: context.req.raw.headers,
+          secret: webhookSecret,
+          now: clock.now(),
+        }),
+      });
+      return context.body(null, 204);
+    });
     const mockFetch = (async (
       input: Parameters<typeof fetch>[0],
       init?: Parameters<typeof fetch>[1],
     ) => {
       const request = new Request(input, init);
+      if (new URL(request.url).origin === webhookOrigin) {
+        return receiver.request(request);
+      }
       if (new URL(request.url).origin !== origin) {
         throw new Error(`Unexpected mock provider origin: ${request.url}`);
       }
@@ -152,6 +178,16 @@ describe("development voice-session route", () => {
       clock,
       env: { EYEBALL_GMAIL_BASE_URL: `${origin}/gmail` },
     });
+    const webhookEndpoint = await engine.webhookDeliverer.endpointStore.create(
+      PROJECT_ID,
+      {
+        url: `${webhookOrigin}/events`,
+        events: ["voice.session.event"],
+        active: true,
+        createdAt: clock.now().toISOString(),
+      },
+    );
+    webhookSecret = webhookEndpoint.secret;
     const agentStore = new InMemoryAgentStore();
     const agent = agentStore.createAgent(
       PROJECT_ID,
@@ -172,7 +208,11 @@ describe("development voice-session route", () => {
           maxDurationSeconds: 300,
           handoffToHuman: { enabled: false },
         },
-        webhooks: { endpointIds: [], transcript: true, events: [] },
+        webhooks: {
+          endpointIds: [webhookEndpoint.endpointId],
+          transcript: true,
+          events: ["session.lifecycle"],
+        },
         recordingPolicy: {
           mode: "audio_and_transcript",
           consent: "agent_announcement",
@@ -247,6 +287,7 @@ describe("development voice-session route", () => {
       terminal = result.terminal;
     }
     expect(terminal).toBe(true);
+    await engine.webhookDeliverer.onIdle();
 
     const eventsResponse = await mockFetch(
       `${origin}/pipecat/sessions/${session.id}/events?afterSequence=0&limit=200`,
@@ -264,5 +305,21 @@ describe("development voice-session route", () => {
         status: "succeeded",
       }),
     ]);
+    expect(webhookEvents.length).toBeGreaterThan(0);
+    expect(webhookEvents.every(({ valid }) => valid)).toBe(true);
+    expect(
+      webhookEvents.some(({ body }) => {
+        const event = body.data as
+          | {
+              data?: { type?: string; to?: string };
+            }
+          | undefined;
+        return (
+          body.type === "voice.session.event" &&
+          event?.data?.type === "session.lifecycle" &&
+          ["completed", "failed", "abandoned"].includes(event.data.to ?? "")
+        );
+      }),
+    ).toBe(true);
   });
 });

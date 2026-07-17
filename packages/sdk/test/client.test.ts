@@ -730,6 +730,103 @@ describe("executeToolCalls", () => {
     expect(result?.content).not.toContain("SECRET_TOKEN");
   });
 
+  it("manages webhook endpoints, rotates secrets, and lists deliveries", async () => {
+    const requests: Request[] = [];
+    const endpoint = {
+      endpointId: "whe_sdk",
+      url: "https://receiver.example.test/hook",
+      secretPrefix: "whsec_sdk_pre",
+      events: ["execution.completed"],
+      active: true,
+      createdAt: "2026-07-17T12:00:00.000Z",
+      updatedAt: "2026-07-17T12:00:00.000Z",
+    } as const;
+    const fetchImpl = testFetch(async (request) => {
+      const url = new URL(request.url);
+      if (url.pathname === "/v1/webhooks" && request.method === "POST") {
+        return jsonResponse({ ...endpoint, secret: "whsec_sdk_secret" }, 201);
+      }
+      if (url.pathname === "/v1/webhooks" && request.method === "GET") {
+        return jsonResponse({ webhooks: [endpoint], nextCursor: "next_sdk" });
+      }
+      if (
+        url.pathname === "/v1/webhooks/whe_sdk" &&
+        request.method === "PATCH"
+      ) {
+        return jsonResponse({ ...endpoint, active: false });
+      }
+      if (
+        url.pathname === "/v1/webhooks/whe_sdk/rotate-secret" &&
+        request.method === "POST"
+      ) {
+        return jsonResponse({
+          endpointId: endpoint.endpointId,
+          secretPrefix: "whsec_rotated",
+          secret: "whsec_rotated_secret",
+          rotatedAt: "2026-07-17T12:05:00.000Z",
+        });
+      }
+      if (url.pathname === "/v1/webhooks/whe_sdk/deliveries") {
+        return jsonResponse({
+          deliveries: [
+            {
+              deliveryId: "whd_sdk",
+              endpointId: endpoint.endpointId,
+              eventId: "evt_sdk",
+              eventType: "execution.succeeded",
+              status: "succeeded",
+              attempts: [],
+              createdAt: "2026-07-17T12:01:00.000Z",
+              completedAt: "2026-07-17T12:01:01.000Z",
+            },
+          ],
+        });
+      }
+      if (
+        url.pathname === "/v1/webhooks/whe_sdk" &&
+        request.method === "DELETE"
+      ) {
+        return new Response(null, { status: 204 });
+      }
+      throw new Error(
+        `Unexpected webhook SDK request: ${request.method} ${url}`,
+      );
+    }, requests);
+    const eb = client(fetchImpl);
+
+    const created = await eb.webhooks.create({
+      url: endpoint.url,
+      events: ["execution.completed"],
+    });
+    const page = await eb.webhooks.list({ cursor: "cursor_sdk", limit: 25 });
+    const updated = await eb.webhooks.update(endpoint.endpointId, {
+      active: false,
+    });
+    const rotated = await eb.webhooks.rotateSecret(endpoint.endpointId);
+    const deliveries = await eb.webhooks.deliveries(endpoint.endpointId, {
+      limit: 10,
+    });
+    await eb.webhooks.delete(endpoint.endpointId);
+
+    expect(created.secret).toBe("whsec_sdk_secret");
+    expect(page.nextCursor).toBe("next_sdk");
+    expect(updated.active).toBe(false);
+    expect(rotated.secret).toBe("whsec_rotated_secret");
+    expect(deliveries.deliveries[0]?.deliveryId).toBe("whd_sdk");
+    expect(new URL(requests[1]?.url ?? "").search).toBe(
+      "?cursor=cursor_sdk&limit=25",
+    );
+    expect(requests.map(({ method }) => method)).toEqual([
+      "POST",
+      "GET",
+      "PATCH",
+      "POST",
+      "GET",
+      "DELETE",
+    ]);
+    await expect(requests[2]?.json()).resolves.toEqual({ active: false });
+  });
+
   it("refuses tool names that were not present in the emitted bundle", async () => {
     const run = vi.fn(async () => ({ refunded: true }));
     const eb = { tools: { run } } as unknown as Eyeball;

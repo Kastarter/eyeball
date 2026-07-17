@@ -157,6 +157,14 @@ export class DevVoiceSessionRuntime implements DevVoiceSessionAdvancer {
       turnHandler: this.#turnHandler,
     });
     this.#cursors.set(cursorKey, result.lastSequence);
+    for (const event of result.events) {
+      if (!agent.webhooks.events.includes(event.data.type)) continue;
+      this.#engine.webhookDeliverer.enqueueVoiceSessionEvent({
+        projectId: input.projectId,
+        endpointIds: agent.webhooks.endpointIds,
+        event,
+      });
+    }
     return { ...result, advancedByMs: input.milliseconds };
   }
 }

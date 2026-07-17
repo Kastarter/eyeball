@@ -3,6 +3,8 @@ export const VERSION = "0.1.0";
 export {
   type AsyncExecuteResponse,
   type ConnectionId,
+  type CreatedWebhookEndpoint,
+  createWebhookSignature,
   type ExecutionId,
   type ExecutionMode,
   type ExecutionRecord,
@@ -13,11 +15,23 @@ export {
   type JsonValue,
   type NormalizedToolError,
   type QualifiedToolName,
+  type RotatedWebhookSecret,
   type StagedFileMetadata,
   type StagedFileReference,
   TOOL_ERROR_CODES,
   type ToolDefinition,
   type ToolNameMap,
+  type VerifyWebhookSignatureOptions,
+  verifyWebhookSignature,
+  type WebhookDelivery,
+  type WebhookDeliveryAttempt,
+  type WebhookDeliveryPage,
+  type WebhookDeliveryStatus,
+  type WebhookEndpoint,
+  type WebhookEndpointPage,
+  type WebhookEvent,
+  type WebhookEventType,
+  type WebhookSubscriptionEventType,
 } from "@eyeball/core";
 export {
   ConnectionsClient,
@@ -25,6 +39,7 @@ export {
   Eyeball,
   FilesClient,
   ToolsClient,
+  WebhooksClient,
 } from "./client.js";
 export { executeToolCalls } from "./tool-calls.js";
 export type * from "./types.js";

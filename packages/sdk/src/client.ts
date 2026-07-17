@@ -6,6 +6,7 @@ import {
 import {
   buildNameMap,
   type ConnectionId,
+  type CreatedWebhookEndpoint,
   type ExecutionBase,
   type ExecutionRecord,
   type ExecutionResult,
@@ -15,6 +16,7 @@ import {
   isCanonicalToolName,
   type JsonValue,
   type QualifiedToolName,
+  type RotatedWebhookSecret,
   type StagedFileMetadata,
   type StagedFileReference,
   TOOL_ERROR_CODES,
@@ -23,12 +25,18 @@ import {
   toAnthropicTools,
   toMcpTools,
   toOpenAITools,
+  WEBHOOK_SUBSCRIPTION_EVENT_TYPES,
+  type WebhookDeliveryPage,
+  type WebhookEndpoint,
+  type WebhookEndpointPage,
+  type WebhookSubscriptionEventType,
 } from "@eyeball/core";
 import { EyeballHttpClient, errorFromNormalized } from "./http.js";
 import type {
   ConnectedConnection,
   ConnectionPage,
   CreateConnectionOptions,
+  CreateWebhookEndpointOptions,
   ExecuteToolOptions,
   ExecutionPage,
   EyeballClock,
@@ -38,16 +46,20 @@ import type {
   GetToolsOptions,
   GetToolsResult,
   ListExecutionsOptions,
+  ListWebhookDeliveriesOptions,
+  ListWebhookEndpointsOptions,
   RevokedConnection,
   RunToolOptions,
   SearchToolsOptions,
   SearchToolsResult,
+  UpdateWebhookEndpointOptions,
   UploadFileOptions,
   WaitForExecutionOptions,
 } from "./types.js";
 
 const DEFAULT_POLL_MS = 500;
 const DEFAULT_TIMEOUT_MS = 60_000;
+const WEBHOOK_EVENT_TYPES = new Set<string>(WEBHOOK_SUBSCRIPTION_EVENT_TYPES);
 
 interface ClientContext {
   readonly http: EyeballHttpClient;
@@ -139,6 +151,51 @@ function base64Content(content: UploadFileOptions["content"]): string {
     );
   }
   return btoa(binary);
+}
+
+function webhookEndpointId(value: string): string {
+  if (value.trim().length === 0) {
+    return invalidInput("endpointId must not be empty.");
+  }
+  return encodeURIComponent(value);
+}
+
+function webhookEvents(
+  events: readonly WebhookSubscriptionEventType[],
+): readonly WebhookSubscriptionEventType[] {
+  if (
+    events.length === 0 ||
+    new Set(events).size !== events.length ||
+    events.some((event) => !WEBHOOK_EVENT_TYPES.has(event))
+  ) {
+    return invalidInput(
+      "events must contain one or more distinct supported webhook event types.",
+    );
+  }
+  return events;
+}
+
+function webhookPageSuffix(
+  options: ListWebhookEndpointsOptions | ListWebhookDeliveriesOptions,
+): string {
+  const query = new URLSearchParams();
+  if (options.cursor !== undefined) {
+    if (options.cursor.length === 0) {
+      return invalidInput("cursor must not be empty.");
+    }
+    query.set("cursor", options.cursor);
+  }
+  if (options.limit !== undefined) {
+    if (
+      !Number.isInteger(options.limit) ||
+      options.limit < 1 ||
+      options.limit > 100
+    ) {
+      return invalidInput("limit must be an integer from 1 through 100.");
+    }
+    query.set("limit", String(options.limit));
+  }
+  return query.size === 0 ? "" : `?${query.toString()}`;
 }
 
 export class FilesClient {
@@ -507,11 +564,104 @@ export class ConnectionsClient {
   }
 }
 
+export class WebhooksClient {
+  readonly #context: ClientContext;
+
+  constructor(context: ClientContext) {
+    this.#context = context;
+  }
+
+  create(
+    options: CreateWebhookEndpointOptions,
+  ): Promise<CreatedWebhookEndpoint> {
+    if (options.url.trim().length === 0) {
+      return invalidInput("url must not be empty.");
+    }
+    return this.#context.http.request("/v1/webhooks", {
+      method: "POST",
+      body: JSON.stringify({
+        url: options.url,
+        events: webhookEvents(options.events),
+        ...(options.active === undefined ? {} : { active: options.active }),
+      }),
+    });
+  }
+
+  list(
+    options: ListWebhookEndpointsOptions = {},
+  ): Promise<WebhookEndpointPage> {
+    return this.#context.http.request(
+      `/v1/webhooks${webhookPageSuffix(options)}`,
+    );
+  }
+
+  get(endpointId: string): Promise<WebhookEndpoint> {
+    return this.#context.http.request(
+      `/v1/webhooks/${webhookEndpointId(endpointId)}`,
+    );
+  }
+
+  update(
+    endpointId: string,
+    options: UpdateWebhookEndpointOptions,
+  ): Promise<WebhookEndpoint> {
+    if (
+      options.url === undefined &&
+      options.events === undefined &&
+      options.active === undefined
+    ) {
+      return invalidInput("Webhook update must change url, events, or active.");
+    }
+    if (options.url !== undefined && options.url.trim().length === 0) {
+      return invalidInput("url must not be empty.");
+    }
+    return this.#context.http.request(
+      `/v1/webhooks/${webhookEndpointId(endpointId)}`,
+      {
+        method: "PATCH",
+        body: JSON.stringify({
+          ...(options.url === undefined ? {} : { url: options.url }),
+          ...(options.events === undefined
+            ? {}
+            : { events: webhookEvents(options.events) }),
+          ...(options.active === undefined ? {} : { active: options.active }),
+        }),
+      },
+    );
+  }
+
+  rotateSecret(endpointId: string): Promise<RotatedWebhookSecret> {
+    return this.#context.http.request(
+      `/v1/webhooks/${webhookEndpointId(endpointId)}/rotate-secret`,
+      { method: "POST" },
+    );
+  }
+
+  deliveries(
+    endpointId: string,
+    options: ListWebhookDeliveriesOptions = {},
+  ): Promise<WebhookDeliveryPage> {
+    return this.#context.http.request(
+      `/v1/webhooks/${webhookEndpointId(endpointId)}/deliveries${webhookPageSuffix(
+        options,
+      )}`,
+    );
+  }
+
+  delete(endpointId: string): Promise<void> {
+    return this.#context.http.request(
+      `/v1/webhooks/${webhookEndpointId(endpointId)}`,
+      { method: "DELETE" },
+    );
+  }
+}
+
 export class Eyeball {
   readonly tools: ToolsClient;
   readonly executions: ExecutionsClient;
   readonly connections: ConnectionsClient;
   readonly files: FilesClient;
+  readonly webhooks: WebhooksClient;
 
   constructor(options: EyeballOptions) {
     const fetchImpl = options.fetch ?? globalThis.fetch;
@@ -542,5 +692,6 @@ export class Eyeball {
     this.tools = new ToolsClient(context, this.executions);
     this.connections = new ConnectionsClient(context);
     this.files = new FilesClient(context);
+    this.webhooks = new WebhooksClient(context);
   }
 }
