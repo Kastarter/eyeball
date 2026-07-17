@@ -1,19 +1,9 @@
+import type { JsonValue, ResolvedCredential } from "@eyeball/core";
+import type { ProviderMock } from "../../../../mocks/packages/mock-kit/dist/index.js";
 import {
-  createExecutionId,
-  type JsonValue,
-  MockCredentialProvider,
-  type ResolvedCredential,
-} from "@eyeball/core";
-import {
-  createMockApp,
-  type ProviderMock,
-} from "../../../../mocks/packages/mock-kit/dist/index.js";
-import { createExecutorApp, ExecutionEngine } from "../../src/index.js";
-
-const API_KEY = "ey_test_email_mocks";
-const MOCK_ORIGIN = "http://mocks.local";
-const PROJECT_ID = "proj_email_mocks";
-const USER_ID = "user_email_mocks";
+  createInProcessExecutorHarness,
+  executionOutput as sharedExecutionOutput,
+} from "../helpers/executor-harness.js";
 
 export interface ExecuteResult {
   status: number;
@@ -27,62 +17,24 @@ export interface EmailMockHarness {
   ): Promise<ExecuteResult>;
 }
 
-function fetchFor(provider: ProviderMock): typeof fetch {
-  const mockApp = createMockApp({ providers: [provider] });
-  return (async (input: RequestInfo | URL, init?: RequestInit) => {
-    const request = new Request(input, init);
-    if (new URL(request.url).origin !== MOCK_ORIGIN) {
-      throw new Error(`Unexpected provider origin: ${request.url}`);
-    }
-    return mockApp.request(request);
-  }) as typeof fetch;
-}
-
 export function createEmailMockHarness(
   provider: ProviderMock,
   credential: ResolvedCredential,
 ): EmailMockHarness {
-  let executionIndex = 0;
-  let idempotencyIndex = 0;
-  const toolkitSlug = provider.slug;
-  const credentialProvider = new MockCredentialProvider([
-    {
-      match: { projectId: PROJECT_ID, userId: USER_ID, toolkitSlug },
-      credential,
-    },
-  ]);
-  const envName = `EYEBALL_${toolkitSlug.toUpperCase().replaceAll("-", "_")}_BASE_URL`;
-  const engine = new ExecutionEngine({
-    credentialProvider,
-    fetchImpl: fetchFor(provider),
-    env: { [envName]: `${MOCK_ORIGIN}/${toolkitSlug}` },
-    executionIdFactory: () => {
-      executionIndex += 1;
-      return createExecutionId(
-        `email_${toolkitSlug.replaceAll("-", "_")}_${executionIndex}`,
-      );
-    },
+  const harness = createInProcessExecutorHarness({
+    toolkitSlug: provider.slug,
+    provider,
+    credential,
+    label: `email_${provider.slug}`,
+    apiKey: "ey_test_email_mocks",
+    projectId: "proj_email_mocks",
+    userId: "user_email_mocks",
+    requestId: "req_email_mocks",
   });
-  const app = createExecutorApp({
-    engine,
-    apiKeys: { [API_KEY]: PROJECT_ID },
-    requestIdFactory: () => "req_email_mocks",
-  });
-
   return {
     async execute(tool, input) {
-      idempotencyIndex += 1;
-      const response = await app.request("/v1/execute", {
-        method: "POST",
-        headers: {
-          Authorization: `Bearer ${API_KEY}`,
-          "Content-Type": "application/json",
-          "Idempotency-Key": `email-mock-${toolkitSlug}-${idempotencyIndex}`,
-        },
-        body: JSON.stringify({ tool, userId: USER_ID, input, mode: "sync" }),
-      });
-      const body = (await response.json()) as Readonly<Record<string, unknown>>;
-      return { status: response.status, body };
+      const result = await harness.execute(tool, input);
+      return { status: result.initialStatus, body: result.terminal };
     },
   };
 }
@@ -90,16 +42,11 @@ export function createEmailMockHarness(
 export function executionOutput(
   result: ExecuteResult,
 ): Readonly<Record<string, unknown>> {
-  if (result.status !== 200 || result.body.status !== "succeeded") {
-    throw new Error(
-      `Execution did not succeed: ${JSON.stringify(result.body)}`,
-    );
-  }
-  const output = result.body.output;
-  if (typeof output !== "object" || output === null || Array.isArray(output)) {
-    throw new Error("Execution output is not an object.");
-  }
-  return output as Readonly<Record<string, unknown>>;
+  return sharedExecutionOutput({
+    initialStatus: result.status,
+    initial: result.body,
+    terminal: result.body,
+  });
 }
 
 export function storeRecords<T extends object>(

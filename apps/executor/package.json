@@ -9,7 +9,8 @@
     "start": "node dist/server.js",
     "build": "tsc -p tsconfig.json",
     "test": "vitest run",
-    "typecheck": "tsc -p tsconfig.json --noEmit",
+    "test:contract": "vitest run test/contract/contract.test.ts",
+    "typecheck": "tsc -p tsconfig.json --noEmit && tsc -p tsconfig.contract.json --noEmit",
     "lint": "biome check src test"
   },
   "dependencies": {

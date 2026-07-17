@@ -7,7 +7,8 @@ authenticated tools across SaaS, messaging, voice, social data, and business sys
 
 - Monorepo scaffold is green; `@eyeball/core` implements RFC 001 contracts and framework converters with 79 tests.
 - `@eyeball/catalog` keeps the frozen catalog 1.0 baseline and ships catalog 1.1 with email, calendar, messaging, voice, CRM, ERP/accounting, payments, e-commerce, customer-support, social-data, storage, spreadsheet/database, and PM/dev-tool contracts plus 37 provider manifests; catalog tests total 43.
-- `@eyeball/executor` implements RFC 001 sync/async execution, polling, idempotency, API-key isolation, and adapter dispatch with 77 tests, including in-process email, messaging, voice, voice-agent, business, productivity, and social-data mock flows.
+- `@eyeball/executor` implements RFC 001 sync/async execution, polling, idempotency, API-key isolation, and adapter dispatch, including in-process integration flows and the formal manifest-derived contract suite.
+- The contract suite generates 457 provider/tool rows from 37 manifests: 218 smoke and 239 `not_supported`; 35 auth-expiry assertions pass and two auth-class-none assertions skip.
 - `@eyeball/toolkits` implements P0 email, messaging, voice, business, productivity, and ScrapeCreators social-data adapters, including the native `voice-agents` adapter.
 - The eight-document spec suite is:
   - `SPEC.md` — product, architecture, repos, delivery order, open questions, document map.
@@ -30,6 +31,8 @@ authenticated tools across SaaS, messaging, voice, social data, and business sys
 - Credential env vars use `EYEBALL_CRED_<TOOLKIT>_*`; OSS env auth is one project/user pair.
 - Executor API keys use `EYEBALL_API_KEYS="key:projectId,..."`; `/v1/*` is project-scoped and `/health` is public.
 - Executor HTTP tests use Hono `app.request` and in-process provider apps; they never bind loopback sockets.
+- Contract fixtures live by capability under `apps/executor/test/contract/fixtures`; `pnpm test:contract` defaults to mock and writes the ignored `apps/executor/contract-report.json`.
+- Real contracts use `EYEBALL_CONTRACT_TARGET=real`, `EYEBALL_REAL_<TOOLKIT>_*` target/fixture settings, and `EYEBALL_CRED_<TOOLKIT>_*` credentials; missing configuration is an explicit Vitest skip.
 - Canonical tool names use `toolkit.operation`; restricted surfaces use reversible `toolkit__operation`.
 - Format converters pass canonical JSON Schema objects through unchanged; OpenAI strict mode stays omitted until a version-pinned compatibility validator exists.
 - WhatsApp Business connections keep `phoneNumberId` beside `apiKey` in the resolved API-key credential tuple; messaging calls do not repeat it under `x_provider`.

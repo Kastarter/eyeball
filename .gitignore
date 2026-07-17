@@ -3,6 +3,7 @@ dist
 .turbo
 .pnpm-store
 .env*
+apps/executor/contract-report.json
 
 # nested standalone repo (eyeball-mocks)
 mocks/
