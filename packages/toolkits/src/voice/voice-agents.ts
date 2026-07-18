@@ -2,10 +2,13 @@ import {
   type AdapterContext,
   EyeballError,
   type JsonValue,
+  type QualifiedToolName,
   TOOL_ERROR_CODES,
+  type ToolDefinition,
   type ToolkitAdapter,
   type TranscriptArtifact,
   type TranscriptTurn,
+  VOICE_WORKER_CONTRACT_VERSION,
   type VoiceAgentDefinition,
   type VoiceAgentDraft,
   type VoiceAgentSession,
@@ -14,6 +17,8 @@ import {
   type VoiceAgentSessionState,
   type VoiceAgentSummary,
   type VoiceAgentTransport,
+  type VoiceWorkerChatTurnResponse,
+  type VoiceWorkerStartSessionRequest,
   validateVoiceAgentDraft,
 } from "@eyeball/core";
 import { createProviderHttpClient } from "../http-client.js";
@@ -31,6 +36,7 @@ import {
   stringValue,
   unsupportedTool,
 } from "../messaging/common.js";
+import type { VoiceSessionDriver } from "./session-driver.js";
 
 export interface VoiceAgentBinding {
   bindingId: string;
@@ -708,15 +714,23 @@ function page<T>(values: readonly T[], offset: number, limit: number) {
 
 export interface VoiceAgentsAdapterOptions {
   store?: AgentStore;
+  sessionDriver?: VoiceSessionDriver;
+  resolveTool?: (name: QualifiedToolName) => ToolDefinition | undefined;
 }
 
 /** Native RFC 002 adapter backed by an injectable revision store and Pipecat. */
 export class VoiceAgentsAdapter implements ToolkitAdapter {
   readonly toolkitSlug = "voice-agents";
   readonly store: AgentStore;
+  readonly #sessionDriver: VoiceSessionDriver | undefined;
+  readonly #resolveTool:
+    | ((name: QualifiedToolName) => ToolDefinition | undefined)
+    | undefined;
 
   constructor(options: VoiceAgentsAdapterOptions = {}) {
     this.store = options.store ?? new InMemoryAgentStore();
+    this.#sessionDriver = options.sessionDriver;
+    this.#resolveTool = options.resolveTool;
   }
 
   async execute(context: AdapterContext): Promise<JsonValue> {
@@ -827,6 +841,105 @@ export class VoiceAgentsAdapter implements ToolkitAdapter {
     }
   }
 
+  private remoteStartRequest(
+    context: AdapterContext,
+    agent: VoiceAgentDefinition,
+    transport: VoiceWorkerStartSessionRequest["transport"],
+  ): VoiceWorkerStartSessionRequest {
+    const allowedTools = agent.tools.map((name) => {
+      const definition = this.#resolveTool?.(name);
+      if (definition === undefined) {
+        throw new EyeballError({
+          code: TOOL_ERROR_CODES.PROVIDER_ERROR,
+          message: `${context.tool.name}: the remote voice worker could not resolve canonical schema ${name}.`,
+        });
+      }
+      return {
+        name: definition.name,
+        description: definition.description,
+        inputSchema: copy(definition.inputSchema),
+      };
+    });
+    return {
+      contractVersion: VOICE_WORKER_CONTRACT_VERSION,
+      scope: {
+        projectId: context.projectId,
+        userId: context.userId,
+      },
+      agent: {
+        id: agent.id,
+        revision: agent.revision,
+        systemPrompt: agent.systemPrompt,
+        llm: {
+          provider: "anthropic",
+          ...copy(agent.llm),
+        },
+        voice: copy(agent.voice),
+        allowedTools,
+        guardrails: copy(agent.guardrails),
+        webhooks: copy(agent.webhooks),
+        recordingPolicy: copy(agent.recordingPolicy),
+        bargeIn: copy(agent.voice.bargeIn ?? { enabled: true }),
+      },
+      transport,
+    };
+  }
+
+  private rememberRemoteSession(
+    context: AdapterContext,
+    agent: VoiceAgentDefinition,
+    session: VoiceAgentSession,
+  ): VoiceAgentSessionPointer {
+    const pointer: VoiceAgentSessionPointer = {
+      sessionId: session.id,
+      projectId: context.projectId,
+      userId: context.userId,
+      agentId: agent.id,
+      agentRevision: agent.revision,
+      callId: `call_${session.id}`,
+      createdAt: session.createdAt,
+    };
+    assertTrustedSession(context, session, pointer);
+    this.store.rememberSession(pointer);
+    return pointer;
+  }
+
+  private async remoteEventPage(
+    context: AdapterContext,
+    sessionId: string,
+    afterSequence: number,
+    limit: number,
+  ): Promise<{
+    events: readonly VoiceAgentSessionEvent[];
+    nextSequence: number;
+    hasMore: boolean;
+  }> {
+    if (this.#sessionDriver === undefined) {
+      return eventPage(context, sessionId, afterSequence, limit);
+    }
+    return this.#sessionDriver.getEvents(sessionId, { afterSequence, limit });
+  }
+
+  private async remoteAllEvents(
+    context: AdapterContext,
+    sessionId: string,
+  ): Promise<readonly VoiceAgentSessionEvent[]> {
+    if (this.#sessionDriver === undefined) return allEvents(context, sessionId);
+    const events: VoiceAgentSessionEvent[] = [];
+    let cursor = 0;
+    for (;;) {
+      const current = await this.remoteEventPage(
+        context,
+        sessionId,
+        cursor,
+        200,
+      );
+      events.push(...current.events);
+      if (!current.hasMore || current.nextSequence <= cursor) return events;
+      cursor = current.nextSequence;
+    }
+  }
+
   private async startAgentCall(context: AdapterContext): Promise<JsonValue> {
     const agent = this.store.getRunnableAgent(
       context.projectId,
@@ -837,6 +950,35 @@ export class VoiceAgentsAdapter implements ToolkitAdapter {
       throw new EyeballError({
         code: TOOL_ERROR_CODES.INVALID_INPUT,
         message: `${context.tool.name}: outbound calls require a pstn:twilio agent revision.`,
+      });
+    }
+    if (this.#sessionDriver !== undefined) {
+      const metadata = isRecord(context.canonicalInput.metadata)
+        ? (copy(context.canonicalInput.metadata) as Readonly<
+            Record<string, JsonValue>
+          >)
+        : undefined;
+      const from = stringValue(context.canonicalInput, "from");
+      const transportConnectionId = stringValue(
+        context.canonicalInput,
+        "transportConnectionId",
+      );
+      const session = await this.#sessionDriver.startSession(
+        this.remoteStartRequest(context, agent, {
+          kind: "twilio",
+          to: requiredInputString(context, "to"),
+          ...(from === undefined ? {} : { from }),
+          ...(transportConnectionId === undefined
+            ? {}
+            : { transportConnectionId }),
+          ...(metadata === undefined ? {} : { metadata }),
+        }),
+      );
+      const pointer = this.rememberRemoteSession(context, agent, session);
+      return asJson({
+        session,
+        callId: pointer.callId,
+        transcriptArtifactId: `transcript_${session.id}`,
       });
     }
     const body = await pipecatObject(
@@ -903,11 +1045,16 @@ export class VoiceAgentsAdapter implements ToolkitAdapter {
       context.userId,
       sessionId,
     );
-    const body = await pipecatObject(
-      context,
-      `sessions/${encodeURIComponent(sessionId)}`,
-    );
-    const session = sessionFromProvider(context, body);
+    const session =
+      this.#sessionDriver === undefined
+        ? sessionFromProvider(
+            context,
+            await pipecatObject(
+              context,
+              `sessions/${encodeURIComponent(sessionId)}`,
+            ),
+          )
+        : await this.#sessionDriver.getSession(sessionId);
     assertTrustedSession(context, session, pointer);
     return { session, pointer };
   }
@@ -915,7 +1062,7 @@ export class VoiceAgentsAdapter implements ToolkitAdapter {
   private async getAgentSession(context: AdapterContext): Promise<JsonValue> {
     const sessionId = requiredInputString(context, "sessionId");
     const { session } = await this.readSession(context, sessionId);
-    const events = await eventPage(
+    const events = await this.remoteEventPage(
       context,
       sessionId,
       optionalInteger(context.canonicalInput, "afterSequence") ?? 0,
@@ -967,7 +1114,12 @@ export class VoiceAgentsAdapter implements ToolkitAdapter {
   ): Promise<JsonValue> {
     const sessionId = requiredInputString(context, "sessionId");
     const { session } = await this.readSession(context, sessionId);
-    const events = await allEvents(context, sessionId);
+    const agent = this.store.getAgent(
+      context.projectId,
+      session.agentId,
+      session.agentRevision,
+    );
+    const events = await this.remoteAllEvents(context, sessionId);
     const turns: TranscriptTurn[] = [];
     let previousEndMs = 0;
     for (const event of events) {
@@ -988,6 +1140,9 @@ export class VoiceAgentsAdapter implements ToolkitAdapter {
       agentRevision: session.agentRevision,
       transport: session.transport,
       final,
+      ...(agent.voice.stt.language === undefined
+        ? {}
+        : { language: agent.voice.stt.language }),
       startedAt: session.startedAt ?? session.createdAt,
       ...(session.completedAt === undefined
         ? {}
@@ -1016,6 +1171,48 @@ export class VoiceAgentsAdapter implements ToolkitAdapter {
         throw new EyeballError({
           code: TOOL_ERROR_CODES.INVALID_INPUT,
           message: `${context.tool.name}: creating a chat session requires a chat agent revision.`,
+        });
+      }
+      if (this.#sessionDriver !== undefined) {
+        if (this.#sessionDriver.sendTurn === undefined) {
+          throw new EyeballError({
+            code: TOOL_ERROR_CODES.NOT_SUPPORTED,
+            message: `${context.tool.name}: the configured voice worker does not support chat turns.`,
+          });
+        }
+        const session = await this.#sessionDriver.startSession(
+          this.remoteStartRequest(context, agent, { kind: "chat" }),
+        );
+        const pointer = this.rememberRemoteSession(context, agent, session);
+        let turn: Omit<VoiceWorkerChatTurnResponse, "contractVersion">;
+        try {
+          turn = await this.#sessionDriver.sendTurn(session.id, {
+            contractVersion: VOICE_WORKER_CONTRACT_VERSION,
+            text: message,
+            idempotencyKey: clientMessageId,
+          });
+        } catch (error) {
+          await this.#sessionDriver
+            .stopSession(session.id, {
+              contractVersion: VOICE_WORKER_CONTRACT_VERSION,
+              reason: "The initial chat turn failed.",
+            })
+            .catch(() => undefined);
+          throw error;
+        }
+        assertTrustedSession(context, turn.session, pointer);
+        const receipt: VoiceAgentMessageReceipt = {
+          sessionId: session.id,
+          clientMessageId,
+          message,
+          userMessageId: turn.turnId,
+          assistantMessage: turn.assistantMessage,
+        };
+        this.store.rememberMessage(context.projectId, context.userId, receipt);
+        return asJson({
+          session: turn.session,
+          userMessageId: turn.turnId,
+          assistantMessage: turn.assistantMessage,
         });
       }
       const body = await pipecatObject(
@@ -1094,30 +1291,55 @@ export class VoiceAgentsAdapter implements ToolkitAdapter {
       });
     }
 
-    const turn = await pipecatObject(
-      context,
-      `sessions/${encodeURIComponent(suppliedSessionId)}/turns`,
-      jsonRequest({ text: message }),
-    );
-    const sessionValue = turn.session;
-    if (!isRecord(sessionValue)) {
-      throw providerError(
-        context,
-        "Pipecat omitted the session from the turn response.",
-      );
+    const remoteTurn =
+      this.#sessionDriver === undefined
+        ? undefined
+        : await this.#sessionDriver.sendTurn?.(suppliedSessionId, {
+            contractVersion: VOICE_WORKER_CONTRACT_VERSION,
+            text: message,
+            idempotencyKey: clientMessageId,
+          });
+    if (this.#sessionDriver !== undefined && remoteTurn === undefined) {
+      throw new EyeballError({
+        code: TOOL_ERROR_CODES.NOT_SUPPORTED,
+        message: `${context.tool.name}: the configured voice worker does not support chat turns.`,
+      });
     }
-    const session = sessionFromProvider(context, sessionValue);
+    const turn =
+      remoteTurn ??
+      (await pipecatObject(
+        context,
+        `sessions/${encodeURIComponent(suppliedSessionId)}/turns`,
+        jsonRequest({ text: message }),
+      ));
+    const session =
+      remoteTurn?.session ??
+      (() => {
+        const sessionValue = turn.session;
+        if (!isRecord(sessionValue)) {
+          throw providerError(
+            context,
+            "Pipecat omitted the session from the turn response.",
+          );
+        }
+        return sessionFromProvider(context, sessionValue);
+      })();
     assertTrustedSession(context, session, pointer);
-    const userMessageId = requiredStringField(context, turn, "turnId");
+    const userMessageId =
+      remoteTurn?.turnId ?? requiredStringField(context, turn, "turnId");
     const receipt: VoiceAgentMessageReceipt = {
       sessionId: suppliedSessionId,
       clientMessageId,
       message,
       userMessageId,
-      assistantMessage: message,
+      assistantMessage: remoteTurn?.assistantMessage ?? message,
     };
     this.store.rememberMessage(context.projectId, context.userId, receipt);
-    return asJson({ session, userMessageId, assistantMessage: message });
+    return asJson({
+      session,
+      userMessageId,
+      assistantMessage: receipt.assistantMessage,
+    });
   }
 }
 

@@ -117,7 +117,7 @@ The listener ports and development identity can be changed with `EYEBALL_MOCKHOU
 
 The executor remains zero-config and process-local by default. Set `EYEBALL_DATABASE_URL` in a deployment to use the Drizzle-backed Postgres stores for executions and 24-hour idempotency, webhook endpoint and delivery logs, and trigger subscription, cursor, and dedup state. Committed migrations run at executor boot and can also be applied explicitly with `pnpm db:migrate`; `docker compose up -d postgres` starts the optional local development database. CI and contract tests use embedded PGlite and do not require Docker.
 
-Database persistence does not yet make the closure-based execution and webhook queues, trigger polling leases, or the synchronous voice-agent store durable. See [Run the executor](./docs-site/self-hosting/executor.mdx) for configuration and restart boundaries.
+Database persistence does not yet make the closure-based execution and webhook queues, trigger polling leases, or the synchronous voice-agent definition store durable. Voice-session state and ordered events can be delegated to the separately deployed SQLite-backed worker. See [Run the executor](./docs-site/self-hosting/executor.mdx) and [Voice worker](./docs-site/self-hosting/voice-worker.mdx) for configuration and restart boundaries.
 
 ## Docs site
 
@@ -153,7 +153,7 @@ ANTHROPIC_API_KEY=... pnpm demo:anthropic
 | Local credential vault | Built with encrypted single-tenant storage and development fixtures |
 | Hosted OAuth vault | Cloud work pending |
 | Real-provider certification | Pending provider credentials and certification runs |
-| Production voice worker | Pending durable state and persistent worker infrastructure |
+| Voice-worker control plane | Versioned Python worker, executor bridge, SQLite recovery, account-free contract suites, and Docker/Fly certification assets built; no live carrier, media, speech, or model path is certified yet |
 | Billing | Cloud work pending |
 
 ## Documentation map

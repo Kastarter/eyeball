@@ -12,4 +12,5 @@ export * from "./triggers.js";
 export * from "./types/execution.js";
 export * from "./types/tool.js";
 export * from "./voice-agents.js";
+export * from "./voice-worker.js";
 export * from "./webhooks.js";

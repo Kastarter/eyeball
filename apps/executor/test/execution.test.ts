@@ -13,6 +13,7 @@ import {
   type QualifiedToolName,
   type ResolvedCredential,
   TOOL_ERROR_CODES,
+  VOICE_WORKER_EXECUTION_ID_HEADER,
 } from "@eyeball/core";
 import { Hono } from "hono";
 import { describe, expect, it } from "vitest";
@@ -330,6 +331,7 @@ function postExecute(
   options: {
     apiKey?: string;
     idempotencyKey?: string;
+    reservedExecutionId?: string;
     userIdHeader?: string;
   } = {},
 ): Promise<Response> {
@@ -339,6 +341,9 @@ function postExecute(
   };
   if (options.idempotencyKey !== undefined) {
     headers["Idempotency-Key"] = options.idempotencyKey;
+  }
+  if (options.reservedExecutionId !== undefined) {
+    headers[VOICE_WORKER_EXECUTION_ID_HEADER] = options.reservedExecutionId;
   }
   if (options.userIdHeader !== undefined) {
     headers["X-Eyeball-User-Id"] = options.userIdHeader;
@@ -797,6 +802,51 @@ describe("RFC 001 execution API", () => {
         "Reserved execution ID does not match the existing idempotent execution.",
     });
     expect(harness.calls).toHaveLength(1);
+  });
+
+  it("accepts reserved child identities only from a pinned synchronous worker", async () => {
+    const reservedExecutionId = createExecutionId("voice_http_event_7");
+    const projectScoped = createHarness();
+    const forbidden = await postExecute(
+      projectScoped.app,
+      executeRequest("reserved"),
+      {
+        idempotencyKey: "voice-session:session_1:event:7",
+        reservedExecutionId,
+      },
+    );
+    expect(forbidden.status).toBe(403);
+    await expect(forbidden.json()).resolves.toMatchObject({
+      error: { code: "auth_insufficient_scope" },
+    });
+
+    const pinned = createHarness({ pinnedUserId: USER_1 });
+    const missingIdempotency = await postExecute(
+      pinned.app,
+      executeRequest("reserved"),
+      { reservedExecutionId },
+    );
+    expect(missingIdempotency.status).toBe(422);
+
+    const asynchronous = await postExecute(
+      pinned.app,
+      executeRequest("reserved", { mode: "async" }),
+      {
+        idempotencyKey: "voice-session:session_1:event:7",
+        reservedExecutionId,
+      },
+    );
+    expect(asynchronous.status).toBe(422);
+
+    const accepted = await postExecute(pinned.app, executeRequest("reserved"), {
+      idempotencyKey: "voice-session:session_1:event:7",
+      reservedExecutionId,
+    });
+    expect(accepted.status).toBe(200);
+    await expect(accepted.json()).resolves.toMatchObject({
+      executionId: reservedExecutionId,
+      status: "succeeded",
+    });
   });
 
   it("returns 409 without allocating when idempotency parameters drift", async () => {

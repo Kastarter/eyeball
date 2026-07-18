@@ -8,12 +8,14 @@ import {
   fromRestrictedToolName,
   isCanonicalToolName,
   isConnectionId,
+  isExecutionId,
   isWebhookSubscriptionEventType,
   type JsonValue,
   materializeApiKeyring,
   parseApiKeyring,
   type QualifiedToolName,
   TOOL_ERROR_CODES,
+  VOICE_WORKER_EXECUTION_ID_HEADER,
   WEBHOOK_SUBSCRIPTION_EVENT_TYPES,
   type WebhookSubscriptionEventType,
 } from "@eyeball/core";
@@ -1105,10 +1107,56 @@ export function createExecutorApp(options: ExecutorAppOptions = {}): Hono<{
         return pinnedUserFailure(context);
       }
       const idempotencyKey = context.req.header("Idempotency-Key");
+      const reservedExecutionId = context.req.header(
+        VOICE_WORKER_EXECUTION_ID_HEADER,
+      );
+      if (
+        reservedExecutionId !== undefined &&
+        !isExecutionId(reservedExecutionId)
+      ) {
+        return invalidQuery(
+          context,
+          `${VOICE_WORKER_EXECUTION_ID_HEADER} must be a canonical execution ID.`,
+        );
+      }
+      if (
+        reservedExecutionId !== undefined &&
+        context.get("pinnedUserId") === undefined
+      ) {
+        return context.json(
+          createErrorEnvelope(
+            {
+              code: TOOL_ERROR_CODES.AUTH_INSUFFICIENT_SCOPE,
+              message: `${VOICE_WORKER_EXECUTION_ID_HEADER} requires a user-pinned API key.`,
+              retryable: false,
+            },
+            context.get("requestId"),
+          ),
+          403,
+        );
+      }
+      if (reservedExecutionId !== undefined && idempotencyKey === undefined) {
+        return invalidQuery(
+          context,
+          `${VOICE_WORKER_EXECUTION_ID_HEADER} requires Idempotency-Key.`,
+        );
+      }
+      if (
+        reservedExecutionId !== undefined &&
+        (!isRecord(request) || request.mode !== "sync")
+      ) {
+        return invalidQuery(
+          context,
+          `${VOICE_WORKER_EXECUTION_ID_HEADER} is restricted to synchronous child executions.`,
+        );
+      }
       const outcome = await engine.execute({
         projectId: context.get("projectId"),
         request,
         ...(idempotencyKey === undefined ? {} : { idempotencyKey }),
+        ...(reservedExecutionId === undefined
+          ? {}
+          : { executionId: reservedExecutionId }),
       });
       return context.json(outcome.response, outcome.statusCode);
     } catch (error) {

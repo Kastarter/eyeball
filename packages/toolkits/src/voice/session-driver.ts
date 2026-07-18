@@ -8,8 +8,14 @@ import {
   type QualifiedToolName,
   TOOL_ERROR_CODES,
   type VoiceAgentDefinition,
+  type VoiceAgentSession,
   type VoiceAgentSessionEvent,
   type VoiceAgentSessionState,
+  type VoiceWorkerChatTurnRequest,
+  type VoiceWorkerChatTurnResponse,
+  type VoiceWorkerEventPage,
+  type VoiceWorkerStartSessionRequest,
+  type VoiceWorkerStopSessionRequest,
 } from "@eyeball/core";
 
 const TERMINAL_SESSION_STATES = new Set<VoiceAgentSessionState>([
@@ -22,6 +28,30 @@ export interface VoiceSessionRef {
   sessionId: string;
   /** Last durably handled event. The next poll begins after this sequence. */
   afterSequence?: number;
+}
+
+/**
+ * Versioned control-plane seam implemented by the deployed remote worker.
+ * The scripted polling functions below remain the local development driver.
+ */
+export interface VoiceSessionDriver {
+  startSession(
+    request: VoiceWorkerStartSessionRequest,
+  ): Promise<VoiceAgentSession>;
+  stopSession(
+    sessionId: string,
+    request: VoiceWorkerStopSessionRequest,
+  ): Promise<VoiceAgentSession>;
+  getSession(sessionId: string): Promise<VoiceAgentSession>;
+  getEvents(
+    sessionId: string,
+    options?: { afterSequence?: number; limit?: number },
+  ): Promise<VoiceWorkerEventPage>;
+  sendTurn?(
+    sessionId: string,
+    request: VoiceWorkerChatTurnRequest,
+  ): Promise<Omit<VoiceWorkerChatTurnResponse, "contractVersion">>;
+  close?(): Promise<void>;
 }
 
 /** Immutable scope copied onto the session job when a call starts. */

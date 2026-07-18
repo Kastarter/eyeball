@@ -1,29 +1,125 @@
 ---
 title: "Voice worker"
-description: "Run the portable voice-agent control plane with a deployment-provided durable worker."
+description: "Deploy the durable voice-session control plane and its provider-certification scaffolding."
 ---
 
-The `voice-agents` toolkit owns immutable agent revisions, sessions, events, allowlists, and transcript artifacts. A worker owns the live turn loop:
+`apps/voice-worker` is the persistent control-plane implementation of `eyeball.voice-worker.v1`. The TypeScript executor owns agent definitions, canonical schemas, credentials, execution records, and signed webhooks. The Python worker owns durable session state, a gap-free event log, chat turns, and restart-safe child dispatch. Pipecat, Twilio, and LiveKit code paths are present for provider certification, but the repository does not yet claim working live-call capability.
 
 ```text
-Twilio or LiveKit transport
-  → Deepgram STT
-  → model turn
-  → allowlisted child tool execution
-  → ElevenLabs TTS
-  → ordered session events and transcript
+client → executor → versioned worker control plane
+                      ├─ Twilio or LiveKit integration path (uncertified)
+                      ├─ Deepgram → Anthropic → ElevenLabs path (uncertified)
+                      ├─ durable SQLite session + events
+                      └─ allowlisted tool → executor /v1/execute
 ```
 
-The repository includes Pipecat adapter/driver code and a deterministic mock pipeline used by the restaurant demo. It does not ship a managed durable voice-worker deployment or a hosted model registry.
+The provider-integration code follows Pipecat's documented [pipeline](https://docs.pipecat.ai/pipecat/learn/pipeline), [function-calling](https://docs.pipecat.ai/pipecat/learn/function-calling), [Twilio WebSocket](https://docs.pipecat.ai/pipecat/telephony/twilio-websockets), and [transport initialization](https://docs.pipecat.ai/pipecat/learn/session-initialization) patterns. Pipecat and every provider SDK load lazily, so the account-free suite does not instantiate or verify those SDK paths.
 
-A production worker must:
+<Warning>
+  The account-free parity suites prove the versioned HTTP contract, durable event/recovery behavior, and mocked request assembly. They do not place calls, open audio sockets, verify provider credentials, test media timing, or certify live Twilio, LiveKit, Deepgram, ElevenLabs, or Anthropic behavior.
+</Warning>
 
-- pin one immutable agent revision per session;
-- preserve project/user/session identity on child executions;
-- enforce the agent tool allowlist before dispatch;
-- resume from durable ordered history without duplicating tool calls;
-- reuse pending execution identity after recovery;
-- enforce recording, consent, retention, DTMF redaction, and duration policy;
-- write gap-free sequence numbers and transcript artifacts.
+## Configure the trust boundary
 
-Use `voice-agents.get_agent_session` for incremental event polling and `get_session_transcript` for the normalized artifact. The [flagship tutorial](/capabilities/voice-agents) exercises this contract against mocks.
+Give the executor one project key for normal clients and a distinct key pinned to the worker's project and user. The worker key is the only caller allowed to reserve a durable child `executionId`.
+
+```bash
+EYEBALL_API_KEYS="ey_project:proj_local,ey_voice_worker:proj_local:diner_123" \
+EYEBALL_VOICE_WORKER_URL="https://voice-worker.example.com" \
+EYEBALL_VOICE_WORKER_TOKEN="replace-with-at-least-32-random-bytes" \
+  pnpm --filter @eyeball/executor start
+```
+
+Configure the worker with the same control token and the pinned executor key:
+
+```bash
+cd apps/voice-worker
+cp .env.example .env
+# Fill .env, then:
+docker compose --env-file .env up --build
+```
+
+The two service credentials have different directions:
+
+| Variable | Direction | Authority |
+| --- | --- | --- |
+| `EYEBALL_VOICE_WORKER_TOKEN` | executor → worker | Starts, reads, stops, and streams worker sessions. |
+| `EYEBALL_VOICE_WORKER_KEY` | worker → executor | Executes only as its keyring-pinned project and user. |
+
+Every `/v1/sessions/*` control request carries the shared token plus `X-Eyeball-Voice-Worker-Version: eyeball.voice-worker.v1`. Child calls return through the normal `/v1/execute` route with a stable `X-Eyeball-Execution-Id` and `voice-session:<session>:event:<sequence>` idempotency key. The executor accepts that reserved identity only for synchronous requests authenticated by a user-pinned key.
+
+<Warning>
+  One static worker key represents one executor user. Run a separate worker/key boundary per user or implement short-lived per-session worker authorization before serving multiple untrusted users from one deployment.
+</Warning>
+
+## Provider-certification settings
+
+| Variable | Required for | Meaning |
+| --- | --- | --- |
+| `EYEBALL_EXECUTOR_URL` | tool-enabled sessions | Trusted executor origin. |
+| `EYEBALL_VOICE_WORKER_KEY` | tool-enabled sessions | User-pinned executor API key. |
+| `EYEBALL_VOICE_WORKER_TOKEN` | `pipecat` mode | Shared worker control token and Twilio media-token root. |
+| `EYEBALL_VOICE_DATABASE_PATH` | all modes | SQLite path on durable storage. |
+| `EYEBALL_VOICE_PUBLIC_URL` | Twilio | Public HTTPS origin used in TwiML. |
+| `ANTHROPIC_API_KEY` | provider-backed chat/media path | Anthropic Messages/Pipecat model credential. |
+| `DEEPGRAM_API_KEY` | provider-backed media path | Streaming speech-to-text credential. |
+| `ELEVENLABS_API_KEY` | provider-backed media path | Streaming text-to-speech credential. |
+| `TWILIO_ACCOUNT_SID`, `TWILIO_AUTH_TOKEN`, `TWILIO_FROM_NUMBER` | outbound PSTN | Twilio call and Media Stream configuration. |
+| `LIVEKIT_URL`, `LIVEKIT_API_KEY`, `LIVEKIT_API_SECRET` | WebRTC runtime | LiveKit room token and transport configuration. |
+
+Provider secrets remain process environment or secret-manager inputs. They are never written into the immutable agent snapshot, SQLite session row, ordered event log, transcript, or executor response.
+
+The agent's `llm.model` currently passes directly to Anthropic. A hosted model registry and per-project model credential resolution remain separate control-plane work.
+
+## Deploy on Fly for certification
+
+The checked-in `fly.toml` keeps one 2 GB Machine running, mounts a durable volume, checks `/health`, and gives `SIGTERM` 35 seconds to drain.
+
+```bash
+cd apps/voice-worker
+fly volumes create voice_worker_data --region <region> --size 10 --app <app>
+fly secrets set --app <app> \
+  EYEBALL_VOICE_WORKER_TOKEN='...' \
+  EYEBALL_VOICE_WORKER_KEY='...' \
+  EYEBALL_EXECUTOR_URL='https://executor.example.com' \
+  EYEBALL_VOICE_PUBLIC_URL='https://<app>.fly.dev' \
+  ANTHROPIC_API_KEY='...' \
+  DEEPGRAM_API_KEY='...' \
+  ELEVENLABS_API_KEY='...'
+fly deploy --app <app> --region <region>
+```
+
+Set the Twilio secrets, LiveKit secrets, or both for the transports you use. Pipecat's [Fly deployment guide](https://docs.pipecat.ai/pipecat/deployment/platforms/fly) explains the platform-level media considerations; this repository's `fly.toml` additionally preserves the single-writer SQLite boundary.
+
+## Durability and recovery
+
+Before calling the executor, the worker commits a `tool_call` event and pending record containing the canonical tool, input, sequence, and stable execution ID. It commits `tool_result` before clearing the pending record. On restart, fake sessions resume their cursor and unresolved tool calls reuse the exact executor identity and idempotency key.
+
+Session events use monotonically increasing, gap-free sequence numbers. `voice-agents.get_agent_session` polls incrementally, and `get_session_transcript` normalizes the complete durable history. When configured, the executor observer forwards selected events and the terminal transcript through ordinary signed webhooks.
+
+The configured carrier-recovery policy marks an interrupted Twilio or LiveKit session failed instead of placing a duplicate call or joining twice. Graceful `SIGTERM` stops admission, waits for active tasks, and marks sessions that outlive the drain deadline abandoned. The carrier behavior still requires end-to-end certification.
+
+## Health and provider-free tests
+
+`GET /health` is intentionally public for container probes. It verifies SQLite access and reports admission state, active sessions, whether Pipecat imports, and whether the configured model/STT/TTS environment variables are present. `media.liveReady` is configuration readiness only; it does not contact providers or certify a media path.
+
+Run the account-free contract suite with the lightweight dependencies:
+
+```bash
+cd apps/voice-worker
+python -m pip install -e '.[dev]'
+PYTHONPATH=src python -m pytest
+```
+
+The fake transport is accepted only with both `EYEBALL_VOICE_MEDIA_MODE=fake` and `EYEBALL_VOICE_ALLOW_FAKE_TRANSPORT=true`. Tests prove ordered HTTP event pages, stable child identity, restart replay, allowlist enforcement, chat concurrency/idempotency, the Anthropic tool-result message shape through an injected fake SDK, control authentication, and deterministic Twilio request/media-URL construction. They do not prove provider acceptance or audio behavior.
+
+## Current operational boundaries
+
+- Run exactly one worker replica per SQLite volume. Multi-replica scheduling needs a distributed repository and session lease.
+- The executor's default `AgentStore` still keeps definitions, bindings, and session pointers in process memory. Worker sessions are durable, but full executor restart recovery needs a durable injected store.
+- The remote event observer and webhook-selection task are process-local. The worker event log remains the source of truth across an executor restart.
+- Provider-backed session requests currently require `recordingPolicy.mode=disabled`; no compliant audio-recording and retention backend ships here.
+- Direct chat is covered by account-free tests. Outbound Twilio and worker-level LiveKit integration paths are assembled but unverified; the catalog still has no public WebRTC session-entry tool, and inbound Twilio number provisioning/webhook verification remains open in RFC 002.
+- The media path targets Pipecat 1.5.0 APIs but has not been exercised or certified against real Twilio, LiveKit, Deepgram, ElevenLabs, or Anthropic accounts in this repository.
+
+The [flagship tutorial](/capabilities/voice-agents) remains the zero-account proof of the canonical agent, allowlist, child execution, event, and transcript contracts.

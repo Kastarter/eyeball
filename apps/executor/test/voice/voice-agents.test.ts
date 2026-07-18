@@ -247,7 +247,7 @@ describe("native voice-agents toolkit", () => {
         }),
       ).artifact,
     );
-    expect(partialArtifact.final).toBe(false);
+    expect(partialArtifact).toMatchObject({ final: false, language: "en" });
     const partialTurns = objects(partialArtifact.turns);
     expect(partialTurns.map(({ speaker }) => speaker)).toEqual([
       "human",

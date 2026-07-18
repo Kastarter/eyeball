@@ -117,6 +117,41 @@ pnpm eyeball-auth test gmail --user local-user \
 satisfy a provider's schema, pass `--tool` and `--input`. Production manifest base URLs are used by default; set the
 manifest override such as `EYEBALL_ZENDESK_BASE_URL=https://acme.zendesk.com` when the provider is tenant-scoped.
 
+### 2.3 Voice-worker service identity
+
+The separately deployed `apps/voice-worker` has two credentials with opposite trust directions. `EYEBALL_VOICE_WORKER_TOKEN`
+is a shared bearer secret sent by the executor to the worker's versioned session API. `EYEBALL_VOICE_WORKER_KEY` is an
+executor API key used by the worker when an allowlisted model tool call re-enters `/v1/execute`.
+
+The worker key MUST be pinned to both project and user in `EYEBALL_API_KEYS`:
+
+```bash
+export EYEBALL_API_KEYS='ey_project:proj_local,ey_voice_worker:proj_local:diner_123'
+export EYEBALL_VOICE_WORKER_URL='https://voice-worker.example.com'
+export EYEBALL_VOICE_WORKER_TOKEN='replace-with-at-least-32-random-bytes'
+
+# Worker process / secret manager:
+export EYEBALL_EXECUTOR_URL='https://executor.example.com'
+export EYEBALL_VOICE_WORKER_KEY='ey_voice_worker'
+export EYEBALL_VOICE_WORKER_TOKEN='replace-with-at-least-32-random-bytes'
+```
+
+Only a user-pinned key may submit the reserved `X-Eyeball-Execution-Id` header, and then only with synchronous mode and an
+`Idempotency-Key`. The worker commits the canonical call and stable execution identity before dispatch. Recovery reuses
+that identity and `voice-session:<sessionId>:event:<sequence>`, so executor-level replay prevents a duplicate provider side
+effect.
+
+Do not reuse the project-wide administrative key as the worker key, expose either service credential to a browser, or place
+the control token in a Twilio URL directly. Twilio media URLs contain only an HMAC-derived, session-bound token. One static
+worker key represents one user; a multi-user hosted worker requires short-lived per-session executor authorization that this
+open-core implementation does not provide.
+
+Anthropic, Deepgram, ElevenLabs, Twilio, and LiveKit credentials are deployment secrets for the provider-integration process and are not
+stored in session snapshots or SQLite events. Canonical child-tool credentials such as Gmail continue to resolve through the
+normal executor `CredentialProvider`. The `fake` worker mode exercises the control-plane event contract and mocked
+executor-reentry behavior with no third-party credentials, but it is rejected unless explicitly enabled for tests. These
+tests do not place a call, open a media socket, or certify any provider SDK or live credential.
+
 ## 3. OAuth metadata
 
 The following endpoints are grounded in the linked provider documentation as of 2026-07-17 except the explicitly marked

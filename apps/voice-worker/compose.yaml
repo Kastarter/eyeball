@@ -1,0 +1,32 @@
+services:
+  voice-worker:
+    build:
+      context: .
+    init: true
+    restart: unless-stopped
+    stop_grace_period: 35s
+    environment:
+      EYEBALL_VOICE_DATABASE_PATH: /var/lib/eyeball/voice-worker.sqlite3
+      EYEBALL_EXECUTOR_URL: ${EYEBALL_EXECUTOR_URL:-http://host.docker.internal:8787}
+      EYEBALL_VOICE_WORKER_KEY: ${EYEBALL_VOICE_WORKER_KEY:-}
+      EYEBALL_VOICE_WORKER_TOKEN: ${EYEBALL_VOICE_WORKER_TOKEN:-}
+      EYEBALL_VOICE_PUBLIC_URL: ${EYEBALL_VOICE_PUBLIC_URL:-}
+      EYEBALL_VOICE_MEDIA_MODE: ${EYEBALL_VOICE_MEDIA_MODE:-pipecat}
+      ANTHROPIC_API_KEY: ${ANTHROPIC_API_KEY:-}
+      DEEPGRAM_API_KEY: ${DEEPGRAM_API_KEY:-}
+      ELEVENLABS_API_KEY: ${ELEVENLABS_API_KEY:-}
+      TWILIO_ACCOUNT_SID: ${TWILIO_ACCOUNT_SID:-}
+      TWILIO_AUTH_TOKEN: ${TWILIO_AUTH_TOKEN:-}
+      TWILIO_FROM_NUMBER: ${TWILIO_FROM_NUMBER:-}
+      LIVEKIT_URL: ${LIVEKIT_URL:-}
+      LIVEKIT_API_KEY: ${LIVEKIT_API_KEY:-}
+      LIVEKIT_API_SECRET: ${LIVEKIT_API_SECRET:-}
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+    ports:
+      - "127.0.0.1:${EYEBALL_VOICE_WORKER_PORT:-8080}:8080"
+    volumes:
+      - voice-worker-data:/var/lib/eyeball
+
+volumes:
+  voice-worker-data:

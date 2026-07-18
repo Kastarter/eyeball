@@ -2,6 +2,7 @@ export * from "./deepgram.js";
 export * from "./elevenlabs.js";
 export * from "./livekit.js";
 export * from "./pipecat.js";
+export * from "./remote-session-driver.js";
 export * from "./session-driver.js";
 export * from "./twilio.js";
 export * from "./voice-agents.js";

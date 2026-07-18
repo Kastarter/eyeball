@@ -1,0 +1,40 @@
+# Supply a globally unique app with `fly deploy --app <name>`.
+kill_signal = "SIGTERM"
+kill_timeout = "35s"
+
+[build]
+  dockerfile = "Dockerfile"
+
+[env]
+  EYEBALL_VOICE_DATABASE_PATH = "/var/lib/eyeball/voice-worker.sqlite3"
+  EYEBALL_VOICE_MEDIA_MODE = "pipecat"
+  PORT = "8080"
+
+[http_service]
+  internal_port = 8080
+  force_https = true
+  auto_stop_machines = "off"
+  auto_start_machines = true
+  min_machines_running = 1
+  processes = ["app"]
+
+  [http_service.concurrency]
+    type = "connections"
+    soft_limit = 20
+    hard_limit = 30
+
+  [[http_service.checks]]
+    grace_period = "30s"
+    interval = "15s"
+    method = "GET"
+    path = "/health"
+    timeout = "3s"
+
+[[mounts]]
+  source = "voice_worker_data"
+  destination = "/var/lib/eyeball"
+
+[[vm]]
+  cpu_kind = "shared"
+  cpus = 2
+  memory = "2gb"

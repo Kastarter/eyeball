@@ -39,6 +39,10 @@ export interface DeepgramSttConfig {
 export interface VoiceConfig {
   tts: ElevenLabsTtsConfig;
   stt: DeepgramSttConfig;
+  /** Whether caller speech may interrupt an in-flight assistant response. */
+  bargeIn?: {
+    enabled: boolean;
+  };
 }
 
 export interface AllowedHoursWindow {
@@ -297,6 +301,12 @@ export const voiceAgentSchemaDefs = {
     properties: {
       tts: { $ref: "#/$defs/tts" },
       stt: { $ref: "#/$defs/stt" },
+      bargeIn: {
+        type: "object",
+        additionalProperties: false,
+        required: ["enabled"],
+        properties: { enabled: { type: "boolean" } },
+      },
     },
   },
   allowedHoursWindow: {

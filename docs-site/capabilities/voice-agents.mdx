@@ -183,12 +183,12 @@ The `script` is runtime-only Pipecat mock input; it never enters `VoiceAgentDefi
 
 The transcript artifact surfaces tool calls and child execution IDs; it does not flatten them into untraceable prose.
 
-## Move from mock to real
+## Prepare a real-provider certification run
 
-Keep the agent draft, policy, allowlist, and canonical tool inputs. Replace the mock executor/worker endpoints, connect Twilio, Deepgram, ElevenLabs, Google Calendar, and Gmail for the same `userId`, remove `script`, and stop calling the development-only `/v1/dev/voice-sessions/:id/advance` route. The mock path requires zero third-party accounts.
+Keep the agent draft, policy, allowlist, and canonical tool inputs. For a certification deployment, configure `apps/voice-worker`, set `EYEBALL_VOICE_WORKER_URL` and the shared control token on the executor, give the worker a user-pinned executor key, connect Twilio, Deepgram, ElevenLabs, Anthropic, Google Calendar, and Gmail for the same `userId`, remove `script`, and stop calling the development-only `/v1/dev/voice-sessions/:id/advance` route. The mock path requires zero third-party accounts; the [voice-worker guide](/self-hosting/voice-worker) describes the deployment variables and recovery boundary.
 
 <Warning>
-  Production model-registry resolution and durable voice-worker deployment remain deployment contracts, not a hosted service implemented by this repository. Verify those pieces before treating `start_agent_call` as production-ready.
+  The repository ships a durable control plane and deploy assets, but the account-free parity suites do not prove or claim live-call capability. The default executor agent store and remote-event observer remain process-local, provider-backed recording is disabled, and the worker currently treats `llm.model` as a direct Anthropic model ID. Real-account, end-to-end certification is required before treating `start_agent_call` as production-ready.
 </Warning>
 
 See [Voice Agents toolkit](/toolkits/generated/voice-agents) for all 11 tools and schemas.

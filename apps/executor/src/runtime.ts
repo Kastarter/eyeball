@@ -1,5 +1,13 @@
 import { defaultCatalog } from "@eyeball/catalog";
 import type { CredentialProvider } from "@eyeball/core";
+import {
+  defaultToolkitAdapters,
+  RemoteVoiceSessionDriver,
+  VoiceAgentsAdapter,
+  voiceWorkerTokenFromEnv,
+  voiceWorkerUrlFromEnv,
+} from "@eyeball/toolkits";
+import { AdapterRegistry } from "./adapters/index.js";
 import { createConfiguredCredentialProvider } from "./credential-provider.js";
 import { ExecutionEngine, type RuntimeCatalog } from "./engine.js";
 import {
@@ -45,6 +53,56 @@ async function drainRuntime(
   await engine.webhookDeliverer.onIdle();
 }
 
+function configuredVoiceWorker(
+  env: Readonly<Record<string, string | undefined>>,
+  catalog: RuntimeCatalog,
+): {
+  adapters?: AdapterRegistry;
+  driver?: RemoteVoiceSessionDriver;
+  bind(engine: ExecutionEngine): void;
+} {
+  const workerUrl = voiceWorkerUrlFromEnv(env);
+  if (workerUrl === undefined) return { bind: () => undefined };
+
+  let engine: ExecutionEngine | undefined;
+  const token = voiceWorkerTokenFromEnv(env);
+  const driver = new RemoteVoiceSessionDriver({
+    baseUrl: workerUrl,
+    ...(token === undefined ? {} : { token }),
+    onEvent: ({ request, event }) => {
+      if (!request.agent.webhooks.events.includes(event.data.type)) return;
+      engine?.webhookDeliverer.enqueueVoiceSessionEvent({
+        projectId: request.scope.projectId,
+        endpointIds: request.agent.webhooks.endpointIds,
+        event,
+      });
+    },
+    onTranscript: ({ request, transcript }) => {
+      if (!request.agent.webhooks.transcript) return;
+      engine?.webhookDeliverer.enqueueVoiceTranscript({
+        projectId: request.scope.projectId,
+        endpointIds: request.agent.webhooks.endpointIds,
+        transcript,
+      });
+    },
+  });
+  const voiceAgents = new VoiceAgentsAdapter({
+    sessionDriver: driver,
+    resolveTool: (name) => catalog.getTool(name),
+  });
+  return {
+    adapters: new AdapterRegistry(
+      defaultToolkitAdapters.map((adapter) =>
+        adapter.toolkitSlug === "voice-agents" ? voiceAgents : adapter,
+      ),
+    ),
+    driver,
+    bind: (boundEngine) => {
+      engine = boundEngine;
+    },
+  };
+}
+
 /**
  * Builds the stock executor runtime. EYEBALL_DATABASE_URL enables the pg-backed
  * stores and runs committed migrations before the engine becomes available.
@@ -56,6 +114,7 @@ export async function createExecutorRuntime(
   const catalog = options.catalog ?? defaultCatalog;
   const credentialProvider =
     options.credentialProvider ?? createConfiguredCredentialProvider({ env });
+  const voiceWorker = configuredVoiceWorker(env, catalog);
   const otel = await initializeOpenTelemetry(env);
   const configuredTracer = options.telemetry?.tracer ?? otel.tracer;
   const configuredMeter = options.telemetry?.meter ?? otel.meter;
@@ -73,9 +132,13 @@ export async function createExecutorRuntime(
       const engine = new ExecutionEngine({
         env,
         catalog,
+        ...(voiceWorker.adapters === undefined
+          ? {}
+          : { adapters: voiceWorker.adapters }),
         credentialProvider,
         telemetryRuntime: telemetry,
       });
+      voiceWorker.bind(engine);
       const triggerPollingScheduler = new TriggerPollingScheduler({
         service: engine.triggerService,
         logger: telemetry.logger,
@@ -86,6 +149,7 @@ export async function createExecutorRuntime(
         close: async () => {
           triggerPollingScheduler.stop();
           try {
+            await voiceWorker.driver?.close();
             await drainRuntime(engine, triggerPollingScheduler);
           } finally {
             await otel.shutdown();
@@ -93,6 +157,7 @@ export async function createExecutorRuntime(
         },
       };
     } catch (error) {
+      await voiceWorker.driver?.close();
       await otel.shutdown();
       throw error;
     }
@@ -123,12 +188,16 @@ export async function createExecutorRuntime(
     const engine = new ExecutionEngine({
       env,
       catalog,
+      ...(voiceWorker.adapters === undefined
+        ? {}
+        : { adapters: voiceWorker.adapters }),
       credentialProvider,
       store: initializedPersistence.executionStore,
       webhookDeliverer,
       triggerService,
       telemetryRuntime: telemetry,
     });
+    voiceWorker.bind(engine);
     const triggerPollingScheduler = new TriggerPollingScheduler({
       service: engine.triggerService,
       logger: telemetry.logger,
@@ -140,6 +209,7 @@ export async function createExecutorRuntime(
       close: async () => {
         triggerPollingScheduler.stop();
         try {
+          await voiceWorker.driver?.close();
           await drainRuntime(engine, triggerPollingScheduler);
         } finally {
           try {
@@ -151,6 +221,7 @@ export async function createExecutorRuntime(
       },
     };
   } catch (error) {
+    await voiceWorker.driver?.close();
     await persistence?.close();
     await otel.shutdown();
     throw error;

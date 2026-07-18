@@ -33,12 +33,14 @@ The creation response contains a `whsec_...` signing secret. It is returned exac
 | `execution.completed` | `execution.succeeded` or `execution.failed` | Convenience selector for both terminal outcomes. |
 | `execution.succeeded` | `execution.succeeded` | Emitted after a successful execution record is durable. |
 | `execution.failed` | `execution.failed` | Emitted after a failed execution record is durable. |
-| `voice.session.event` | `voice.session.event` | Carries a selected durable `VoiceAgentSessionEvent`. The development session driver is wired; the production worker must call the same delivery seam. |
-| `voice.transcript.ready` | `voice.transcript.ready` | Delivery seam is defined; production transcript publication awaits the persistent voice worker. |
+| `voice.session.event` | `voice.session.event` | Carries a selected durable `VoiceAgentSessionEvent`. Both the scripted development driver and configured remote worker feed this delivery seam. |
+| `voice.transcript.ready` | `voice.transcript.ready` | Emitted after a configured remote worker observes a terminal session and materializes its normalized transcript. |
 | `trigger.*` | Any `trigger.<toolkit>.<name>` | Wildcard selector for every trigger directed to the endpoint. |
 | `trigger.<toolkit>.<name>` | The same exact event type | Selects one canonical trigger, such as `trigger.gmail.email_received`. |
 
 Voice-agent definitions still select granular session events such as `session.lifecycle`, `tool_call`, and `tool_result`, and reference one or more project endpoint IDs. The endpoint itself subscribes to the outer `voice.session.event` class.
+
+Remote-worker events are durable in the worker, while the executor-side polling observer is currently process-local. If the executor restarts during a remote session, query the durable event stream and transcript after recovery; do not rely on webhook delivery as the only record of the session.
 
 Every request body uses this envelope:
 

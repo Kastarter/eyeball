@@ -73,13 +73,15 @@ Open-core tool and integration platform for AI agents: one typed, authenticated 
 - Catalog `1.1` includes `gmail.email_received` polling and `slack.message_received` push, with executor subscription CRUD and SDK clients.
 - Postgres durable stores are wired behind `EYEBALL_DATABASE_URL`; shared contracts run all stores against both memory and one embedded PGlite database.
 - Project request token buckets, optional UTC daily execution quotas, and manifest-declared toolkit concurrency caps are implemented.
+- A separately deployed Python voice worker provides versioned remote sessions, SQLite event durability, stable child execution identity, and account-free fake/chat contract suites; Pipecat/Twilio/LiveKit paths are certification scaffolding, not proven live-call capability.
 
 ## Known Issues
 
 - The Activepieces spike is not a production breadth layer: pieces need per-tool canonical mappings, isolated execution/egress, auth alignment, license provenance, and mock/real certification before catalog promotion; do not vendor the monorepo wholesale.
 - Hosted OAuth vault, billing, license finalization, and real-provider certification are not complete.
-- Voice agents/sessions remain process-local because the injectable `AgentStore` is synchronous; durable state needs an async seam plus a persistent production media worker.
-- Webhook endpoints and delivery attempts are durable with Postgres, but retry queues remain process-local; transcript publication awaits the voice worker.
+- Voice-agent definitions, bindings, and executor-side session pointers remain process-local because the injectable `AgentStore` is synchronous. The remote worker durably owns session state and events, but a durable agent-store seam is still required for full executor restart recovery.
+- Voice-worker parity suites prove the control-plane wire contract, deterministic recovery, and mocked provider request assembly only; Twilio, LiveKit, Deepgram, ElevenLabs, Anthropic, and end-to-end audio behavior still require live-account certification.
+- Webhook endpoints and delivery attempts are durable with Postgres, but retry queues and remote voice-event observation remain process-local. Restarting the executor during an active remote session can therefore delay or omit voice webhook publication.
 - Trigger records and dedup claims are durable with Postgres, while the polling scheduler still needs distributed leases, replay/backfill, provider signature verification, and an atomic claim/outbox.
 - Provider idempotency propagation is separate from working executor-level replay protection.
 - The stock executor remains process-local without `EYEBALL_DATABASE_URL`; Postgres makes records and 24-hour idempotency durable, but async task queues are still process-local.
