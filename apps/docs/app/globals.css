@@ -411,10 +411,9 @@ button {
   padding: 0 32px;
 }
 
-.docs-sidebar,
-.docs-toc {
-  align-self: start;
-}
+/* The rails must stretch the full grid row height (grid default) so their
+   sticky inner elements have room to pin; align-self:start collapses the
+   column to content height and kills the sticky behavior. */
 
 .docs-sidebar__scroll,
 .docs-toc > * {
@@ -1463,6 +1462,12 @@ button {
   background: transparent;
   color: var(--text-primary);
   font-size: 15px;
+}
+
+/* The wrap's focus-within underline is the focus treatment here; the global
+   :focus-visible ring draws a clashing rectangle over the rounded modal. */
+.search-dialog__input-wrap input:focus-visible {
+  box-shadow: none;
 }
 
 .search-dialog__input-wrap input::placeholder {
