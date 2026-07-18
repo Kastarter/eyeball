@@ -55,5 +55,23 @@ export const twilioManifest = deepFreeze({
       canonicalVersion: "1.0.0",
       operationId: "Calls.update.dtmf",
     },
+    {
+      capability: "voice_telephony",
+      canonicalTool: "buy_number",
+      canonicalVersion: "1.0.0",
+      operationId: "IncomingPhoneNumbers.create",
+    },
+    {
+      capability: "voice_telephony",
+      canonicalTool: "list_numbers",
+      canonicalVersion: "1.0.0",
+      operationId: "IncomingPhoneNumbers.list",
+    },
+    {
+      capability: "voice_telephony",
+      canonicalTool: "release_number",
+      canonicalVersion: "1.0.0",
+      operationId: "IncomingPhoneNumbers.delete",
+    },
   ],
 } as const satisfies ProviderManifest);

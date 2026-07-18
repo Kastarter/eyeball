@@ -8,11 +8,17 @@ const operations = [
   "update_voice_agent",
   "delete_voice_agent",
   "start_agent_call",
+  "create_web_session",
+  "buy_number",
+  "list_numbers",
   "attach_agent_to_number",
+  "detach_number",
+  "release_number",
   "get_agent_session",
   "list_agent_sessions",
   "get_session_transcript",
   "send_session_message",
+  "stop_agent_session",
 ] as const;
 
 /** RFC 002 native management toolkit backed by Eyeball's Pipecat runtime. */

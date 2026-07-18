@@ -98,6 +98,38 @@ function twilioCall(
   };
 }
 
+function twilioNumber(
+  context: AdapterContext,
+  value: Readonly<Record<string, unknown>>,
+): Readonly<Record<string, unknown>> {
+  return {
+    numberId: requiredStringField(context, value, "sid"),
+    phoneNumber: requiredStringField(context, value, "phone_number"),
+    friendlyName: requiredStringField(context, value, "friendly_name"),
+    provider: "twilio",
+    bindingStatus: "unbound",
+    createdAt: isoString(context, value.date_created, "date_created"),
+  };
+}
+
+export interface TwilioNumberBindingView {
+  readonly bindingId: string;
+  readonly agentId: string;
+  readonly revision: number;
+  readonly transportConnectionId: string;
+}
+
+export interface TwilioNumberBindingLookup {
+  getNumberBinding(
+    projectId: string,
+    phoneNumber: string,
+  ): TwilioNumberBindingView | undefined;
+}
+
+export interface TwilioAdapterOptions {
+  bindingLookup?: TwilioNumberBindingLookup;
+}
+
 function parseOffset(
   context: AdapterContext,
   token: string | undefined,
@@ -129,6 +161,11 @@ async function twilioRequest(
 
 export class TwilioAdapter implements ToolkitAdapter {
   readonly toolkitSlug = "twilio";
+  readonly #bindingLookup: TwilioNumberBindingLookup | undefined;
+
+  constructor(options: TwilioAdapterOptions = {}) {
+    this.#bindingLookup = options.bindingLookup;
+  }
 
   async execute(context: AdapterContext): Promise<JsonValue> {
     switch (context.tool.name) {
@@ -150,6 +187,12 @@ export class TwilioAdapter implements ToolkitAdapter {
         });
       case "twilio.send_dtmf":
         return this.sendDtmf(context);
+      case "twilio.buy_number":
+        return this.buyNumber(context);
+      case "twilio.list_numbers":
+        return this.listNumbers(context);
+      case "twilio.release_number":
+        return this.releaseNumber(context);
       default:
         return unsupportedTool(context);
     }
@@ -250,6 +293,122 @@ export class TwilioAdapter implements ToolkitAdapter {
       callId: requiredStringField(context, body, "sid"),
       state: callState(context, body.status),
       digitsSent: digits,
+    });
+  }
+
+  private numbersPath(context: AdapterContext): string {
+    return `2010-04-01/Accounts/${encodeURIComponent(accountSid(context))}/IncomingPhoneNumbers.json`;
+  }
+
+  private ownedNumber(
+    context: AdapterContext,
+    value: Readonly<Record<string, unknown>>,
+  ): Readonly<Record<string, unknown>> {
+    const number = twilioNumber(context, value);
+    const phoneNumber = requiredStringField(context, number, "phoneNumber");
+    const binding = this.#bindingLookup?.getNumberBinding(
+      context.projectId,
+      phoneNumber,
+    );
+    return {
+      ...number,
+      bindingStatus: binding === undefined ? "unbound" : "bound",
+      ...(binding === undefined
+        ? {}
+        : {
+            binding: {
+              bindingId: binding.bindingId,
+              agentId: binding.agentId,
+              revision: binding.revision,
+              transportConnectionId: binding.transportConnectionId,
+            },
+          }),
+    };
+  }
+
+  private async buyNumber(context: AdapterContext): Promise<JsonValue> {
+    const phoneNumber = requiredStringField(
+      context,
+      context.canonicalInput,
+      "phoneNumber",
+    );
+    const friendlyName = stringValue(context.canonicalInput, "friendlyName");
+    const body = await twilioRequest(
+      context,
+      this.numbersPath(context),
+      formRequest({
+        PhoneNumber: phoneNumber,
+        ...(friendlyName === undefined ? {} : { FriendlyName: friendlyName }),
+      }),
+    );
+    return asJson({ number: this.ownedNumber(context, body) });
+  }
+
+  private async ownedNumbers(
+    context: AdapterContext,
+    phoneNumber?: string,
+  ): Promise<readonly Readonly<Record<string, unknown>>[]> {
+    const search = new URLSearchParams();
+    if (phoneNumber !== undefined) search.set("PhoneNumber", phoneNumber);
+    const suffix = search.size === 0 ? "" : `?${search.toString()}`;
+    const body = await twilioRequest(
+      context,
+      `${this.numbersPath(context)}${suffix}`,
+    );
+    return records(body.incoming_phone_numbers).map((number) =>
+      this.ownedNumber(context, number),
+    );
+  }
+
+  private async listNumbers(context: AdapterContext): Promise<JsonValue> {
+    const input = context.canonicalInput;
+    const numbers = await this.ownedNumbers(
+      context,
+      stringValue(input, "phoneNumber"),
+    );
+    const offset = parseOffset(context, stringValue(input, "pageToken"));
+    const pageSize = numberValue(input, "pageSize") ?? 50;
+    const current = numbers.slice(offset, offset + pageSize);
+    const nextOffset = offset + current.length;
+    return asJson({
+      numbers: current,
+      ...(nextOffset < numbers.length
+        ? { nextPageToken: `offset:${nextOffset}` }
+        : {}),
+    });
+  }
+
+  private async releaseNumber(context: AdapterContext): Promise<JsonValue> {
+    const phoneNumber = requiredStringField(
+      context,
+      context.canonicalInput,
+      "phoneNumber",
+    );
+    if (
+      this.#bindingLookup?.getNumberBinding(context.projectId, phoneNumber) !==
+      undefined
+    ) {
+      throw new EyeballError({
+        code: TOOL_ERROR_CODES.INVALID_INPUT,
+        message: `${context.tool.name}: number ${phoneNumber} is still bound; call voice-agents.detach_number before release_number.`,
+      });
+    }
+    const number = (await this.ownedNumbers(context, phoneNumber))[0];
+    if (number === undefined) {
+      throw new EyeballError({
+        code: TOOL_ERROR_CODES.NOT_FOUND,
+        message: `${context.tool.name}: owned number ${phoneNumber} was not found.`,
+      });
+    }
+    const numberId = requiredStringField(context, number, "numberId");
+    await createProviderHttpClient(context)(
+      `2010-04-01/Accounts/${encodeURIComponent(accountSid(context))}/IncomingPhoneNumbers/${encodeURIComponent(numberId)}.json`,
+      { method: "DELETE" },
+    );
+    return asJson({
+      numberId,
+      phoneNumber,
+      releasedAt: context.clock.now().toISOString(),
     });
   }
 }

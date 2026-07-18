@@ -7,6 +7,7 @@ import {
   CredentialProviderError,
   type EnvCredentialMapping,
   EnvCredentialProvider,
+  type JsonValue,
   type ProviderManifest,
   type ResolvedCredential,
 } from "@eyeball/core";
@@ -88,6 +89,7 @@ import {
 } from "../../../../mocks/packages/mocks-voice/dist/index.js";
 import {
   createInProcessExecutorHarness,
+  executionOutput,
   type InProcessExecutorHarness,
 } from "../helpers/executor-harness.js";
 import type { ContractTarget } from "./fixtures.js";
@@ -270,8 +272,6 @@ export function createContractTargetHarness(
   options: { expired?: boolean } = {},
 ): ContractTargetHarness {
   const slug = manifest.toolkit.slug;
-  const adapter =
-    slug === "voice-agents" ? new VoiceAgentsAdapter() : undefined;
   if (target === "mock") {
     const definition = MOCKS[slug];
     if (definition === undefined) {
@@ -280,6 +280,56 @@ export function createContractTargetHarness(
       );
     }
     const provider = definition.create();
+    const liveKitProvider =
+      slug === "voice-agents" ? createLiveKitMock() : undefined;
+    const twilioProvider =
+      slug === "voice-agents" ? createTwilioMock() : undefined;
+    const liveKitHarness =
+      liveKitProvider === undefined
+        ? undefined
+        : createInProcessExecutorHarness({
+            toolkitSlug: "livekit",
+            provider: liveKitProvider,
+            credential: {
+              type: "api_key",
+              values: {
+                apiKey: "fixture:valid",
+                apiSecret: "fixture:secret",
+              },
+            },
+            label: "contract_voice_agents_livekit",
+          });
+    const twilioHarness =
+      twilioProvider === undefined
+        ? undefined
+        : createInProcessExecutorHarness({
+            toolkitSlug: "twilio",
+            provider: twilioProvider,
+            credential: {
+              type: "basic",
+              username: "ACfixture",
+              password: "fixture:valid",
+            },
+            label: "contract_voice_agents_twilio",
+          });
+    const adapter =
+      slug === "voice-agents"
+        ? new VoiceAgentsAdapter({
+            executeProviderTool: async (request) => {
+              const nested = request.tool.startsWith("livekit.")
+                ? liveKitHarness
+                : twilioHarness;
+              if (nested === undefined) {
+                throw new Error(
+                  `No nested voice provider harness for ${request.tool}.`,
+                );
+              }
+              return executionOutput(
+                await nested.execute(request.tool, request.input),
+              ) as JsonValue;
+            },
+          })
+        : undefined;
     const harness = createInProcessExecutorHarness({
       toolkitSlug: slug,
       provider,
@@ -303,6 +353,8 @@ export function createContractTargetHarness(
   const mapping = credentialMappingForManifest(manifest);
   const readiness = realReadiness(manifest, mapping);
   const env = process.env;
+  const adapter =
+    slug === "voice-agents" ? new VoiceAgentsAdapter() : undefined;
   const credentialProvider: CredentialProvider = options.expired
     ? {
         kind: "mock",

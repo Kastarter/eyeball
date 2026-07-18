@@ -10,8 +10,9 @@ This catalog 1.1 tutorial creates an immutable agent revision, starts an asynchr
 | Lifecycle | Tools |
 | --- | --- |
 | Agent revisions | `create_voice_agent`, `get_voice_agent`, `list_voice_agents`, `update_voice_agent`, `delete_voice_agent` |
-| Calls and bindings | `start_agent_call`, `attach_agent_to_number` |
-| Sessions | `get_agent_session`, `list_agent_sessions`, `get_session_transcript`, `send_session_message` |
+| Phone numbers | `buy_number`, `list_numbers`, `attach_agent_to_number`, `detach_number`, `release_number` |
+| Session activation | `start_agent_call`, `create_web_session` |
+| Sessions | `get_agent_session`, `list_agent_sessions`, `get_session_transcript`, `send_session_message`, `stop_agent_session` |
 
 ## Provider matrix
 
@@ -20,8 +21,47 @@ This catalog 1.1 tutorial creates an immutable agent revision, starts an asynchr
 | Voice Agents | Immutable definitions, policy, sessions, allowlists, transcript | Native eyeball control plane |
 | Pipecat | Scripted caller and ordered runtime events | Deterministic mock/runtime adapter, not a hosted SaaS API |
 | Twilio | PSTN transport | Mocked here; live mode needs a connected account |
+| LiveKit | WebRTC rooms and short-lived participant grants | Mocked here; live mode needs a connected account |
 | Deepgram / ElevenLabs | STT / TTS references | Mocked here; live worker integration is deployment-owned |
 | Google Calendar / Gmail | Allowlisted child actions | Execute through their normal canonical adapters |
+
+## Start a browser or app session
+
+Create an agent revision with `transport: "webrtc:livekit"`, then execute
+`voice-agents.create_web_session` asynchronously with the agent ID, optional revision, a
+LiveKit `transportConnectionId`, and the end user's `participantIdentity`. The eventual
+output contains the normal pinned `session`, its `transcriptArtifactId`, and this join grant:
+
+```ts
+const joinGrant = {
+  roomUrl: "https://livekit.example.test",
+  participantToken: "<short-lived room token>",
+  expiresAt: "2026-07-19T02:00:00.000Z",
+};
+```
+
+The grant is minted by the LiveKit adapter for that room and participant. It expires after
+one hour by default and never contains the LiveKit API secret. The voice worker joins under a
+different identity, and the resulting session uses the same ordered events, transcript,
+polling, and `stop_agent_session` lifecycle as a phone call.
+
+## Own, bind, and reassign a number
+
+Use `voice-agents.buy_number` to acquire a Twilio number and `list_numbers` to inspect both
+provider inventory and Eyeball binding state. Bind the unbound number with
+`attach_agent_to_number`. A number already attached to a different agent or revision returns
+`invalid_input`; the binding is never silently replaced.
+
+Reassignment is an explicit two-step operation: call `detach_number`, then
+`attach_agent_to_number` for the new agent revision. Detaching retains the owned number.
+`release_number` returns the number to Twilio, is marked destructive, and rejects a bound
+number until it is detached. Deleting an agent does not implicitly detach or release its
+number.
+
+When `start_agent_call` omits both `from` and `transportConnectionId`, exactly one attached
+number becomes the telephony default. Multiple bindings are ambiguous and return
+`invalid_input`. With no binding, only the in-process development runtime may choose its fake
+transport; a remote worker requires explicit transport fields or one attached number.
 
 ## Run the scripted call
 
@@ -191,4 +231,4 @@ Keep the agent draft, policy, allowlist, and canonical tool inputs. For a certif
   The repository ships a durable control plane and deploy assets, but the account-free parity suites do not prove or claim live-call capability. The default executor agent store and remote-event observer remain process-local, provider-backed recording is disabled, and the worker currently treats `llm.model` as a direct Anthropic model ID. Real-account, end-to-end certification is required before treating `start_agent_call` as production-ready.
 </Warning>
 
-See [Voice Agents toolkit](/toolkits/generated/voice-agents) for all 11 tools and schemas.
+See [Voice Agents toolkit](/toolkits/generated/voice-agents) for all 17 tools and schemas.

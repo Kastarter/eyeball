@@ -1,7 +1,7 @@
 # RFC 002: Voice Agents as a First-Class Resource
 
-- Status: Draft for review
-- Last updated: 2026-07-16
+- Status: Accepted; catalog 1.1 audit addendum implemented
+- Last updated: 2026-07-19
 - Requires: RFC 001 and catalog 1.0
 - Proposes: additive catalog 1.1 `voice-agents` toolkit
 - Applies to: `core`, `sdk`, `executor`, `voice-worker`, `mcp-gateway`, `eyeball-mocks`
@@ -199,9 +199,10 @@ N+1 rather than editing N. A session stores both `agentId` and `agentRevision`. 
 tombstones the stable resource and prevents new sessions, but MUST retain revisions needed
 by execution logs, sessions, and transcript retention policy.
 
-`get_voice_agent` resolves an omitted revision to the active revision. `start_agent_call`
-and `attach_agent_to_number` do the same at request validation and persist the resolved
-number; later updates never move an allocated session or number binding. For
+`get_voice_agent` resolves an omitted revision to the active revision. `start_agent_call`,
+`create_web_session`, and `attach_agent_to_number` do the same at request validation and pin
+the resolved revision. Phone sessions and attachments also persist their resolved number;
+later updates never move an allocated session or number binding. For
 `send_session_message`, omission resolves the active revision only when creating a new chat
 session. When `sessionId` is present, the existing session's pinned agent and revision win;
 the supplied `agentId` and any supplied revision MUST match them or the call fails with
@@ -228,13 +229,19 @@ requires RFC 001 `ExecuteRequest.userId`.
 | `update_voice_agent` | Append an immutable revision. | false | false | false | false |
 | `delete_voice_agent` | Tombstone an agent. | false | true | true | false |
 | `start_agent_call` | Start an outbound phone session. | false | false | false | true |
+| `create_web_session` | Start a LiveKit web session and return an end-user join grant. | false | false | false | true |
+| `buy_number` | Acquire an unbound provider number. | false | false | false | false |
+| `list_numbers` | List owned numbers and binding status. | true | false | true | false |
 | `attach_agent_to_number` | Bind an inbound Twilio number. | false | false | true | false |
+| `detach_number` | Remove an agent binding while retaining the number. | false | false | true | false |
+| `release_number` | Return an unbound number to its provider. | false | true | true | false |
 | `get_agent_session` | Read state and incremental events. | true | false | true | false |
 | `list_agent_sessions` | List sessions using filters. | true | false | true | false |
 | `get_session_transcript` | Read a transcript artifact. | true | false | true | false |
 | `send_session_message` | Run one chat turn. | false | false | false | true |
+| `stop_agent_session` | Stop a phone, WebRTC, or chat session. | false | true | true | false |
 
-`start_agent_call` and `send_session_message` reject `mode: "sync"`. Their immediate
+`start_agent_call`, `create_web_session`, and `send_session_message` reject `mode: "sync"`. Their immediate
 HTTP 202 result is RFC 001 `AsyncExecuteResponse`; their declared output schemas describe
 the eventual successful execution output. All mutating calls require an `Idempotency-Key`.
 
@@ -242,8 +249,9 @@ the eventual successful execution output. All mutating calls require an `Idempot
 
 The catalog builder uses the Section 2 runtime validators as reusable fragments, then embeds
 them under `$defs` in every published schema. Thus the emitted input and output schemas
-remain self-contained Draft 2020-12 objects. This registry is normative-equivalent,
-compiling TypeScript; descriptions are shortened here only for layout.
+remain self-contained Draft 2020-12 objects. The following original registry excerpt shows
+the construction pattern; the generated catalog schemas and the complete table above are
+normative, including the audit-addendum tools.
 
 ```ts
 import type { JSONSchema202012 } from "@eyeball/core";
@@ -626,7 +634,67 @@ It MUST reject an unsupported guardrail, transport, speech option, or tool behav
 in the 1.0 `VoiceAgentTransport` union. Adding a portable Telnyx transport is a later
 backward-compatible resource/tool minor decision after its adapter semantics are proven.
 
-## 8. Open questions
+## 8. Catalog 1.1 audit addendum: activation and lifecycle
+
+The 2026-07-19 audit closes the two release blockers and the related outbound-default gap.
+These are additive canonical contracts: the six added tools produce 36 additional matrix
+rows across the six `voice_telephony` providers, moving the catalog from 457 to 493 rows
+(227 smoke and 266 explicit `not_supported`).
+
+### 8.1 CLOSED — WebRTC session activation
+
+`voice-agents.create_web_session` is the trusted high-level entry point for browser and app
+clients. It resolves and freezes the requested agent revision, rejects any revision whose
+transport is not `webrtc:livekit`, creates a room through `livekit.create_room`, and mints
+the end-user participant grant through `livekit.join_room` on the selected LiveKit
+connection. It returns:
+
+```ts
+{
+  session: VoiceAgentSession;
+  joinGrant: {
+    roomUrl: string;
+    participantToken: string;
+    expiresAt: string;
+  };
+  transcriptArtifactId: string;
+}
+```
+
+The participant token is short-lived (one hour by default), scoped to the selected room and
+end-user identity, and is the only provider-derived credential returned to the caller.
+Provider API keys and secrets MUST NOT enter the execution output, session snapshot, events,
+or transcript. The worker joins under a separate participant identity. After activation,
+WebRTC uses the same pinned lifecycle, ordered events, transcript contract, and
+`stop_agent_session` operation as phone and chat sessions.
+
+### 8.2 CLOSED — owned-number lifecycle
+
+`buy_number`, `list_numbers`, and `release_number` are shared canonical telephony contracts
+implemented by `twilio` and composed by `voice-agents`. `list_numbers` returns provider-owned
+inventory overlaid with authoritative Eyeball `bound` or `unbound` state and the pinned
+binding when present. `detach_number` removes only the Eyeball binding; the provider-owned
+number remains in inventory. Reassignment is deliberately `detach_number` followed by
+`attach_agent_to_number`, so there is no second atomic-reassign contract.
+
+A number already bound to a different agent, revision, user scope, or transport connection
+fails with RFC 001 `invalid_input`; the closed taxonomy has no separate conflict code.
+`release_number` has `destructive: true` (and therefore MCP `destructiveHint: true`) and
+rejects a bound number with `invalid_input`; callers must detach first. Tombstoning an agent
+does not move, detach, or release its provider number: the explicit binding remains visible
+until `detach_number`, while the deleted agent cannot start a new session.
+
+### 8.3 CLOSED — deterministic outbound transport defaults
+
+`start_agent_call` resolves transport with one deterministic rule. A complete explicit
+`from` plus `transportConnectionId` selects telephony, subject to any existing binding. A
+partial explicit selector must match exactly one attached number. With neither field, one
+attached number selects its phone number and connection; multiple bindings are ambiguous and
+return `invalid_input`. With no binding, the in-process development runtime selects its fake
+transport, while remote-worker mode returns `invalid_input` until the caller supplies a
+transport or creates a binding. No production worker silently falls back to the fake runtime.
+
+## 9. Open questions
 
 1. **Per-minute billing.** How are carrier, media, model, speech, recording, and child-tool
    costs metered and surfaced without making a single blended minute misleading?
@@ -640,20 +708,12 @@ backward-compatible resource/tool minor decision after its adapter semantics are
    example accepts `voiceAgentId`, while this RFC's catalog 1.1 tools accept `agentId` and an
    optional revision. Must the low-level field resolve the active revision, gain an explicit
    revision field, or be superseded for agent-driven calls by `voice-agents.start_agent_call`?
-6. **WebRTC session entry.** The resource model includes `webrtc:livekit`, but none of the
-   eleven tools allocates or joins a LiveKit-backed agent session. Should catalog 1.1 add a
-   generic session-start tool, bind an agent revision to an existing room, or compose the
-   catalog 1.0 LiveKit tools through a separate trusted control-plane operation?
-7. **Number-binding lifecycle and outbound defaults.** `attach_agent_to_number` creates or
-   advances a binding, but detach, reassignment, enumeration, and behavior after agent deletion
-   are not defined. `start_agent_call` also permits omitted `transportConnectionId` and `from`
-   values without defining sole/default selection or the error when no default exists.
-8. **Model-registry boundary.** `LlmModelRef.model` is intentionally opaque, but a companion
+6. **Model-registry boundary.** `LlmModelRef.model` is intentionally opaque, but a companion
    contract must define binding creation, provider/model version pinning, credential lookup,
    availability failures, and deterministic mock resolution before the P0 worker can resolve it.
 
 These questions do not block the resource identity, immutable revision model, tool
 allowlist enforcement, general RFC 001 execution semantics, or the persistent-worker
-infrastructure split. Questions 5–8 do block, respectively, the low-level Twilio mapping,
-end-to-end WebRTC activation, complete PSTN binding/selection behavior, and production model
-resolution.
+infrastructure split. The addendum closes end-to-end WebRTC activation and complete PSTN
+binding/selection behavior. Questions 5 and 6 continue to block, respectively, the low-level
+Twilio mapping and production model resolution.

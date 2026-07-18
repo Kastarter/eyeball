@@ -37,6 +37,7 @@ import {
   unsupportedTool,
 } from "../messaging/common.js";
 import type { VoiceSessionDriver } from "./session-driver.js";
+import { resolveOutboundTransport } from "./transport-resolver.js";
 
 export interface VoiceAgentBinding {
   bindingId: string;
@@ -66,6 +67,18 @@ export interface VoiceAgentMessageReceipt {
   userMessageId: string;
   assistantMessage: string;
 }
+
+export interface VoiceProviderToolRequest {
+  projectId: string;
+  userId: string;
+  tool: QualifiedToolName;
+  connectionId: string;
+  input: Readonly<Record<string, JsonValue>>;
+}
+
+export type VoiceProviderToolExecutor = (
+  request: VoiceProviderToolRequest,
+) => Promise<JsonValue>;
 
 export interface AgentStore {
   createAgent(
@@ -104,6 +117,16 @@ export interface AgentStore {
     input: Omit<VoiceAgentBinding, "bindingId" | "createdAt">,
     createdAt: string,
   ): VoiceAgentBinding;
+  getNumberBinding(
+    projectId: string,
+    phoneNumber: string,
+  ): VoiceAgentBinding | undefined;
+  listNumberBindings(projectId: string): readonly VoiceAgentBinding[];
+  detachNumber(
+    projectId: string,
+    userId: string,
+    phoneNumber: string,
+  ): VoiceAgentBinding | undefined;
   rememberSession(pointer: VoiceAgentSessionPointer): void;
   getSession(
     projectId: string,
@@ -334,6 +357,43 @@ export class InMemoryAgentStore implements AgentStore {
       createdAt,
     };
     this.#bindings.set(key, binding);
+    return copy(binding);
+  }
+
+  getNumberBinding(
+    projectId: string,
+    phoneNumber: string,
+  ): VoiceAgentBinding | undefined {
+    const binding = this.#bindings.get(scopedKey(projectId, phoneNumber));
+    return binding === undefined ? undefined : copy(binding);
+  }
+
+  listNumberBindings(projectId: string): readonly VoiceAgentBinding[] {
+    return [...this.#bindings.values()]
+      .filter((binding) => binding.projectId === projectId)
+      .sort(
+        (left, right) =>
+          left.phoneNumber.localeCompare(right.phoneNumber) ||
+          left.bindingId.localeCompare(right.bindingId),
+      )
+      .map(copy);
+  }
+
+  detachNumber(
+    projectId: string,
+    userId: string,
+    phoneNumber: string,
+  ): VoiceAgentBinding | undefined {
+    const key = scopedKey(projectId, phoneNumber);
+    const binding = this.#bindings.get(key);
+    if (binding === undefined) return undefined;
+    if (binding.userId !== userId) {
+      return storeError(
+        TOOL_ERROR_CODES.NOT_FOUND,
+        `Phone number ${phoneNumber} has no binding in the trusted user scope.`,
+      );
+    }
+    this.#bindings.delete(key);
     return copy(binding);
   }
 
@@ -716,6 +776,7 @@ export interface VoiceAgentsAdapterOptions {
   store?: AgentStore;
   sessionDriver?: VoiceSessionDriver;
   resolveTool?: (name: QualifiedToolName) => ToolDefinition | undefined;
+  executeProviderTool?: VoiceProviderToolExecutor;
 }
 
 /** Native RFC 002 adapter backed by an injectable revision store and Pipecat. */
@@ -726,11 +787,14 @@ export class VoiceAgentsAdapter implements ToolkitAdapter {
   readonly #resolveTool:
     | ((name: QualifiedToolName) => ToolDefinition | undefined)
     | undefined;
+  readonly #executeProviderTool: VoiceProviderToolExecutor | undefined;
+  #webSessionSequence = 0;
 
   constructor(options: VoiceAgentsAdapterOptions = {}) {
     this.store = options.store ?? new InMemoryAgentStore();
     this.#sessionDriver = options.sessionDriver;
     this.#resolveTool = options.resolveTool;
+    this.#executeProviderTool = options.executeProviderTool;
   }
 
   async execute(context: AdapterContext): Promise<JsonValue> {
@@ -795,6 +859,12 @@ export class VoiceAgentsAdapter implements ToolkitAdapter {
         );
       case "voice-agents.start_agent_call":
         return this.startAgentCall(context);
+      case "voice-agents.create_web_session":
+        return this.createWebSession(context);
+      case "voice-agents.buy_number":
+        return this.buyNumber(context);
+      case "voice-agents.list_numbers":
+        return this.listNumbers(context);
       case "voice-agents.attach_agent_to_number": {
         const agent = this.store.getRunnableAgent(
           context.projectId,
@@ -807,17 +877,33 @@ export class VoiceAgentsAdapter implements ToolkitAdapter {
             message: `${context.tool.name}: inbound number bindings require a pstn:twilio agent revision.`,
           });
         }
+        const phoneNumber = requiredInputString(context, "phoneNumber");
+        const transportConnectionId = requiredInputString(
+          context,
+          "transportConnectionId",
+        );
+        if (this.#executeProviderTool !== undefined) {
+          const inventory = await this.providerTool(
+            context,
+            "twilio.list_numbers",
+            transportConnectionId,
+            { phoneNumber },
+          );
+          if (records(inventory.numbers).length !== 1) {
+            throw new EyeballError({
+              code: TOOL_ERROR_CODES.NOT_FOUND,
+              message: `${context.tool.name}: owned number ${phoneNumber} was not found on the selected Twilio connection.`,
+            });
+          }
+        }
         const binding = this.store.attachNumber(
           {
             projectId: context.projectId,
             userId: context.userId,
             agentId: agent.id,
             revision: agent.revision,
-            phoneNumber: requiredInputString(context, "phoneNumber"),
-            transportConnectionId: requiredInputString(
-              context,
-              "transportConnectionId",
-            ),
+            phoneNumber,
+            transportConnectionId,
           },
           context.clock.now().toISOString(),
         );
@@ -828,6 +914,23 @@ export class VoiceAgentsAdapter implements ToolkitAdapter {
           phoneNumber: binding.phoneNumber,
         });
       }
+      case "voice-agents.detach_number": {
+        const phoneNumber = requiredInputString(context, "phoneNumber");
+        const binding = this.store.detachNumber(
+          context.projectId,
+          context.userId,
+          phoneNumber,
+        );
+        return asJson({
+          phoneNumber,
+          bindingStatus: "unbound",
+          ...(binding === undefined
+            ? {}
+            : { detachedBindingId: binding.bindingId }),
+        });
+      }
+      case "voice-agents.release_number":
+        return this.releaseNumber(context);
       case "voice-agents.get_agent_session":
         return this.getAgentSession(context);
       case "voice-agents.list_agent_sessions":
@@ -836,9 +939,124 @@ export class VoiceAgentsAdapter implements ToolkitAdapter {
         return this.getSessionTranscript(context);
       case "voice-agents.send_session_message":
         return this.sendSessionMessage(context);
+      case "voice-agents.stop_agent_session":
+        return this.stopAgentSession(context);
       default:
         return unsupportedTool(context);
     }
+  }
+
+  private async providerTool(
+    context: AdapterContext,
+    tool: QualifiedToolName,
+    connectionId: string,
+    input: Readonly<Record<string, JsonValue>>,
+  ): Promise<Readonly<Record<string, unknown>>> {
+    if (this.#executeProviderTool === undefined) {
+      throw new EyeballError({
+        code: TOOL_ERROR_CODES.NOT_SUPPORTED,
+        message: `${context.tool.name}: provider delegation is not configured.`,
+      });
+    }
+    const output = await this.#executeProviderTool({
+      projectId: context.projectId,
+      userId: context.userId,
+      tool,
+      connectionId,
+      input,
+    });
+    if (!isRecord(output)) {
+      throw providerError(
+        context,
+        `${tool} returned a non-object provider result.`,
+      );
+    }
+    return output;
+  }
+
+  private numberWithBinding(
+    context: AdapterContext,
+    number: Readonly<Record<string, unknown>>,
+  ): Readonly<Record<string, unknown>> {
+    const phoneNumber = requiredStringField(context, number, "phoneNumber");
+    const binding = this.store.getNumberBinding(context.projectId, phoneNumber);
+    return {
+      ...copy(number),
+      bindingStatus: binding === undefined ? "unbound" : "bound",
+      ...(binding === undefined
+        ? {}
+        : {
+            binding: {
+              bindingId: binding.bindingId,
+              agentId: binding.agentId,
+              revision: binding.revision,
+              transportConnectionId: binding.transportConnectionId,
+            },
+          }),
+    };
+  }
+
+  private async buyNumber(context: AdapterContext): Promise<JsonValue> {
+    const phoneNumber = requiredInputString(context, "phoneNumber");
+    const connectionId = requiredInputString(context, "transportConnectionId");
+    const friendlyName = stringValue(context.canonicalInput, "friendlyName");
+    const output = await this.providerTool(
+      context,
+      "twilio.buy_number",
+      connectionId,
+      {
+        phoneNumber,
+        ...(friendlyName === undefined ? {} : { friendlyName }),
+      },
+    );
+    if (!isRecord(output.number)) {
+      throw providerError(context, "Twilio omitted the acquired number.");
+    }
+    return asJson({ number: this.numberWithBinding(context, output.number) });
+  }
+
+  private async listNumbers(context: AdapterContext): Promise<JsonValue> {
+    const connectionId = requiredInputString(context, "transportConnectionId");
+    const phoneNumber = stringValue(context.canonicalInput, "phoneNumber");
+    const pageSize = optionalInteger(context.canonicalInput, "pageSize");
+    const pageToken = stringValue(context.canonicalInput, "pageToken");
+    const output = await this.providerTool(
+      context,
+      "twilio.list_numbers",
+      connectionId,
+      {
+        ...(phoneNumber === undefined ? {} : { phoneNumber }),
+        ...(pageSize === undefined ? {} : { pageSize }),
+        ...(pageToken === undefined ? {} : { pageToken }),
+      },
+    );
+    return asJson({
+      numbers: records(output.numbers).map((number) =>
+        this.numberWithBinding(context, number),
+      ),
+      ...(typeof output.nextPageToken === "string"
+        ? { nextPageToken: output.nextPageToken }
+        : {}),
+    });
+  }
+
+  private async releaseNumber(context: AdapterContext): Promise<JsonValue> {
+    const phoneNumber = requiredInputString(context, "phoneNumber");
+    const binding = this.store.getNumberBinding(context.projectId, phoneNumber);
+    if (binding !== undefined) {
+      throw new EyeballError({
+        code: TOOL_ERROR_CODES.INVALID_INPUT,
+        message: `${context.tool.name}: number ${phoneNumber} is still bound; call detach_number before release_number.`,
+      });
+    }
+    return asJson(
+      await this.providerTool(
+        context,
+        "twilio.release_number",
+        requiredInputString(context, "transportConnectionId"),
+        { phoneNumber },
+      ),
+    );
   }
 
   private remoteStartRequest(
@@ -940,6 +1158,130 @@ export class VoiceAgentsAdapter implements ToolkitAdapter {
     }
   }
 
+  private async createWebSession(context: AdapterContext): Promise<JsonValue> {
+    const agent = this.store.getRunnableAgent(
+      context.projectId,
+      requiredInputString(context, "agentId"),
+      optionalInteger(context.canonicalInput, "revision"),
+    );
+    if (agent.transport !== "webrtc:livekit") {
+      throw new EyeballError({
+        code: TOOL_ERROR_CODES.INVALID_INPUT,
+        message: `${context.tool.name}: web sessions require a webrtc:livekit agent revision.`,
+      });
+    }
+    const transportConnectionId = requiredInputString(
+      context,
+      "transportConnectionId",
+    );
+    const participantIdentity = requiredInputString(
+      context,
+      "participantIdentity",
+    );
+    const participantName = stringValue(
+      context.canonicalInput,
+      "participantName",
+    );
+    const metadata = isRecord(context.canonicalInput.metadata)
+      ? (copy(context.canonicalInput.metadata) as Readonly<
+          Record<string, JsonValue>
+        >)
+      : undefined;
+    this.#webSessionSequence += 1;
+    const roomName =
+      stringValue(context.canonicalInput, "roomName") ??
+      `voice-${agent.id}-${String(this.#webSessionSequence).padStart(6, "0")}`;
+    const providerMetadata =
+      metadata === undefined ? "" : JSON.stringify(metadata);
+
+    const created = await this.providerTool(
+      context,
+      "livekit.create_room",
+      transportConnectionId,
+      {
+        roomName,
+        maxParticipants: 2,
+        metadata: providerMetadata,
+      },
+    );
+    if (requiredStringField(context, created, "roomName") !== roomName) {
+      throw providerError(
+        context,
+        "LiveKit returned a room outside the requested immutable session snapshot.",
+      );
+    }
+    const joined = await this.providerTool(
+      context,
+      "livekit.join_room",
+      transportConnectionId,
+      {
+        roomName,
+        participantIdentity,
+        ...(participantName === undefined ? {} : { participantName }),
+        metadata: providerMetadata,
+        tokenTtlSeconds: 3_600,
+      },
+    );
+
+    let session: VoiceAgentSession;
+    if (this.#sessionDriver !== undefined) {
+      session = await this.#sessionDriver.startSession(
+        this.remoteStartRequest(context, agent, {
+          kind: "livekit",
+          roomName,
+          transportConnectionId,
+          participantIdentity: `agent-${agent.id}-${agent.revision}`,
+          ...(metadata === undefined ? {} : { metadata }),
+        }),
+      );
+      this.rememberRemoteSession(context, agent, session);
+    } else {
+      const body = await pipecatObject(
+        context,
+        "sessions",
+        jsonRequest({
+          agentConfig: {
+            ...(copy(agent) as unknown as Readonly<Record<string, JsonValue>>),
+            projectId: context.projectId,
+            userId: context.userId,
+            agentId: agent.id,
+            agentRevision: agent.revision,
+            transport: agent.transport,
+            roomName,
+            transportConnectionId,
+            participantIdentity: `agent-${agent.id}-${agent.revision}`,
+            ...(metadata === undefined ? {} : { metadata }),
+          },
+          ...(Array.isArray(context.canonicalInput.script)
+            ? { script: context.canonicalInput.script }
+            : {}),
+        }),
+      );
+      session = sessionFromProvider(context, body);
+      const pointer: VoiceAgentSessionPointer = {
+        sessionId: session.id,
+        projectId: context.projectId,
+        userId: context.userId,
+        agentId: agent.id,
+        agentRevision: agent.revision,
+        callId: `call_${session.id}`,
+        createdAt: session.createdAt,
+      };
+      assertTrustedSession(context, session, pointer);
+      this.store.rememberSession(pointer);
+    }
+
+    return asJson({
+      session,
+      joinGrant: {
+        roomUrl: requiredStringField(context, joined, "serverUrl"),
+        participantToken: requiredStringField(context, joined, "token"),
+        expiresAt: requiredStringField(context, joined, "expiresAt"),
+      },
+      transcriptArtifactId: `transcript_${session.id}`,
+    });
+  }
+
   private async startAgentCall(context: AdapterContext): Promise<JsonValue> {
     const agent = this.store.getRunnableAgent(
       context.projectId,
@@ -952,25 +1294,43 @@ export class VoiceAgentsAdapter implements ToolkitAdapter {
         message: `${context.tool.name}: outbound calls require a pstn:twilio agent revision.`,
       });
     }
+    const requestedFrom = stringValue(context.canonicalInput, "from");
+    const requestedConnectionId = stringValue(
+      context.canonicalInput,
+      "transportConnectionId",
+    );
+    const transport = resolveOutboundTransport({
+      mode: this.#sessionDriver === undefined ? "development" : "remote-worker",
+      bindings: this.store
+        .listNumberBindings(context.projectId)
+        .filter(
+          (binding) =>
+            binding.userId === context.userId &&
+            binding.agentId === agent.id &&
+            binding.revision === agent.revision,
+        ),
+      ...(requestedFrom === undefined ? {} : { from: requestedFrom }),
+      ...(requestedConnectionId === undefined
+        ? {}
+        : { transportConnectionId: requestedConnectionId }),
+    });
     if (this.#sessionDriver !== undefined) {
       const metadata = isRecord(context.canonicalInput.metadata)
         ? (copy(context.canonicalInput.metadata) as Readonly<
             Record<string, JsonValue>
           >)
         : undefined;
-      const from = stringValue(context.canonicalInput, "from");
-      const transportConnectionId = stringValue(
-        context.canonicalInput,
-        "transportConnectionId",
-      );
+      if (transport.kind !== "telephony") {
+        throw new Error(
+          "Remote outbound transport resolver invariant violated.",
+        );
+      }
       const session = await this.#sessionDriver.startSession(
         this.remoteStartRequest(context, agent, {
           kind: "twilio",
           to: requiredInputString(context, "to"),
-          ...(from === undefined ? {} : { from }),
-          ...(transportConnectionId === undefined
-            ? {}
-            : { transportConnectionId }),
+          from: transport.from,
+          transportConnectionId: transport.transportConnectionId,
           ...(metadata === undefined ? {} : { metadata }),
         }),
       );
@@ -993,18 +1353,12 @@ export class VoiceAgentsAdapter implements ToolkitAdapter {
           agentRevision: agent.revision,
           transport: agent.transport,
           to: requiredInputString(context, "to"),
-          ...(stringValue(context.canonicalInput, "from") === undefined
-            ? {}
-            : { from: stringValue(context.canonicalInput, "from") }),
-          ...(stringValue(context.canonicalInput, "transportConnectionId") ===
-          undefined
-            ? {}
-            : {
-                transportConnectionId: stringValue(
-                  context.canonicalInput,
-                  "transportConnectionId",
-                ),
-              }),
+          ...(transport.kind === "telephony"
+            ? {
+                from: transport.from,
+                transportConnectionId: transport.transportConnectionId,
+              }
+            : { transportDefault: "development-fake" }),
           ...(isRecord(context.canonicalInput.metadata)
             ? { metadata: context.canonicalInput.metadata }
             : {}),
@@ -1073,6 +1427,38 @@ export class VoiceAgentsAdapter implements ToolkitAdapter {
       events: events.events,
       nextSequence: events.nextSequence,
     });
+  }
+
+  private async stopAgentSession(context: AdapterContext): Promise<JsonValue> {
+    const sessionId = requiredInputString(context, "sessionId");
+    const { session: current, pointer } = await this.readSession(
+      context,
+      sessionId,
+    );
+    if (
+      current.state === "completed" ||
+      current.state === "failed" ||
+      current.state === "abandoned"
+    ) {
+      return asJson({ session: current });
+    }
+    const reason = stringValue(context.canonicalInput, "reason");
+    const session =
+      this.#sessionDriver === undefined
+        ? sessionFromProvider(
+            context,
+            await pipecatObject(
+              context,
+              `sessions/${encodeURIComponent(sessionId)}/end`,
+              jsonRequest(reason === undefined ? {} : { reason }),
+            ),
+          )
+        : await this.#sessionDriver.stopSession(sessionId, {
+            contractVersion: VOICE_WORKER_CONTRACT_VERSION,
+            ...(reason === undefined ? {} : { reason }),
+          });
+    assertTrustedSession(context, session, pointer);
+    return asJson({ session });
   }
 
   private async listAgentSessions(context: AdapterContext): Promise<JsonValue> {

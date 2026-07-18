@@ -1,8 +1,11 @@
+import { randomUUID } from "node:crypto";
 import { defaultCatalog } from "@eyeball/catalog";
-import type { CredentialProvider } from "@eyeball/core";
+import { type CredentialProvider, EyeballError } from "@eyeball/core";
 import {
   defaultToolkitAdapters,
+  InMemoryAgentStore,
   RemoteVoiceSessionDriver,
+  TwilioAdapter,
   VoiceAgentsAdapter,
   voiceWorkerTokenFromEnv,
   voiceWorkerUrlFromEnv,
@@ -57,46 +60,89 @@ function configuredVoiceWorker(
   env: Readonly<Record<string, string | undefined>>,
   catalog: RuntimeCatalog,
 ): {
-  adapters?: AdapterRegistry;
+  adapters: AdapterRegistry;
   driver?: RemoteVoiceSessionDriver;
   bind(engine: ExecutionEngine): void;
 } {
   const workerUrl = voiceWorkerUrlFromEnv(env);
-  if (workerUrl === undefined) return { bind: () => undefined };
-
   let engine: ExecutionEngine | undefined;
   const token = voiceWorkerTokenFromEnv(env);
-  const driver = new RemoteVoiceSessionDriver({
-    baseUrl: workerUrl,
-    ...(token === undefined ? {} : { token }),
-    onEvent: ({ request, event }) => {
-      if (!request.agent.webhooks.events.includes(event.data.type)) return;
-      engine?.webhookDeliverer.enqueueVoiceSessionEvent({
-        projectId: request.scope.projectId,
-        endpointIds: request.agent.webhooks.endpointIds,
-        event,
-      });
-    },
-    onTranscript: ({ request, transcript }) => {
-      if (!request.agent.webhooks.transcript) return;
-      engine?.webhookDeliverer.enqueueVoiceTranscript({
-        projectId: request.scope.projectId,
-        endpointIds: request.agent.webhooks.endpointIds,
-        transcript,
-      });
-    },
-  });
+  const driver =
+    workerUrl === undefined
+      ? undefined
+      : new RemoteVoiceSessionDriver({
+          baseUrl: workerUrl,
+          ...(token === undefined ? {} : { token }),
+          onEvent: ({ request, event }) => {
+            if (!request.agent.webhooks.events.includes(event.data.type))
+              return;
+            engine?.webhookDeliverer.enqueueVoiceSessionEvent({
+              projectId: request.scope.projectId,
+              endpointIds: request.agent.webhooks.endpointIds,
+              event,
+            });
+          },
+          onTranscript: ({ request, transcript }) => {
+            if (!request.agent.webhooks.transcript) return;
+            engine?.webhookDeliverer.enqueueVoiceTranscript({
+              projectId: request.scope.projectId,
+              endpointIds: request.agent.webhooks.endpointIds,
+              transcript,
+            });
+          },
+        });
+  const agentStore = new InMemoryAgentStore();
   const voiceAgents = new VoiceAgentsAdapter({
-    sessionDriver: driver,
+    store: agentStore,
+    ...(driver === undefined ? {} : { sessionDriver: driver }),
     resolveTool: (name) => catalog.getTool(name),
+    executeProviderTool: async (request) => {
+      if (engine === undefined) {
+        throw new Error(
+          "Voice provider executor was used before runtime binding.",
+        );
+      }
+      const outcome = await engine.execute({
+        projectId: request.projectId,
+        idempotencyKey: `voice-provider-${randomUUID()}`,
+        request: {
+          tool: request.tool,
+          userId: request.userId,
+          connectionId: request.connectionId,
+          input: request.input,
+          mode: "sync",
+        },
+      });
+      const response = outcome.response;
+      if (response.status === "succeeded") return response.output;
+      if (response.status === "failed") {
+        throw new EyeballError({
+          code: response.error.code,
+          message: response.error.message,
+          retryable: response.error.retryable,
+          ...(response.error.retryAfter === undefined
+            ? {}
+            : { retryAfter: response.error.retryAfter }),
+          ...(response.error.provider === undefined
+            ? {}
+            : { providerDetail: response.error.provider }),
+        });
+      }
+      throw new Error(
+        `Nested synchronous provider execution returned ${response.status}.`,
+      );
+    },
   });
+  const twilio = new TwilioAdapter({ bindingLookup: agentStore });
   return {
     adapters: new AdapterRegistry(
-      defaultToolkitAdapters.map((adapter) =>
-        adapter.toolkitSlug === "voice-agents" ? voiceAgents : adapter,
-      ),
+      defaultToolkitAdapters.map((adapter) => {
+        if (adapter.toolkitSlug === "voice-agents") return voiceAgents;
+        if (adapter.toolkitSlug === "twilio") return twilio;
+        return adapter;
+      }),
     ),
-    driver,
+    ...(driver === undefined ? {} : { driver }),
     bind: (boundEngine) => {
       engine = boundEngine;
     },

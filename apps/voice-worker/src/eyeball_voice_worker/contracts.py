@@ -88,6 +88,7 @@ class TwilioTransport(WireModel):
 class LiveKitTransport(WireModel):
     kind: Literal["livekit"]
     room_name: Annotated[str, Field(min_length=1)]
+    transport_connection_id: str | None = None
     participant_identity: str | None = None
     metadata: dict[str, JsonValue] | None = None
 

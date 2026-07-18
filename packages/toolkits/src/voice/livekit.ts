@@ -76,9 +76,11 @@ export class LiveKitAdapter implements ToolkitAdapter {
       input,
       "participantIdentity",
     );
+    const tokenTtlSeconds = numberValue(input, "tokenTtlSeconds") ?? 3_600;
     const tokenBody = await liveKitRequest(context, "_mock/token", {
       room: roomName,
       identity: participantIdentity,
+      ttlSeconds: tokenTtlSeconds,
     });
     const joined = await liveKitRequest(
       context,
@@ -101,6 +103,9 @@ export class LiveKitAdapter implements ToolkitAdapter {
         "identity",
       ),
       token: requiredStringField(context, tokenBody, "token"),
+      expiresAt: new Date(
+        context.clock.now().valueOf() + tokenTtlSeconds * 1_000,
+      ).toISOString(),
       serverUrl: new URL(context.baseUrl).toString(),
     });
   }

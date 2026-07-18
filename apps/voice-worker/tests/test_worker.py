@@ -18,6 +18,7 @@ from eyeball_voice_worker.contracts import (
     WIRE_VERSION,
     WIRE_VERSION_HEADER,
     ChatTurnRequest,
+    LiveKitTransport,
     PublicSession,
     StartSessionRequest,
     TwilioTransport,
@@ -156,6 +157,21 @@ def test_start_contract_rejects_noncanonical_fake_tool_names() -> None:
 
     with pytest.raises(ValueError, match="string_pattern_mismatch"):
         StartSessionRequest.model_validate(payload)
+
+
+def test_livekit_transport_snapshot_preserves_connection_selector() -> None:
+    payload = start_payload(with_tool=False)
+    payload["transport"] = {
+        "kind": "livekit",
+        "roomName": "voice-va-worker-000001",
+        "transportConnectionId": "conn_livekit_primary",
+        "participantIdentity": "agent-va-worker-3",
+    }
+
+    request = StartSessionRequest.model_validate(payload)
+
+    assert isinstance(request.transport, LiveKitTransport)
+    assert request.transport.transport_connection_id == "conn_livekit_primary"
 
 
 async def wait_for_terminal(

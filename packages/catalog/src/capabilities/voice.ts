@@ -92,6 +92,54 @@ function callRecord(): JSONSchemaObject202012 {
   };
 }
 
+function phoneNumberRecord(): JSONSchemaObject202012 {
+  return {
+    type: "object",
+    description:
+      "One provider-owned telephone number with its Eyeball agent-binding state.",
+    additionalProperties: false,
+    required: [
+      "numberId",
+      "phoneNumber",
+      "friendlyName",
+      "provider",
+      "bindingStatus",
+      "createdAt",
+    ],
+    properties: {
+      numberId: identifier("Provider-stable owned-number identifier."),
+      phoneNumber: e164("Owned telephone number in E.164 form."),
+      friendlyName: identifier("Human-readable provider label."),
+      provider: identifier("Provider toolkit that owns the number."),
+      bindingStatus: {
+        type: "string",
+        description:
+          "Whether the number is currently attached to an Eyeball voice agent.",
+        enum: ["unbound", "bound"],
+      },
+      binding: {
+        type: "object",
+        description: "Pinned agent binding when bindingStatus is bound.",
+        additionalProperties: false,
+        required: ["bindingId", "agentId", "revision", "transportConnectionId"],
+        properties: {
+          bindingId: identifier("Stable binding identifier."),
+          agentId: identifier("Bound voice-agent identifier."),
+          revision: {
+            type: "integer",
+            description: "Immutable agent revision pinned by the binding.",
+            minimum: 1,
+          },
+          transportConnectionId: identifier(
+            "Twilio connection selected by the binding.",
+          ),
+        },
+      },
+      createdAt: timestamp("Time the provider acquired the number."),
+    },
+  };
+}
+
 function publishedCallOutput(
   tool: string,
   description: string,
@@ -411,6 +459,122 @@ const sendDtmf = defineContract({
   version: VERSION,
 });
 
+const buyNumber = defineContract({
+  capability: CAPABILITY,
+  name: "buy_number",
+  description:
+    "Acquire a provider telephone number into owned inventory. The new number is initially unbound.",
+  inputSchema: publishedObjectSchema({
+    capability: CAPABILITY,
+    tool: "buy_number",
+    direction: "input",
+    description: "Telephone number to acquire and its optional provider label.",
+    required: ["phoneNumber"],
+    properties: {
+      phoneNumber: e164("Telephone number to acquire in E.164 form."),
+      friendlyName: identifier("Optional human-readable provider label."),
+      transportConnectionId: identifier(
+        "Provider connection used by composed voice-agent inventory tools; direct provider tools use the execution connection.",
+      ),
+    },
+  }),
+  outputSchema: publishedObjectSchema({
+    capability: CAPABILITY,
+    tool: "buy_number",
+    direction: "output",
+    description: "The newly acquired unbound number.",
+    required: ["number"],
+    properties: { number: phoneNumberRecord() },
+  }),
+  annotations: {
+    readOnly: false,
+    destructive: false,
+    idempotent: false,
+    async: false,
+  },
+  version: VERSION,
+});
+
+const listNumbers = defineContract({
+  capability: CAPABILITY,
+  name: "list_numbers",
+  description:
+    "List provider-owned telephone numbers with their current Eyeball agent-binding status.",
+  inputSchema: publishedObjectSchema({
+    capability: CAPABILITY,
+    tool: "list_numbers",
+    direction: "input",
+    description: "Optional number filter and pagination controls.",
+    properties: {
+      phoneNumber: e164("Optional exact E.164 telephone-number filter."),
+      transportConnectionId: identifier(
+        "Provider connection used by composed voice-agent inventory tools; direct provider tools use the execution connection.",
+      ),
+      pageSize: pageSizeProperty("numbers"),
+      pageToken: pageTokenProperty("numbers"),
+    },
+  }),
+  outputSchema: publishedObjectSchema({
+    capability: CAPABILITY,
+    tool: "list_numbers",
+    direction: "output",
+    description: "Owned telephone-number inventory and binding status.",
+    required: ["numbers"],
+    properties: {
+      numbers: { type: "array", items: phoneNumberRecord() },
+      nextPageToken: nextPageTokenProperty("numbers"),
+    },
+  }),
+  annotations: {
+    readOnly: true,
+    destructive: false,
+    idempotent: true,
+    async: false,
+  },
+  version: VERSION,
+});
+
+const releaseNumber = defineContract({
+  capability: CAPABILITY,
+  name: "release_number",
+  description:
+    "Permanently return an unbound telephone number to its provider. Bound numbers must be detached first.",
+  inputSchema: publishedObjectSchema({
+    capability: CAPABILITY,
+    tool: "release_number",
+    direction: "input",
+    description: "Owned telephone number to return to the provider.",
+    required: ["phoneNumber"],
+    properties: {
+      phoneNumber: e164("Owned telephone number to release in E.164 form."),
+      transportConnectionId: identifier(
+        "Provider connection used by composed voice-agent inventory tools; direct provider tools use the execution connection.",
+      ),
+    },
+  }),
+  outputSchema: publishedObjectSchema({
+    capability: CAPABILITY,
+    tool: "release_number",
+    direction: "output",
+    description: "Provider identifier and time of the completed release.",
+    required: ["numberId", "phoneNumber", "releasedAt"],
+    properties: {
+      numberId: identifier(
+        "Provider-stable identifier of the released number.",
+      ),
+      phoneNumber: e164("Released telephone number in E.164 form."),
+      releasedAt: timestamp("Time the number was returned to the provider."),
+    },
+  }),
+  annotations: {
+    readOnly: false,
+    destructive: true,
+    idempotent: true,
+    async: false,
+  },
+  version: VERSION,
+});
+
 const createRoom = defineContract({
   capability: CAPABILITY,
   name: "create_room",
@@ -485,6 +649,13 @@ const joinRoom = defineContract({
       ),
       participantName: identifier("Human-readable participant name."),
       metadata: { type: "string", description: "Opaque participant metadata." },
+      tokenTtlSeconds: {
+        type: "integer",
+        description: "Lifetime of the short-lived participant token.",
+        minimum: 60,
+        maximum: 86400,
+        default: 3600,
+      },
     },
   }),
   outputSchema: publishedObjectSchema({
@@ -498,6 +669,7 @@ const joinRoom = defineContract({
       "participantId",
       "participantIdentity",
       "token",
+      "expiresAt",
     ],
     properties: {
       roomId: identifier("Provider-stable room identifier."),
@@ -505,6 +677,7 @@ const joinRoom = defineContract({
       participantId: identifier("Provider-stable participant identifier."),
       participantIdentity: identifier("Stable participant identity."),
       token: identifier("Short-lived room access token."),
+      expiresAt: timestamp("Time the short-lived room access token expires."),
       serverUrl: {
         type: "string",
         format: "uri",
@@ -715,6 +888,9 @@ export const voiceCapabilityContracts = deepFreeze([
   endCall,
   transferCall,
   sendDtmf,
+  buyNumber,
+  listNumbers,
+  releaseNumber,
   createRoom,
   joinRoom,
   synthesizeSpeech,

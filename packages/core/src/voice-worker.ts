@@ -59,6 +59,7 @@ export type VoiceWorkerTransportConfig =
   | {
       kind: "livekit";
       roomName: string;
+      transportConnectionId?: string;
       participantIdentity?: string;
       metadata?: Readonly<Record<string, JsonValue>>;
     }

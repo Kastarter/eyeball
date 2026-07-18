@@ -147,7 +147,7 @@ ANTHROPIC_API_KEY=... pnpm demo:anthropic
 | --- | --- |
 | Activepieces bridge breadth spike | Complete as a private experiment: five pinned pieces introspect, three actions execute in-process, and the decision is selective per-piece promotion with no wholesale vendoring; production isolation and certification remain pending ([RFC 003](./docs/rfcs/003-bridge-spike-findings.md)) |
 | 37 toolkits/provider manifests | Built in catalog `1.1` with canonical schemas and discovery |
-| 457-row contract matrix | Built: 218 smoke rows and 239 explicit `not_supported` rows |
+| 493-row contract matrix | Built: 227 smoke rows and 266 explicit `not_supported` rows |
 | Admin panel | Built as the local Next.js dashboard |
 | Documentation | Built in `docs/`, the 99-page `docs-site/` source, and the self-hosted `apps/docs` renderer |
 | Local credential vault | Built with encrypted single-tenant storage and development fixtures |

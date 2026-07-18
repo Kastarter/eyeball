@@ -35,15 +35,35 @@ const agentDraft = {
 
 export const voiceFixtures = defineCapabilityFixtures("voice_telephony", {
   attach_agent_to_number: {
-    dependencies: ["create_voice_agent"],
+    dependencies: ["create_voice_agent", "buy_number"],
     input: (context) => ({
       agentId: context.field("create_voice_agent", "agent", "id"),
       revision: 1,
-      phoneNumber: "+15550002222",
+      phoneNumber: context.field("buy_number", "number", "phoneNumber"),
       transportConnectionId: "conn_twilio_fixture",
     }),
   },
+  buy_number: {
+    input: {
+      phoneNumber: "+15550002222",
+      friendlyName: "Contract fixture line",
+      transportConnectionId: "conn_twilio_fixture",
+    },
+  },
   create_room: { input: { roomName: "contract-fixture-room" } },
+  create_web_session: {
+    dependencies: ["update_voice_agent"],
+    mode: "async",
+    input: (context) => ({
+      agentId: context.field("update_voice_agent", "agent", "id"),
+      revision: 2,
+      transportConnectionId: "conn_livekit_fixture",
+      participantIdentity: "contract-web-participant",
+      participantName: "Contract Web Participant",
+      script: [{ caller: "Hello from the browser client." }],
+    }),
+    after: (context) => context.advanceClock(2_000),
+  },
   create_voice_agent: { input: { agent: agentDraft } },
   delete_voice_agent: {
     dependencies: ["create_voice_agent"],
@@ -51,6 +71,10 @@ export const voiceFixtures = defineCapabilityFixtures("voice_telephony", {
       agentId: context.field("create_voice_agent", "agent", "id"),
       expectedRevision: 1,
     }),
+  },
+  detach_number: {
+    dependencies: ["attach_agent_to_number"],
+    input: { phoneNumber: "+15550002222" },
   },
   end_call: {
     dependencies: ["start_call"],
@@ -106,6 +130,13 @@ export const voiceFixtures = defineCapabilityFixtures("voice_telephony", {
     }),
   },
   list_calls: { input: { pageSize: 10 } },
+  list_numbers: {
+    dependencies: ["buy_number"],
+    input: {
+      transportConnectionId: "conn_twilio_fixture",
+      pageSize: 10,
+    },
+  },
   list_voice_agents: { input: { limit: 10 } },
   send_dtmf: {
     dependencies: ["start_call"],
@@ -123,6 +154,13 @@ export const voiceFixtures = defineCapabilityFixtures("voice_telephony", {
       message: "Canonical contract session message.",
       clientMessageId: "contract-client-message-1",
     }),
+  },
+  release_number: {
+    dependencies: ["buy_number"],
+    input: {
+      phoneNumber: "+15550002222",
+      transportConnectionId: "conn_twilio_fixture",
+    },
   },
   start_agent_call: {
     dependencies: ["attach_agent_to_number"],
@@ -153,6 +191,13 @@ export const voiceFixtures = defineCapabilityFixtures("voice_telephony", {
     },
     after: (context) => context.advanceClock(2_000),
   },
+  stop_agent_session: {
+    dependencies: ["create_web_session"],
+    input: (context) => ({
+      sessionId: context.field("create_web_session", "session", "id"),
+      reason: "Contract fixture complete.",
+    }),
+  },
   synthesize_speech: {
     input: {
       text: "Hello from the contract fixture.",
@@ -181,6 +226,7 @@ export const voiceFixtures = defineCapabilityFixtures("voice_telephony", {
       agent: {
         ...agentDraft,
         systemPrompt: "Help callers reserve a table and verify every detail.",
+        transport: "webrtc:livekit",
       },
     }),
   },

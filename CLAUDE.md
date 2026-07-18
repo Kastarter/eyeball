@@ -50,6 +50,9 @@ Open-core tool and integration platform for AI agents: one typed, authenticated 
 - Public execution GET/list return `ExecutionRecord`; internal canonical input and connection context stay private.
 - The auth boundary is `CredentialProvider`: local env/vault/mock implementations are OSS; hosted multi-user OAuth is cloud.
 - Voice agents keep immutable revisions; child calls re-enter the normal executor under pinned scope.
+- Web voice sessions compose LiveKit room/token tools and return only a short-lived end-user join grant; provider API secrets never enter session output.
+- Outbound voice transport resolves deterministically: one bound number selects telephony, no binding selects only the development fake, and remote workers require configuration.
+- The stock executor injects the native number-binding view into Twilio inventory/release operations so low-level calls cannot bypass detach-before-release safety.
 - Mockhouse is a separate nested repository; rebuild its `dist` before contract tests.
 - `docs/MOCKS.md` and `docs/TESTING.md` are authoritative for mock-versus-real parity.
 - The five selected Activepieces npm pieces are self-contained bundles; framework/shared are explicit bridge compatibility pins, not peers declared by those artifacts.
@@ -59,9 +62,9 @@ Open-core tool and integration platform for AI agents: one typed, authenticated 
 
 - Source version is `0.1.0`; all nine main workspaces build, test, typecheck, and lint.
 - Catalog `1.1` contains 37 manifests/toolkits and the implemented capability adapters.
-- The manifest-derived matrix has 457 rows: 218 smoke and 239 explicit `not_supported`.
+- The manifest-derived matrix has 493 rows: 227 smoke and 266 explicit `not_supported`.
 - The dashboard, SDK, MCP gateway, local encrypted vault, auth CLI, and public docs source are built.
-- The self-hosted docs renderer builds all 99 authored pages with local navigation, search, syntax highlighting, and dark/light themes.
+- The self-hosted docs renderer builds all 103 authored pages with local navigation, search, syntax highlighting, and dark/light themes.
 - Search-mode MCP exposes both discovery and a generic executor-backed dispatch tool.
 - `pnpm dev:stack` boots 30-provider Mockhouse, executor, and MCP gateway with dev connections.
 - Deterministic MCP and restaurant voice demos run in-process; the Anthropic episode is optional.
@@ -74,6 +77,7 @@ Open-core tool and integration platform for AI agents: one typed, authenticated 
 - Postgres durable stores are wired behind `EYEBALL_DATABASE_URL`; shared contracts run all stores against both memory and one embedded PGlite database.
 - Project request token buckets, optional UTC daily execution quotas, and manifest-declared toolkit concurrency caps are implemented.
 - A separately deployed Python voice worker provides versioned remote sessions, SQLite event durability, stable child execution identity, and account-free fake/chat contract suites; Pipecat/Twilio/LiveKit paths are certification scaffolding, not proven live-call capability.
+- Voice agents expose LiveKit web-session activation plus Twilio buy/list/bind/detach/release inventory flows against account-free mocks; reassignment is detach then attach, and bound numbers cannot be released.
 
 ## Known Issues
 

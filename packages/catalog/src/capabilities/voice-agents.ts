@@ -195,6 +195,38 @@ const rows: readonly VoiceAgentToolRow[] = [
     annotations: asyncWrite,
   },
   {
+    operation: "create_web_session",
+    description:
+      "Create a LiveKit-backed browser or app session pinned to one immutable voice-agent revision and return only the end user's short-lived join grant.",
+    input: {
+      agentId: id,
+      revision,
+      transportConnectionId: id,
+      roomName: id,
+      participantIdentity: id,
+      participantName: id,
+      metadata: { type: "object", additionalProperties: true },
+      script: scriptProperty(),
+    },
+    inputRequired: ["agentId", "transportConnectionId", "participantIdentity"],
+    output: {
+      session: ref("session"),
+      joinGrant: {
+        type: "object",
+        additionalProperties: false,
+        required: ["roomUrl", "participantToken", "expiresAt"],
+        properties: {
+          roomUrl: { type: "string", format: "uri" },
+          participantToken: id,
+          expiresAt: timestamp,
+        },
+      },
+      transcriptArtifactId: id,
+    },
+    outputRequired: ["session", "joinGrant", "transcriptArtifactId"],
+    annotations: asyncWrite,
+  },
+  {
     operation: "attach_agent_to_number",
     description:
       "Bind an inbound Twilio number to a resolved immutable agent revision and transport connection.",
@@ -207,6 +239,25 @@ const rows: readonly VoiceAgentToolRow[] = [
     inputRequired: ["agentId", "phoneNumber", "transportConnectionId"],
     output: { bindingId: id, agentId: id, revision, phoneNumber: e164 },
     outputRequired: ["bindingId", "agentId", "revision", "phoneNumber"],
+    annotations: {
+      readOnly: false,
+      destructive: false,
+      idempotent: true,
+      async: false,
+    },
+  },
+  {
+    operation: "detach_number",
+    description:
+      "Remove an Eyeball agent binding while retaining the provider-owned telephone number. Reassignment is detach followed by attach.",
+    input: { phoneNumber: e164 },
+    inputRequired: ["phoneNumber"],
+    output: {
+      phoneNumber: e164,
+      bindingStatus: { const: "unbound" },
+      detachedBindingId: id,
+    },
+    outputRequired: ["phoneNumber", "bindingStatus"],
     annotations: {
       readOnly: false,
       destructive: false,
@@ -286,6 +337,24 @@ const rows: readonly VoiceAgentToolRow[] = [
     },
     outputRequired: ["session", "userMessageId", "assistantMessage"],
     annotations: asyncWrite,
+  },
+  {
+    operation: "stop_agent_session",
+    description:
+      "Request stop for a phone, web, or chat session through the same pinned lifecycle and return its updated state.",
+    input: {
+      sessionId: id,
+      reason: { type: "string", minLength: 1 },
+    },
+    inputRequired: ["sessionId"],
+    output: { session: ref("session") },
+    outputRequired: ["session"],
+    annotations: {
+      readOnly: false,
+      destructive: true,
+      idempotent: true,
+      async: false,
+    },
   },
 ];
 

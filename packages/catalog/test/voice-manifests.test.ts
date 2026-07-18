@@ -21,6 +21,9 @@ const canonicalVoiceTools = [
   "end_call",
   "transfer_call",
   "send_dtmf",
+  "buy_number",
+  "list_numbers",
+  "release_number",
   "create_room",
   "join_room",
   "synthesize_speech",
@@ -36,15 +39,18 @@ const voiceAgentTools = [
   "update_voice_agent",
   "delete_voice_agent",
   "start_agent_call",
+  "create_web_session",
   "attach_agent_to_number",
+  "detach_number",
   "get_agent_session",
   "list_agent_sessions",
   "get_session_transcript",
   "send_session_message",
+  "stop_agent_session",
 ] as const;
 
 describe("voice capability contracts and manifests", () => {
-  it("publishes all 12 canonical and 11 native voice-agent contracts", () => {
+  it("publishes all 15 canonical and 14 native voice-agent contracts", () => {
     expect(voiceCapabilityContracts.map(({ name }) => name)).toEqual(
       canonicalVoiceTools,
     );
@@ -53,7 +59,7 @@ describe("voice capability contracts and manifests", () => {
     );
     expect(
       defaultCatalog.listContracts({ capability: "voice_telephony" }),
-    ).toHaveLength(23);
+    ).toHaveLength(29);
   });
 
   it("marks only naturally asynchronous voice operations as async", () => {
@@ -66,7 +72,11 @@ describe("voice capability contracts and manifests", () => {
       voiceAgentCapabilityContracts
         .filter(({ annotations }) => annotations.async)
         .map(({ name }) => name),
-    ).toEqual(["start_agent_call", "send_session_message"]);
+    ).toEqual([
+      "start_agent_call",
+      "create_web_session",
+      "send_session_message",
+    ]);
   });
 
   it("enforces E.164 inputs and practical audio references", () => {
@@ -100,7 +110,7 @@ describe("voice capability contracts and manifests", () => {
       defaultCatalog
         .listTools({ capability: "voice_telephony" })
         .map(({ name }) => name),
-    ).toHaveLength(23);
+    ).toHaveLength(32);
     expect(twilioManifest.auth).toEqual({
       class: "basic",
       fields: ["accountSid", "authToken"],
@@ -111,6 +121,10 @@ describe("voice capability contracts and manifests", () => {
     expect(pipecatManifest.auth.class).toBe("none");
     expect(voiceAgentsManifest.auth.class).toBe("none");
     expect(voiceAgentsManifest.toolkit.source).toBe("native");
+    expect(voiceAgentsManifest.implements).toHaveLength(17);
+    expect(voiceContractsByName.release_number.annotations.destructive).toBe(
+      true,
+    );
   });
 
   it("declares a mock-overridable endpoint for every voice toolkit", () => {
