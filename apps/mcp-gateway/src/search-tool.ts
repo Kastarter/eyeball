@@ -123,7 +123,7 @@ export const searchToolDescriptor: McpToolDescriptor = {
 export const executeToolDescriptor: McpToolDescriptor = {
   name: EXECUTE_TOOL_NAME,
   description:
-    "Execute a synchronous canonical provider tool returned by eyeball.search_tools. Put the returned tool name in name and its canonical arguments in input.",
+    "Execute a canonical provider tool returned by eyeball.search_tools. Put the returned tool name in name and its canonical arguments in input; async-by-nature tools require negotiated task augmentation.",
   inputSchema: {
     type: "object",
     additionalProperties: false,

@@ -1,5 +1,6 @@
 import {
   createExecutionId,
+  type ExecutionRecord,
   EyeballError,
   TOOL_ERROR_CODES,
 } from "@eyeball/core";
@@ -86,7 +87,7 @@ describe("MCP Streamable HTTP gateway", () => {
       id: 1,
       result: {
         protocolVersion: MCP_PROTOCOL_VERSION,
-        capabilities: { tools: { listChanged: false } },
+        capabilities: { tools: { listChanged: true } },
         serverInfo: { name: "eyeball-mcp-gateway", version: "0.1.0" },
         instructions:
           "Use eyeball.search_tools to find canonical provider tools. In search discovery mode, invoke a returned tool through eyeball.execute_tool. Tool failures are returned as normalized MCP tool results.",
@@ -220,7 +221,19 @@ describe("MCP Streamable HTTP gateway", () => {
 
   it("dispatches a terminal call with stable idempotency and execution metadata", async () => {
     const execution = executor();
-    const app = createMcpGatewayApp({ executor: execution, apiKey: API_KEY });
+    const app = createMcpGatewayApp({
+      executor: execution,
+      apiKey: API_KEY,
+      sessionIdFactory: () => "mcp_session_42",
+    });
+    await request(
+      app,
+      rpc("initialize", {
+        protocolVersion: MCP_PROTOCOL_VERSION,
+        capabilities: {},
+        clientInfo: { name: "scripted-test", version: "1.0.0" },
+      }),
+    );
     const response = await request(
       app,
       rpc(
@@ -460,7 +473,7 @@ describe("MCP Streamable HTTP gateway", () => {
     expect(notification.status).toBe(202);
     expect(await notification.text()).toBe("");
     expect(get.status).toBe(405);
-    expect(get.headers.get("Allow")).toBe("POST");
+    expect(get.headers.get("Allow")).toBe("POST, GET, DELETE");
   });
 
   it("does not let a configured executor key authenticate inbound clients", async () => {
@@ -544,7 +557,17 @@ describe("HTTP executor bridge", () => {
       fetchImpl,
       apiKey: API_KEY,
       userId: USER_ID,
+      sessionIdFactory: () => "mcp_http",
     });
+
+    await request(
+      app,
+      rpc("initialize", {
+        protocolVersion: MCP_PROTOCOL_VERSION,
+        capabilities: {},
+        clientInfo: { name: "scripted-test", version: "1.0.0" },
+      }),
+    );
 
     const response = await request(
       app,
@@ -578,5 +601,105 @@ describe("HTTP executor bridge", () => {
         },
       },
     });
+  });
+
+  it("allocates and resolves negotiated tasks through the SDK bridge", async () => {
+    const taskId = createExecutionId("mcp_http_task");
+    const executorRequests: Request[] = [];
+    let statusReads = 0;
+    const executorApp = new Hono();
+    executorApp.post("/v1/execute", async (context) => {
+      executorRequests.push(context.req.raw.clone());
+      return context.json(
+        {
+          executionId: taskId,
+          tool: "twilio.start_call",
+          toolVersion: "1.0.0",
+          catalogVersion: "1.1",
+          status: "pending",
+        },
+        202,
+      );
+    });
+    executorApp.get("/v1/executions/:id", (context) => {
+      statusReads += 1;
+      return context.json({
+        executionId: taskId,
+        tool: "twilio.start_call",
+        toolVersion: "1.0.0",
+        catalogVersion: "1.1",
+        status: "succeeded",
+        userId: USER_ID,
+        createdAt: "2026-07-19T00:00:00.000Z",
+        completedAt: "2026-07-19T00:00:02.000Z",
+        output: { callId: "call_http_task", status: "completed" },
+        latencyMs: 2_000,
+      } satisfies ExecutionRecord);
+    });
+    const fetchImpl = (async (
+      input: Parameters<typeof fetch>[0],
+      init?: Parameters<typeof fetch>[1],
+    ) => executorApp.request(new Request(input, init))) as typeof fetch;
+    const app = createMcpGatewayApp({
+      executorBaseUrl: "https://executor.test",
+      fetchImpl,
+      apiKey: API_KEY,
+      userId: USER_ID,
+      sessionIdFactory: () => "mcp_http_task",
+      taskPollMs: 60_000,
+    });
+    await request(
+      app,
+      rpc("initialize", {
+        protocolVersion: MCP_PROTOCOL_VERSION,
+        capabilities: { experimental: { tasks: {} } },
+        clientInfo: { name: "scripted-test", version: "1.0.0" },
+      }),
+    );
+
+    const created = await request(
+      app,
+      rpc(
+        "tools/call",
+        {
+          name: "twilio.start_call",
+          arguments: {
+            to: "+966500000000",
+            from: "+12025550173",
+            voiceAgentId: "vag_http_task",
+          },
+          task: {},
+        },
+        "http-task-call",
+      ),
+      { "Mcp-Session-Id": "mcp_http_task" },
+    );
+    await expect(created.json()).resolves.toMatchObject({
+      result: { task: { taskId, status: "working" } },
+    });
+    await expect(executorRequests[0]?.json()).resolves.toMatchObject({
+      tool: "twilio.start_call",
+      userId: USER_ID,
+      mode: "async",
+    });
+
+    const result = await request(
+      app,
+      rpc("tasks/result", { taskId }, "http-task-result"),
+      { "Mcp-Session-Id": "mcp_http_task" },
+    );
+    await expect(result.json()).resolves.toMatchObject({
+      result: {
+        structuredContent: {
+          callId: "call_http_task",
+          status: "completed",
+        },
+        _meta: {
+          "dev.eyeball/execution": { executionId: taskId },
+          "io.modelcontextprotocol/related-task": { taskId },
+        },
+      },
+    });
+    expect(statusReads).toBe(2);
   });
 });

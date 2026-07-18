@@ -43,7 +43,7 @@ Open-core tool and integration platform for AI agents: one typed, authenticated 
 - Trigger subscriptions, cursors, and dedup claims sit behind injectable stores; Slack push and Gmail polling normalize against catalog schemas.
 - Executor-owned Drizzle stores persist executions/idempotency, webhook endpoints/delivery attempts, and trigger subscriptions/state/dedup against pg or PGlite with the same schema and migrations.
 - Staged bytes sit behind project-scoped `FileStore`; adapters resolve them only through execution-bound `AdapterContext.files`.
-- The MCP gateway delegates execution to the executor and preserves child execution identities.
+- The MCP gateway delegates execution to the executor and preserves child execution identities; negotiated sessions and task records sit behind async `SessionStore`.
 - Project keys authorize all project users unless user-pinned; executor and MCP reject conflicting identities.
 - MCP inbound key policy and its downstream executor key are separate trust boundaries.
 - Conversion bundles contain native tools, an emitted dispatch map, and immutable canonical definitions.
@@ -66,6 +66,7 @@ Open-core tool and integration platform for AI agents: one typed, authenticated 
 - The dashboard, SDK, MCP gateway, local encrypted vault, auth CLI, and public docs source are built.
 - The self-hosted docs renderer builds all 103 authored pages with local navigation, search, syntax highlighting, and dark/light themes.
 - Search-mode MCP exposes both discovery and a generic executor-backed dispatch tool.
+- MCP Streamable HTTP supports JSON and SSE POST responses, authenticated GET event streams, DELETE teardown, one-way credential-bound sessions, and opt-in 2025-11-25 Tasks with execution-backed polling and progress notifications.
 - `pnpm dev:stack` boots 30-provider Mockhouse, executor, and MCP gateway with dev connections.
 - Deterministic MCP and restaurant voice demos run in-process; the Anthropic episode is optional.
 - The nested mocks repository has eight workspaces and 163 tests.
@@ -90,6 +91,7 @@ Open-core tool and integration platform for AI agents: one typed, authenticated 
 - Provider idempotency propagation is separate from working executor-level replay protection.
 - The stock executor remains process-local without `EYEBALL_DATABASE_URL`; Postgres makes records and 24-hour idempotency durable, but async task queues are still process-local.
 - Stock rate and concurrency limiters are process-local; multi-replica global enforcement requires injected distributed implementations.
+- MCP sessions and task pollers are process-local with the stock `InMemorySessionStore`; inject a durable atomic store for restart recovery. SSE event replay and stock executor cancellation are not implemented.
 - The local vault serializes only within one process; do not share one file across executors.
 - The local vault detects ciphertext tampering but not rollback to an older valid file; restore trusted backups and revoke upstream.
 - Mocks include documented test shims where vendors lack canonical retrieval operations.

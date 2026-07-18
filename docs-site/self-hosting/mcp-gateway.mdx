@@ -10,6 +10,10 @@ EYEBALL_EXECUTOR_API_KEY="eyeball_local_key" \
 EYEBALL_EXECUTOR_URL="http://127.0.0.1:3000" \
 EYEBALL_USER_ID="demo_user" \
 EYEBALL_MCP_DISCOVERY="search" \
+EYEBALL_MCP_ALLOWED_ORIGINS="https://agent.example.com" \
+EYEBALL_MCP_SESSION_TTL_MS=86400000 \
+EYEBALL_MCP_TASK_TTL_MS=3600000 \
+EYEBALL_MCP_TASK_POLL_MS=1000 \
 HOST="127.0.0.1" \
 PORT=3001 \
 pnpm --filter @eyeball/mcp-gateway start
@@ -22,8 +26,18 @@ pnpm --filter @eyeball/mcp-gateway start
 | `EYEBALL_EXECUTOR_URL` | Executor origin; defaults to `http://127.0.0.1:3000` |
 | `EYEBALL_USER_ID` | Optional default external user |
 | `EYEBALL_MCP_DISCOVERY` | `catalog` or `search` |
+| `EYEBALL_MCP_ALLOWED_ORIGINS` | Comma-separated browser-origin allowlist; requests carrying `Origin` are rejected when this is unset |
+| `EYEBALL_MCP_SESSION_TTL_MS` | Session lifetime; defaults to 24 hours |
+| `EYEBALL_MCP_TASK_TTL_MS` | Retention used when a task request omits `ttl`; defaults to one hour |
+| `EYEBALL_MCP_TASK_POLL_MS` | Executor status poll interval and client hint; defaults to 1000 ms |
 | `HOST` / `PORT` | Listener; defaults to `127.0.0.1:3001` |
 
-`search` discovery lists `eyeball.search_tools` plus `eyeball.execute_tool`, allowing standard MCP hosts to execute a returned canonical tool without receiving a new descriptor. `catalog` lists the full eligible catalog. Async-by-nature tools remain omitted until MCP Tasks is implemented.
+`search` discovery lists `eyeball.search_tools` plus `eyeball.execute_tool`, allowing standard MCP hosts to execute a returned canonical tool without receiving a new descriptor. `catalog` lists the full eligible catalog. Async-by-nature tools are omitted from ordinary sessions and appear only after a client opts into the experimental Tasks profile during initialization.
+
+The gateway supports JSON responses and SSE responses on `POST /mcp`, a notification stream on `GET /mcp`, and authenticated session teardown on `DELETE /mcp`. It rejects unknown or expired session IDs with 404 and hashes the inbound credential before binding it to stored state. Browser requests with an untrusted `Origin` are rejected before authentication.
+
+The default `InMemorySessionStore` and task pollers are process-local. Inject a durable `SessionStore` when negotiated sessions must survive a gateway restart; its `update` implementation must be atomic. After restart, the next authenticated request resumes polling for durable non-terminal tasks. SSE subscribers and timer handles are intentionally never persisted.
+
+The stock `HttpMcpExecutor` allocates async work and reads execution status through the SDK. It does not advertise `tasks/cancel` because the executor has no cancellation route; a custom `McpExecutor` may implement the optional cancellation seam.
 
 Put the gateway behind TLS for remote clients. The inbound bearer key is always required and is distinct from the executor key. If you accept per-request user headers, use a user-pinned inbound key or otherwise authenticate the caller before trusting that identity.

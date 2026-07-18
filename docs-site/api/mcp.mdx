@@ -3,7 +3,7 @@ title: "MCP endpoint"
 description: "Use the Streamable HTTP gateway, built-in catalog search, session idempotency, and execution metadata."
 ---
 
-The gateway serves MCP protocol `2025-11-25` at `POST /mcp`.
+The gateway serves MCP protocol `2025-11-25` at one Streamable HTTP endpoint. `POST /mcp` carries client messages, `GET /mcp` opens a server event stream, and `DELETE /mcp` ends a session.
 
 ## Initialize
 
@@ -24,7 +24,30 @@ curl "$EYEBALL_MCP_URL/mcp" \
   }'
 ```
 
-Retain the `Mcp-Session-Id` response header and send it on later requests.
+Retain the server-generated `Mcp-Session-Id` response header and send it on every later request. An unknown, expired, deleted, or differently authenticated session returns HTTP 404. Sessions expire after 24 hours by default.
+
+## Stream responses
+
+A POST request without `Accept: text/event-stream` receives one JSON response, preserving the simple request/response profile. If `Accept` includes `text/event-stream`, the gateway returns SSE: an initial empty event primes reconnect handling, related notifications may follow, and the final event contains the JSON-RPC response.
+
+Open a session event channel with:
+
+```bash
+curl -N "$EYEBALL_MCP_URL/mcp" \
+  -H "Authorization: Bearer $EYEBALL_API_KEY" \
+  -H "Accept: text/event-stream" \
+  -H "Mcp-Session-Id: $MCP_SESSION_ID" \
+  -H "MCP-Protocol-Version: 2025-11-25"
+```
+
+The GET stream carries task progress, task-status changes, and tool-list change notifications. Each event has a session-scoped event ID and one JSON-RPC message in `data`. End the session explicitly with:
+
+```bash
+curl -X DELETE "$EYEBALL_MCP_URL/mcp" \
+  -H "Authorization: Bearer $EYEBALL_API_KEY" \
+  -H "Mcp-Session-Id: $MCP_SESSION_ID" \
+  -H "MCP-Protocol-Version: 2025-11-25"
+```
 
 ## Search the catalog
 
@@ -83,4 +106,58 @@ Terminal tool results include:
 }
 ```
 
-Provider-tool descriptors include `_meta["dev.eyeball/tool"]`; the built-in search and generic execute descriptors do not. Async-by-nature tools are omitted because the gateway does not advertise MCP Tasks; it never returns a non-standard pending result.
+Provider-tool descriptors include `_meta["dev.eyeball/tool"]`; the built-in search and generic execute descriptors do not.
+
+## Experimental Tasks
+
+Tasks are opt-in per initialized session. A Tasks-capable client requests Eyeball's experimental profile in its initialize capabilities:
+
+```json
+{
+  "experimental": {
+    "tasks": {}
+  }
+}
+```
+
+When the executor supports async allocation and status reads, the initialize result advertises `tasks.requests.tools.call`. `tools/list` then includes async-by-nature tools and adds `execution.taskSupport`: `"required"` for async-by-nature tools and `"optional"` for ordinary tools. Without this negotiation, async tools remain omitted and the existing terminal tool-result behavior is unchanged.
+
+Create a task by adding `task` to `tools/call` params:
+
+```json
+{
+  "name": "twilio.start_call",
+  "arguments": {
+    "to": "+966500000000",
+    "from": "+12025550173",
+    "voiceAgentId": "vag_renewals_ar_01"
+  },
+  "task": {
+    "ttl": 3600000
+  },
+  "_meta": {
+    "progressToken": "renewal-call-481"
+  }
+}
+```
+
+The create response contains only the task. Its `taskId` is the underlying `exe_*` execution ID, so operations and MCP clients correlate one identity:
+
+```json
+{
+  "task": {
+    "taskId": "exe_01JZ6WA0Q73ZQ5B51SRYB6M4Z8",
+    "status": "working",
+    "createdAt": "2026-07-19T00:00:00.000Z",
+    "lastUpdatedAt": "2026-07-19T00:00:00.000Z",
+    "ttl": 3600000,
+    "pollInterval": 1000
+  }
+}
+```
+
+Poll with `tasks/get`. `pending` and `running` executions map to `working`; successful executions map to `completed`; failed tool results map to `failed`. Retrieve the canonical terminal `CallToolResult` with `tasks/result`. That method waits if work is still active, and its result includes both `_meta["dev.eyeball/execution"]` and `_meta["io.modelcontextprotocol/related-task"]`.
+
+If the original call supplied `_meta.progressToken`, the gateway publishes `notifications/progress` at queued, running, and terminal transitions. It also publishes optional `notifications/tasks/status` terminal notifications; clients must still poll `tasks/get`.
+
+`tasks/cancel` is advertised only when an injected executor bridge implements cancellation. The stock HTTP executor has no execution-cancel route, so it deliberately does not advertise cancellation. Task state is bound to the authenticated MCP session, retained for one hour by default, and stored through the injectable `SessionStore` seam.

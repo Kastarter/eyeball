@@ -10,7 +10,7 @@ import {
   createExecutorApp,
   ExecutionEngine,
 } from "../../executor/src/index.js";
-import { createMcpGatewayApp } from "../src/index.js";
+import { createMcpGatewayApp, MCP_PROTOCOL_VERSION } from "../src/index.js";
 
 const API_KEY = "ey_test_mcp_e2e";
 const PROJECT_ID = "proj_mcp_e2e";
@@ -59,6 +59,7 @@ describe("MCP gateway to executor", () => {
       fetchImpl,
       apiKey: API_KEY,
       userId: USER_ID,
+      sessionIdFactory: () => "mcp_e2e_session",
     });
     const call = {
       jsonrpc: "2.0",
@@ -78,6 +79,24 @@ describe("MCP gateway to executor", () => {
       "Content-Type": "application/json",
       "Mcp-Session-Id": "mcp_e2e_session",
     };
+
+    await gateway.request("/mcp", {
+      method: "POST",
+      headers: {
+        Authorization: `Bearer ${API_KEY}`,
+        "Content-Type": "application/json",
+      },
+      body: JSON.stringify({
+        jsonrpc: "2.0",
+        id: "initialize",
+        method: "initialize",
+        params: {
+          protocolVersion: MCP_PROTOCOL_VERSION,
+          capabilities: {},
+          clientInfo: { name: "executor-e2e", version: "1.0.0" },
+        },
+      }),
+    });
 
     const first = await gateway.request("/mcp", {
       method: "POST",

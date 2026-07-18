@@ -10,7 +10,7 @@ description: "Track client methods, execution routes, connection seams, and MCP 
 - `executeToolCalls` overloads for Anthropic and OpenAI call identities.
 - `POST /v1/execute` and `GET /v1/executions[/:id]`.
 - Opt-in process-local development connection create/list/delete API; SDK exposes create.
-- Streamable HTTP MCP protocol `2025-11-25` with `eyeball.search_tools` and execution metadata.
+- Streamable HTTP MCP protocol `2025-11-25` with JSON/SSE responses, authenticated sessions, `eyeball.search_tools`, execution metadata, and opt-in experimental Tasks.
 - Closed ten-code normalized error taxonomy.
 
 This describes the checked-in preview; it does not claim a published npm or Cloud release.

@@ -1,5 +1,6 @@
 import type {
   ConnectionId,
+  ExecutionId,
   ExecutionRecord,
   ExecutionResult,
   JsonValue,
@@ -20,8 +21,19 @@ export interface McpExecuteRequest {
   connectionId?: ConnectionId;
 }
 
+export interface McpExecutionRequest {
+  apiKey: string;
+  executionId: ExecutionId;
+}
+
 export interface McpExecutor {
   execute(request: McpExecuteRequest): Promise<TerminalExecution>;
+  /** Allocate task-backed work without waiting for a terminal result. */
+  start?(request: McpExecuteRequest): Promise<ExecutionResult>;
+  /** Read task-backed work from the executor's project-scoped execution store. */
+  get?(request: McpExecutionRequest): Promise<ExecutionRecord>;
+  /** Optional cancellation seam; the stock executor intentionally does not implement it. */
+  cancel?(request: McpExecutionRequest): Promise<void>;
 }
 
 export interface HttpMcpExecutorOptions {
@@ -49,12 +61,7 @@ export class HttpMcpExecutor implements McpExecutor {
   }
 
   async execute(request: McpExecuteRequest): Promise<TerminalExecution> {
-    const client = new Eyeball({
-      apiKey: request.apiKey,
-      baseUrl: this.#baseUrl,
-      userId: request.userId,
-      ...(this.#fetchImpl === undefined ? {} : { fetch: this.#fetchImpl }),
-    });
+    const client = this.#client(request.apiKey, request.userId);
     const immediate = await client.tools.execute(request.tool, {
       input: request.input,
       mode: "sync",
@@ -70,6 +77,33 @@ export class HttpMcpExecutor implements McpExecutor {
     return client.executions.wait(immediate.executionId, {
       ...(this.#pollMs === undefined ? {} : { pollMs: this.#pollMs }),
       ...(this.#timeoutMs === undefined ? {} : { timeoutMs: this.#timeoutMs }),
+    });
+  }
+
+  start(request: McpExecuteRequest): Promise<ExecutionResult> {
+    return this.#client(request.apiKey, request.userId).tools.execute(
+      request.tool,
+      {
+        input: request.input,
+        mode: "async",
+        idempotencyKey: request.idempotencyKey,
+        ...(request.connectionId === undefined
+          ? {}
+          : { connectionId: request.connectionId }),
+      },
+    );
+  }
+
+  get(request: McpExecutionRequest): Promise<ExecutionRecord> {
+    return this.#client(request.apiKey).executions.get(request.executionId);
+  }
+
+  #client(apiKey: string, userId?: string): Eyeball {
+    return new Eyeball({
+      apiKey,
+      baseUrl: this.#baseUrl,
+      ...(userId === undefined ? {} : { userId }),
+      ...(this.#fetchImpl === undefined ? {} : { fetch: this.#fetchImpl }),
     });
   }
 }

@@ -950,6 +950,53 @@ exact schema. Otherwise the converter emits non-strict mode and Eyeball still va
 If a target rejects the schema even in non-strict mode, catalog compilation for that
 format fails with a diagnostic; there is no lossy fallback.
 
+### 6.3 Streamable HTTP session and Tasks profile
+
+The source gateway implements the MCP 2025-11-25 Streamable HTTP endpoint at `/mcp`.
+Every client JSON-RPC message uses POST. A request that accepts `text/event-stream` receives
+an SSE stream with an initial empty event, zero or more related notifications, and the final
+JSON-RPC response; other POST requests receive one JSON response. An authenticated GET with
+`Accept: text/event-stream` opens a session notification stream, and authenticated DELETE
+terminates the supplied session. Browser `Origin` headers MUST match the explicit operator
+allowlist before authentication runs; when the allowlist is empty, requests carrying `Origin`
+are rejected because the HTTP `Host` value is not a DNS-rebinding trust anchor.
+
+Initialization returns a cryptographically random `Mcp-Session-Id`. Subsequent stateful
+requests MUST supply that server-issued ID and the negotiated protocol header; invented,
+expired, deleted, or differently authenticated IDs return HTTP 404. The default session TTL
+is 24 hours. Session state is stored through `SessionStore`; the stock implementation is
+process-local, while injected durable implementations MUST make read-modify-write updates
+atomic. Stored sessions contain a one-way inbound-credential binding, never the credential.
+SSE listeners, polling timers, and bearer credentials remain process-local. Event IDs are
+emitted for Streamable HTTP framing, but this source profile does not persist an event replay
+log and therefore does not promise `Last-Event-ID` redelivery.
+
+Because Tasks remain experimental, Eyeball requires an explicit per-session opt-in at
+`InitializeRequest.params.capabilities.experimental.tasks`. If the executor implements both
+async allocation and execution lookup, the server then declares
+`capabilities.tasks.requests.tools.call`, includes async tools in discovery, and emits the
+tool-level `execution.taskSupport` values described above. Without that opt-in, the legacy
+terminal result profile remains unchanged. In search discovery mode,
+`eyeball.execute_tool` is `optional`; the resolved canonical async definition still requires
+task augmentation.
+
+A task-augmented call allocates the canonical execution in async mode and uses its `exe_*`
+identifier as the MCP `taskId`. The requested TTL is validated as a positive integer and
+defaults to one hour. Executor `pending|running|succeeded|failed` map to MCP
+`working|working|completed|failed`. `tasks/get` refreshes the project-scoped execution,
+and `tasks/result` waits for terminal state and returns the same `CallToolResult` used by a
+non-task call with `io.modelcontextprotocol/related-task` metadata. Task state is scoped to
+the authenticated session. Expired or cross-session IDs return JSON-RPC `-32602` without
+revealing another task.
+
+The gateway polls active executions at a configurable interval (one second by default).
+When the originating `_meta` includes `progressToken`, queued, running, and terminal
+transitions MAY publish `notifications/progress`; terminal transitions MAY also publish
+`notifications/tasks/status`. Clients MUST continue using `tasks/get` as the source of truth.
+The server advertises `tasks.cancel` only when an injected `McpExecutor` implements the
+optional cancellation seam. The stock executor has no cancellation route and does not
+advertise it. `tasks/list` is not advertised.
+
 ## 7. Versioning and stability
 
 ```ts
@@ -993,8 +1040,8 @@ receive the next compatible catalog minor before this revision shipped.
    agent IDs and immutable revisions.
 2. Project endpoint create/list/get/update/delete, signing-secret rotation, and delivery-log
    reads use `/v1/webhooks` in the source preview.
-3. MCP 2025-11-25 Tasks are experimental and adapter-versioned; a future task wire profile
-   may replace them without changing Eyeball's canonical execution records.
+3. MCP 2025-11-25 Tasks remain experimental and adapter-versioned; a future task wire profile
+   may replace the implemented profile without changing Eyeball's canonical execution records.
 4. Each converter needs a version-pinned schema compatibility fixture suite.
 5. Converter-owned callbacks that do not receive a stable framework call ID, including the
    current Vercel AI SDK callback shape, need an explicit cross-invocation retry-correlation

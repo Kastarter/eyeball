@@ -58,10 +58,30 @@ In search discovery mode, pass the selected card to the always-listed `eyeball.e
 }
 ```
 
-Catalog discovery mode lists provider tools directly instead. Mutations use `mcp:<session-id>:<json-rpc-id>` as their default idempotency key, and terminal responses include `_meta["dev.eyeball/execution"]`.
+Catalog discovery mode lists provider tools directly instead. Mutations use `mcp:<session-id>:<json-rpc-id>` as their default idempotency key, and terminal responses include `_meta["dev.eyeball/execution"]`. MCP hosts retain the session ID returned by `initialize`; callers must not invent one.
+
+## Run long-lived tools as Tasks
+
+Ordinary MCP clients continue to receive terminal tool results. A client that supports the experimental 2025-11-25 Tasks profile opts in during initialization with:
+
+```json
+{
+  "capabilities": {
+    "experimental": {
+      "tasks": {}
+    }
+  }
+}
+```
+
+That session discovers async-by-nature tools such as `twilio.start_call` with `execution.taskSupport: "required"`. Invoke one with a `task` object, poll its returned `exe_*` task ID through `tasks/get`, and retrieve the canonical result through `tasks/result`. A long-lived `GET /mcp` SSE connection receives progress and terminal-status notifications while polling remains the source of truth.
+
+<Note>
+  Claude Code and Cursor manage initialize and session headers automatically. Async tools stay hidden unless the host negotiates Eyeball's experimental Tasks opt-in.
+</Note>
 
 <Note>
   When the gateway and executor target mocks, the complete MCP tool path runs with zero third-party SaaS accounts.
 </Note>
 
-See the [MCP endpoint contract](/api/mcp) for session headers and metadata.
+See the [MCP endpoint contract](/api/mcp) for SSE framing, Tasks, session headers, and metadata.

@@ -8,7 +8,7 @@ The open-source runtime has two public HTTP boundaries:
 | Service | Base path | Purpose |
 | --- | --- | --- |
 | Executor | `/v1` | Tool execution, execution history, optional dev connections |
-| MCP gateway | `/mcp` | Streamable HTTP discovery and tool calls |
+| MCP gateway | `/mcp` | Streamable HTTP discovery, SSE, tool calls, and experimental Tasks |
 
 All executor examples use:
 
@@ -21,5 +21,5 @@ Content-Type: application/json
   <Card title="Execute a tool" href="/api/executions/execute">POST /v1/execute</Card>
   <Card title="Get an execution" href="/api/executions/get-execution">GET /v1/executions/:id</Card>
   <Card title="Development connections" href="/api/connections/create-connection">Opt-in fixture vault</Card>
-  <Card title="MCP endpoint" href="/api/mcp">Sessions, metadata, and search</Card>
+  <Card title="MCP endpoint" href="/api/mcp">Sessions, SSE, Tasks, metadata, and search</Card>
 </CardGroup>

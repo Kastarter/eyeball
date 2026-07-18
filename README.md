@@ -44,6 +44,8 @@ Project API keys are server credentials and, by default, authorize the caller to
 
 When a key is handed to a less-trusted MCP host or another end-user-scoped client, pin it with `key:projectId:userId` in `EYEBALL_API_KEYS`. The executor and MCP gateway reject a different user supplied through an execute or connection body, `X-Eyeball-User-Id`, query filter, or MCP `_meta`. A gateway that uses a separate downstream executor credential must configure its inbound keyring independently; see the self-hosting guide. Keep remote traffic behind TLS, and never embed project keys in browser bundles.
 
+The MCP gateway supports JSON and SSE Streamable HTTP responses plus opt-in experimental MCP Tasks. Stateful callers must retain the server-issued session ID; session records store only a one-way binding to the inbound credential. Browser `Origin` headers are validated before authentication.
+
 ## Repository map
 
 The main monorepo and `mocks/` are separate Git repositories checked out together.
@@ -56,7 +58,7 @@ The main monorepo and `mocks/` are separate Git repositories checked out togethe
 | `packages/sdk` | TypeScript client and framework-facing helpers |
 | `packages/bridge` | Compatibility boundary for external integration engines |
 | `apps/executor` | Authenticated execution API, records, queues, and development connections |
-| `apps/mcp-gateway` | Streamable HTTP MCP discovery and execution gateway |
+| `apps/mcp-gateway` | Stateful Streamable HTTP MCP discovery, SSE, execution, and Tasks gateway |
 | `apps/dashboard` | Next.js admin panel and local voice-agent testing surfaces |
 | `apps/docs` | Self-hosted Next.js renderer for the authored public documentation |
 | `docs/` | Product contracts, RFCs, testing policy, and certification guidance |
@@ -149,7 +151,8 @@ ANTHROPIC_API_KEY=... pnpm demo:anthropic
 | 37 toolkits/provider manifests | Built in catalog `1.1` with canonical schemas and discovery |
 | 493-row contract matrix | Built: 227 smoke rows and 266 explicit `not_supported` rows |
 | Admin panel | Built as the local Next.js dashboard |
-| Documentation | Built in `docs/`, the 99-page `docs-site/` source, and the self-hosted `apps/docs` renderer |
+| MCP gateway | JSON/SSE Streamable HTTP, authenticated session lifecycle, catalog/search discovery, execution metadata, and experimental task polling built; stock execution cancellation is not available |
+| Documentation | Built in `docs/`, the 103-page `docs-site/` source, and the self-hosted `apps/docs` renderer |
 | Local credential vault | Built with encrypted single-tenant storage and development fixtures |
 | Hosted OAuth vault | Cloud work pending |
 | Real-provider certification | Pending provider credentials and certification runs |
