@@ -1,5 +1,6 @@
 import type { JsonValue, ToolkitSlug } from "./types/tool.js";
 
+/** Stable normalized error codes shared by tools, the executor, and SDK clients. */
 export const TOOL_ERROR_CODES = {
   INVALID_INPUT: "invalid_input",
   AUTH_MISSING: "auth_missing",
@@ -40,6 +41,7 @@ export interface ProviderErrorDetail {
   detail?: JsonValue;
 }
 
+/** Credential-safe error body returned by public execution and webhook boundaries. */
 export interface NormalizedToolError {
   code: ToolErrorCode;
   message: string;
@@ -69,6 +71,7 @@ export interface EyeballErrorOptions {
   cause?: unknown;
 }
 
+/** Normalized SDK and executor failure with stable taxonomy and retry metadata. */
 export class EyeballError extends Error {
   readonly code: ToolErrorCode;
   readonly retryable: boolean;
@@ -77,6 +80,12 @@ export class EyeballError extends Error {
   readonly requestId?: string;
   readonly executionId?: string;
 
+  /**
+   * Creates a normalized error while applying taxonomy retry defaults.
+   *
+   * @param options Stable code, safe message, and optional correlation metadata.
+   * @throws RangeError When `retryAfter` is negative or not finite.
+   */
   constructor(options: EyeballErrorOptions) {
     super(options.message, { cause: options.cause });
     this.name = "EyeballError";
@@ -104,6 +113,7 @@ export class EyeballError extends Error {
     }
   }
 
+  /** Returns the credential-safe normalized error body used on public boundaries. */
   toJSON(): NormalizedToolError {
     const normalized: NormalizedToolError = {
       code: this.code,

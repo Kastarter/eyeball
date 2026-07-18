@@ -226,6 +226,7 @@ function webhookPageSuffix(
   return pageSuffix(options);
 }
 
+/** Project-scoped staging for file content referenced by later tool calls. */
 export class FilesClient {
   readonly #context: ClientContext;
 
@@ -233,6 +234,19 @@ export class FilesClient {
     this.#context = context;
   }
 
+  /**
+   * Stages UTF-8 text or exact bytes and returns the attachment reference accepted by tools.
+   *
+   * @param options File name, optional media type, and content to stage.
+   * @returns The stable reference to place in a canonical tool input.
+   * @throws EyeballError when the upload is rejected or the executor cannot be reached.
+   * @example
+   * const attachment = await eyeball.files.upload({
+   *   name: "invoice.pdf",
+   *   mimeType: "application/pdf",
+   *   content: invoiceBytes,
+   * });
+   */
   async upload(options: UploadFileOptions): Promise<StagedFileReference> {
     const metadata = await this.#context.http.request<StagedFileMetadata>(
       "/v1/files",
@@ -252,6 +266,13 @@ export class FilesClient {
     };
   }
 
+  /**
+   * Retrieves metadata for a staged file without returning its bytes.
+   *
+   * @param fileId Project-scoped staged file identifier.
+   * @returns The stored name, media type, size, and expiry.
+   * @throws EyeballError when the file is unavailable or the executor request fails.
+   */
   get(fileId: FileId): Promise<StagedFileMetadata> {
     return this.#context.http.request(
       `/v1/files/${encodeURIComponent(fileId)}`,
@@ -259,6 +280,7 @@ export class FilesClient {
   }
 }
 
+/** Read and poll the executor's project-scoped execution records. */
 export class ExecutionsClient {
   readonly #context: ClientContext;
 
@@ -266,12 +288,26 @@ export class ExecutionsClient {
     this.#context = context;
   }
 
+  /**
+   * Retrieves one execution record by identifier.
+   *
+   * @param executionId Execution identifier returned by `tools.execute`.
+   * @returns The current durable execution record.
+   * @throws EyeballError when the execution is unavailable or the request fails.
+   */
   get(executionId: string): Promise<ExecutionRecord> {
     return this.#context.http.request(
       `/v1/executions/${encodeURIComponent(executionId)}`,
     );
   }
 
+  /**
+   * Lists execution history with optional status, tool, user, and cursor filters.
+   *
+   * @param options Filters and pagination for the project execution history.
+   * @returns One execution page and an optional continuation cursor.
+   * @throws EyeballError when a filter is invalid or the executor request fails.
+   */
   list(options: ListExecutionsOptions = {}): Promise<ExecutionPage> {
     const query = new URLSearchParams();
     if (options.status !== undefined) {
@@ -302,6 +338,20 @@ export class ExecutionsClient {
     return this.#context.http.request(`/v1/executions${suffix}`);
   }
 
+  /**
+   * Polls an execution until it succeeds or fails, bounded by a local deadline.
+   *
+   * @param executionId Execution identifier returned by `tools.execute`.
+   * @param options Poll interval and total timeout in milliseconds.
+   * @returns The terminal succeeded or failed execution record.
+   * @throws EyeballError with `timeout` when the deadline expires, or the executor's normalized error for a failed request.
+   * @throws Error When an injected polling clock returns a non-finite timestamp.
+   * @example
+   * const terminal = await eyeball.executions.wait(execution.executionId, {
+   *   pollMs: 500,
+   *   timeoutMs: 60_000,
+   * });
+   */
   async wait(
     executionId: string,
     options: WaitForExecutionOptions = {},
@@ -344,6 +394,7 @@ export class ExecutionsClient {
   }
 }
 
+/** Local tool discovery and authenticated canonical execution. */
 export class ToolsClient {
   readonly #context: ClientContext;
   readonly #executions: ExecutionsClient;
@@ -353,7 +404,13 @@ export class ToolsClient {
     this.#executions = executions;
   }
 
-  /** Searches the local open-core catalog without contacting the executor. */
+  /**
+   * Searches and ranks the local open-core catalog without contacting the executor.
+   *
+   * @param options Search text, result limit, and optional local catalog filters.
+   * @returns Canonical tool definitions ordered by relevance.
+   * @throws EyeballError with `invalid_input` when the query or a filter is invalid.
+   */
   async search(options: SearchToolsOptions): Promise<SearchToolsResult> {
     if (options.userId !== undefined && options.userId.trim().length === 0) {
       return invalidInput("userId must not be empty when provided.");
@@ -393,8 +450,19 @@ export class ToolsClient {
   }
 
   /**
-   * Resolves the open-core catalog locally; this method never calls the executor.
+   * Resolves and converts the open-core catalog locally without calling the executor.
+   *
    * Hosted per-project enablement and catalog policy are eyeball-cloud concerns.
+   *
+   * @param options Toolkit and capability filters plus the requested model format.
+   * @returns Converted tools, their canonical definitions, and the reversible name map.
+   * @throws EyeballError with `invalid_input` when filters are invalid or AI SDK callbacks have no user binding.
+   * @example
+   * const bundle = await eyeball.tools.get({
+   *   toolkits: ["gmail"],
+   *   format: "anthropic",
+   * });
+   * console.log(bundle.tools, bundle.nameMap);
    */
   async get<Format extends EyeballToolFormat = "canonical">(
     options: GetToolsOptions<Format> = {},
@@ -460,9 +528,22 @@ export class ToolsClient {
   }
 
   /**
-   * Executes a canonical dotted or restricted wire tool name. Mutations receive a
-   * generated UUID idempotency key when one is not supplied. The generated key covers
-   * this invocation only; pass a stable key to correlate retries across calls.
+   * Starts one canonical execution and returns its immediate execution envelope.
+   *
+   * Canonical dotted and restricted wire names are accepted. Mutations receive a generated
+   * UUID idempotency key when one is not supplied; pass a stable key to correlate retries
+   * across separate calls.
+   *
+   * @param toolName Canonical dotted name or restricted name emitted to a model.
+   * @param options Canonical input, user binding, execution mode, and retry identity.
+   * @returns A succeeded, failed, or pending execution result.
+   * @throws EyeballError when local validation, transport, authentication, or executor admission fails.
+   * @example
+   * const execution = await eyeball.tools.execute("gmail.create_draft", {
+   *   userId: "user_42",
+   *   input: { to: ["guest@example.com"], subject: "Review", body: "Draft" },
+   *   idempotencyKey: "draft:reservation:42",
+   * });
    */
   async execute(
     toolName: string,
@@ -507,8 +588,22 @@ export class ToolsClient {
   }
 
   /**
-   * Agent-loop convenience: accepts the exact canonical or wire name emitted by a model,
-   * waits for async work when necessary, and returns only canonical output.
+   * Runs a model-selected tool to completion and returns only its canonical output.
+   *
+   * The exact canonical or restricted wire name emitted by a model is accepted. Async work
+   * is polled through `executions.wait` before this method resolves.
+   *
+   * @param toolName Canonical dotted name or restricted name emitted to a model.
+   * @param input Canonical JSON object for the selected tool.
+   * @param options User, connection, execution, idempotency, and polling controls.
+   * @returns The canonical tool output after successful completion.
+   * @throws EyeballError for local validation, request failures, terminal tool errors, or polling timeout.
+   * @example
+   * const output = await eyeball.tools.run(
+   *   "gmail.search_emails",
+   *   { query: "reservation", pageSize: 5 },
+   *   { userId: "user_42", timeoutMs: 30_000 },
+   * );
    */
   async run(
     toolName: string,
@@ -546,6 +641,7 @@ export class ToolsClient {
   }
 }
 
+/** User-scoped development connections exposed by the executor fixture API. */
 export class ConnectionsClient {
   readonly #context: ClientContext;
 
@@ -553,6 +649,15 @@ export class ConnectionsClient {
     this.#context = context;
   }
 
+  /**
+   * Creates a connected development fixture for one user and toolkit.
+   *
+   * Hosted OAuth authorization remains an eyeball Cloud boundary.
+   *
+   * @param options Toolkit slug and optional user override.
+   * @returns The connected fixture identity with no redirect URL.
+   * @throws EyeballError with `not_supported` when the executor has no connection route, or another normalized request error.
+   */
   async create(options: CreateConnectionOptions): Promise<ConnectedConnection> {
     const userId = effectiveUserId(options.userId, this.#context.defaultUserId);
     if (options.toolkit.trim().length === 0) {
@@ -580,10 +685,23 @@ export class ConnectionsClient {
     }
   }
 
+  /**
+   * Lists development connections visible to the authenticated project.
+   *
+   * @returns One page containing all fixture connection summaries.
+   * @throws EyeballError when the executor request fails.
+   */
   list(): Promise<ConnectionPage> {
     return this.#context.http.request("/v1/connections");
   }
 
+  /**
+   * Revokes a development connection fixture.
+   *
+   * @param connectionId Project-scoped connection identifier.
+   * @returns The revoked connection identity and status.
+   * @throws EyeballError when the connection is unavailable or the request fails.
+   */
   delete(connectionId: ConnectionId): Promise<RevokedConnection> {
     return this.#context.http.request(
       `/v1/connections/${encodeURIComponent(connectionId)}`,
@@ -594,7 +712,13 @@ export class ConnectionsClient {
 
 /** Canonical trigger discovery from the local open-core catalog. */
 export class TriggersClient {
-  /** Resolves trigger definitions without network I/O. */
+  /**
+   * Resolves trigger definitions from the packaged catalog without network I/O.
+   *
+   * @param options Toolkit, capability, and delivery-mode filters.
+   * @returns Matching canonical trigger definitions in catalog order.
+   * @throws EyeballError with `invalid_input` when a toolkit filter is empty.
+   */
   async list(
     options: GetTriggersOptions = {},
   ): Promise<readonly TriggerDefinition[]> {
@@ -631,6 +755,20 @@ export class SubscriptionsClient {
     this.#context = context;
   }
 
+  /**
+   * Creates a user-scoped push or polling trigger subscription.
+   *
+   * @param options Canonical trigger, destination webhooks, user, connection, and optional polling controls.
+   * @returns The subscription plus a create-time ingest URL for push triggers when applicable.
+   * @throws EyeballError when validation, authentication, or executor admission fails.
+   * @example
+   * const subscription = await eyeball.subscriptions.create({
+   *   trigger: "slack.message_received",
+   *   userId: "user_42",
+   *   connectionId: "conn_slack",
+   *   webhookEndpointIds: ["whe_events"],
+   * });
+   */
   create(
     options: CreateSubscriptionOptions,
   ): Promise<CreatedTriggerSubscription> {
@@ -672,6 +810,13 @@ export class SubscriptionsClient {
     });
   }
 
+  /**
+   * Lists trigger subscriptions with optional user and cursor filters.
+   *
+   * @param options User scope and pagination controls.
+   * @returns One page of trigger subscriptions.
+   * @throws EyeballError when a filter is invalid or the executor request fails.
+   */
   list(
     options: ListSubscriptionsOptions = {},
   ): Promise<TriggerSubscriptionPage> {
@@ -685,12 +830,26 @@ export class SubscriptionsClient {
     );
   }
 
+  /**
+   * Retrieves one trigger subscription.
+   *
+   * @param value Valid `trgsub_*` subscription identifier.
+   * @returns The current subscription record.
+   * @throws EyeballError when the identifier is invalid, unavailable, or the request fails.
+   */
   get(value: string): Promise<TriggerSubscription> {
     return this.#context.http.request(
       `/v1/subscriptions/${subscriptionId(value)}`,
     );
   }
 
+  /**
+   * Permanently removes one trigger subscription.
+   *
+   * @param value Valid `trgsub_*` subscription identifier.
+   * @returns Nothing after the executor accepts the deletion.
+   * @throws EyeballError when the identifier is invalid, unavailable, or the request fails.
+   */
   delete(value: string): Promise<void> {
     return this.#context.http.request(
       `/v1/subscriptions/${subscriptionId(value)}`,
@@ -699,6 +858,7 @@ export class SubscriptionsClient {
   }
 }
 
+/** Project webhook endpoints, secret rotation, and delivery history. */
 export class WebhooksClient {
   readonly #context: ClientContext;
 
@@ -706,6 +866,19 @@ export class WebhooksClient {
     this.#context = context;
   }
 
+  /**
+   * Creates a signed webhook endpoint and reveals its secret once.
+   *
+   * @param options HTTPS destination, subscribed event types, and initial active state.
+   * @returns The endpoint record and create-time signing secret.
+   * @throws EyeballError when validation, authentication, or executor admission fails.
+   * @example
+   * const endpoint = await eyeball.webhooks.create({
+   *   url: "https://agent.example.com/eyeball",
+   *   events: ["execution.completed", "trigger.slack.message_received"],
+   * });
+   * console.log(endpoint.secret);
+   */
   create(
     options: CreateWebhookEndpointOptions,
   ): Promise<CreatedWebhookEndpoint> {
@@ -722,6 +895,13 @@ export class WebhooksClient {
     });
   }
 
+  /**
+   * Lists webhook endpoints with cursor pagination.
+   *
+   * @param options Cursor and page-size controls.
+   * @returns One page of webhook endpoint records.
+   * @throws EyeballError when pagination is invalid or the executor request fails.
+   */
   list(
     options: ListWebhookEndpointsOptions = {},
   ): Promise<WebhookEndpointPage> {
@@ -730,12 +910,27 @@ export class WebhooksClient {
     );
   }
 
+  /**
+   * Retrieves one webhook endpoint without exposing its signing secret.
+   *
+   * @param endpointId Project-scoped webhook endpoint identifier.
+   * @returns The current endpoint configuration.
+   * @throws EyeballError when the identifier is invalid, unavailable, or the request fails.
+   */
   get(endpointId: string): Promise<WebhookEndpoint> {
     return this.#context.http.request(
       `/v1/webhooks/${webhookEndpointId(endpointId)}`,
     );
   }
 
+  /**
+   * Updates at least one mutable webhook endpoint field.
+   *
+   * @param endpointId Project-scoped webhook endpoint identifier.
+   * @param options New URL, event subscriptions, or active state.
+   * @returns The updated endpoint record.
+   * @throws EyeballError when no field changes, a value is invalid, or the executor request fails.
+   */
   update(
     endpointId: string,
     options: UpdateWebhookEndpointOptions,
@@ -765,6 +960,13 @@ export class WebhooksClient {
     );
   }
 
+  /**
+   * Invalidates the prior signing secret and reveals its replacement once.
+   *
+   * @param endpointId Project-scoped webhook endpoint identifier.
+   * @returns The new secret, prefix, and rotation time.
+   * @throws EyeballError when the endpoint is unavailable or the request fails.
+   */
   rotateSecret(endpointId: string): Promise<RotatedWebhookSecret> {
     return this.#context.http.request(
       `/v1/webhooks/${webhookEndpointId(endpointId)}/rotate-secret`,
@@ -772,6 +974,14 @@ export class WebhooksClient {
     );
   }
 
+  /**
+   * Lists delivery attempts for one webhook endpoint.
+   *
+   * @param endpointId Project-scoped webhook endpoint identifier.
+   * @param options Cursor and page-size controls.
+   * @returns One page of delivery records and their attempts.
+   * @throws EyeballError when pagination is invalid or the executor request fails.
+   */
   deliveries(
     endpointId: string,
     options: ListWebhookDeliveriesOptions = {},
@@ -783,6 +993,13 @@ export class WebhooksClient {
     );
   }
 
+  /**
+   * Permanently removes one webhook endpoint.
+   *
+   * @param endpointId Project-scoped webhook endpoint identifier.
+   * @returns Nothing after the executor accepts the deletion.
+   * @throws EyeballError when the endpoint is unavailable or the request fails.
+   */
   delete(endpointId: string): Promise<void> {
     return this.#context.http.request(
       `/v1/webhooks/${webhookEndpointId(endpointId)}`,
@@ -791,15 +1008,29 @@ export class WebhooksClient {
   }
 }
 
+/** Authenticated TypeScript entry point for every Eyeball SDK namespace. */
 export class Eyeball {
+  /** Local discovery and canonical tool execution. */
   readonly tools: ToolsClient;
+  /** Execution history and terminal-state polling. */
   readonly executions: ExecutionsClient;
+  /** Development connection fixture administration. */
   readonly connections: ConnectionsClient;
+  /** Project-scoped staged file operations. */
   readonly files: FilesClient;
+  /** Local canonical trigger discovery. */
   readonly triggers: TriggersClient;
+  /** User-scoped trigger subscription operations. */
   readonly subscriptions: SubscriptionsClient;
+  /** Signed webhook endpoint and delivery operations. */
   readonly webhooks: WebhooksClient;
 
+  /**
+   * Creates an SDK client bound to one executor and optional default user.
+   *
+   * @param options Project credential, executor URL, user binding, and optional test seams.
+   * @throws TypeError When credentials, URL security, user identity, or fetch configuration is invalid.
+   */
   constructor(options: EyeballOptions) {
     const fetchImpl = options.fetch ?? globalThis.fetch;
     if (typeof fetchImpl !== "function") {

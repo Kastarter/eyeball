@@ -16,6 +16,10 @@
     "lint": {
       "dependsOn": ["^lint"],
       "outputs": []
+    },
+    "docs:check": {
+      "cache": false,
+      "outputs": []
     }
   }
 }

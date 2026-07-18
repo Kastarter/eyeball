@@ -1,6 +1,6 @@
 ---
-title: "SDK errors"
-description: "Catch EyeballError, inspect normalized fields, and use the public error constants and types."
+title: "Handle SDK errors"
+description: "Catch normalized failures, decide whether to retry, and retain request or execution correlation."
 ---
 
 HTTP failures and failed `tools.run` calls throw `EyeballError`.
@@ -47,4 +47,4 @@ const error: NormalizedToolError = {
 console.log(error);
 ```
 
-See the [complete taxonomy](/concepts/errors) for remediation.
+See the generated [Errors API](/sdk/generated/errors) for the class fields and serialized type, then use the [complete taxonomy](/concepts/errors) for remediation.

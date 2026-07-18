@@ -1,9 +1,9 @@
 ---
-title: "Connections client"
-description: "Create a development fixture connection and understand the private cloud boundary."
+title: "Use development connections"
+description: "Create, inspect, and revoke local connection fixtures while preserving the hosted OAuth boundary."
 ---
 
-The released TypeScript SDK exposes one connection method:
+The open-source executor can expose an opt-in fixture API for account-free development. Create a connection for the client's default user or pass `userId` on the call.
 
 ```ts
 import { Eyeball } from "@eyeball/sdk";
@@ -19,14 +19,7 @@ const connection = await eyeball.connections.create({
 console.log(connection.connectionId, connection.status, connection.redirectUrl);
 ```
 
-Input:
-
-| Field | Required | Meaning |
-| --- | --- | --- |
-| `toolkit` | Yes | Provider toolkit slug |
-| `userId` | Unless set on the client | External user binding |
-
-Development response:
+The fixture response has no OAuth redirect:
 
 ```json
 {
@@ -36,6 +29,25 @@ Development response:
 }
 ```
 
-The SDK does not expose `list` or `delete` methods. The optional dev-vault REST API does; use its [list](/api/connections/list-connections) and [delete](/api/connections/delete-connection) endpoints for local fixture administration.
+List and revoke fixtures through the same namespace:
+
+```ts
+import { Eyeball } from "@eyeball/sdk";
+
+const eyeball = new Eyeball({
+  apiKey: process.env.EYEBALL_API_KEY!,
+  baseUrl: process.env.EYEBALL_EXECUTOR_URL!,
+});
+const page = await eyeball.connections.list();
+const current = page.connections.find(
+  ({ connectionId }) => connectionId === "conn_01JZ6XA2T4R8N4W3H7Q9M5K2P1",
+);
+
+if (current !== undefined) {
+  await eyeball.connections.delete(current.connectionId);
+}
+```
 
 If `POST /v1/connections` is absent, the SDK converts the route's `not_found` into `not_supported` and identifies eyeball Cloud as the hosted OAuth boundary.
+
+Production OAuth consent, token refresh, and hosted account administration are not represented by these fixtures. See the generated [Connections API](/sdk/generated/connections) for the complete method and record types.

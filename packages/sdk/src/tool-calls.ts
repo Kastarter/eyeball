@@ -102,6 +102,14 @@ function toolCallOptions(
  * Dispatches framework tool calls and returns model-ready result blocks. Each call's
  * framework ID becomes its stable, format-prefixed idempotency key so redispatching the
  * same model response reuses the original execution instead of duplicating a mutation.
+ *
+ * Per-call failures are serialized into safe model-facing results instead of rejecting
+ * the batch.
+ *
+ * @param eyeball Configured SDK client used for canonical execution.
+ * @param calls Anthropic tool-use blocks or OpenAI function tool calls from one response.
+ * @param options Exact emitted name map plus optional execution and polling controls.
+ * @returns Result blocks or tool messages in the same framework format as `calls`.
  */
 export function executeToolCalls(
   eyeball: Eyeball,

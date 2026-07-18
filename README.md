@@ -131,6 +131,8 @@ pnpm --filter @eyeball/docs dev
 
 The site is available at `http://localhost:3003`. Use `pnpm --filter @eyeball/docs build` for a production build with all documentation routes statically generated.
 
+Use `pnpm docs:generate` to refresh toolkit and SDK references (`pnpm docs:sdk` refreshes only the SDK), then run `pnpm docs:check`, `pnpm docs:snippets`, and `pnpm docs:typecheck` before committing documentation changes.
+
 ## Demos
 
 ```sh

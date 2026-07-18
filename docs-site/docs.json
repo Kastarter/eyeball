@@ -58,13 +58,31 @@
     {
       "group": "SDK Reference",
       "pages": [
-        "sdk/typescript/client",
-        "sdk/typescript/tools-get",
-        "sdk/typescript/tools-search",
-        "sdk/typescript/tools-execute",
-        "sdk/typescript/connections",
-        "sdk/typescript/executions",
-        "sdk/typescript/errors"
+        {
+          "group": "Guides",
+          "pages": [
+            "sdk/typescript/client",
+            "sdk/typescript/tools-get",
+            "sdk/typescript/tools-search",
+            "sdk/typescript/tools-execute",
+            "sdk/typescript/connections",
+            "sdk/typescript/executions",
+            "sdk/typescript/errors"
+          ]
+        },
+        {
+          "group": "Generated API",
+          "pages": [
+            "sdk/generated/client",
+            "sdk/generated/tools",
+            "sdk/generated/executions",
+            "sdk/generated/connections",
+            "sdk/generated/files",
+            "sdk/generated/webhooks",
+            "sdk/generated/triggers-subscriptions",
+            "sdk/generated/errors"
+          ]
+        }
       ]
     },
     {

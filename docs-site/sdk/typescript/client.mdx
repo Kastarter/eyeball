@@ -1,9 +1,9 @@
 ---
-title: "Eyeball client"
-description: "Configure project auth, executor base URL, default user identity, and test seams."
+title: "Configure the TypeScript client"
+description: "Bind project auth, an executor origin, and an optional default user before using SDK namespaces."
 ---
 
-`Eyeball` requires `apiKey` and `baseUrl`.
+Create one `Eyeball` client for an executor and reuse its namespace clients throughout your application.
 
 ```ts
 import { Eyeball } from "@eyeball/sdk";
@@ -14,20 +14,14 @@ const eyeball = new Eyeball({
   userId: "user_42",
 });
 
-console.log(eyeball.tools, eyeball.executions, eyeball.connections);
+const tools = await eyeball.tools.get({ toolkits: ["gmail"] });
+console.log(tools.raw.length);
 ```
 
-| Option | Type | Required | Meaning |
-| --- | --- | --- | --- |
-| `apiKey` | `string` | Yes | Bearer project credential |
-| `baseUrl` | `string` | Yes | Executor origin; trailing slashes are normalized |
-| `userId` | `string` | No | Default external user for user-scoped methods |
-| `fetch` | `typeof fetch` | No | Custom transport/test seam |
-| `clock` | `{ now(): number }` | No | Polling timeout clock |
-| `sleep` | `(ms) => Promise<void>` | No | Polling delay seam |
-
-An empty `userId` throws locally. The SDK uses global `fetch` unless one is supplied.
+The project API key remains server-side. `userId` is the external end-user binding reused by user-scoped tool, connection, and subscription calls; omit it only when each call supplies its own identity. The SDK uses global `fetch` unless a test or runtime adapter supplies another implementation.
 
 <Note>
   There is no `mock` constructor flag. Select mocks by setting `baseUrl` to a mock-backed executor.
 </Note>
+
+See the generated [Client API](/sdk/generated/client) for every constructor option, namespace property, and test seam.

@@ -133,15 +133,21 @@ async function main(): Promise<void> {
     checkInternalLinks(displayPath, source, pageSet);
   }
 
-  const generated = mdxFiles.filter((path) =>
+  const generatedToolkits = mdxFiles.filter((path) =>
     path.startsWith(join(docsRoot, "toolkits", "generated") + sep),
   );
-  if (generated.length !== 37) {
+  if (generatedToolkits.length !== 37) {
     errors.push(
-      `expected 37 generated toolkit pages, found ${generated.length}`,
+      `expected 37 generated toolkit pages, found ${generatedToolkits.length}`,
     );
   }
-  for (const path of generated) {
+  const generatedSdk = mdxFiles.filter((path) =>
+    path.startsWith(join(docsRoot, "sdk", "generated") + sep),
+  );
+  if (generatedSdk.length !== 8) {
+    errors.push(`expected 8 generated SDK pages, found ${generatedSdk.length}`);
+  }
+  for (const path of [...generatedToolkits, ...generatedSdk]) {
     const source = await readFile(path, "utf8");
     if (!source.includes("DO NOT EDIT")) {
       errors.push(
@@ -177,7 +183,7 @@ async function main(): Promise<void> {
     );
   }
   console.log(
-    `Validated ${mdxFiles.length} MDX pages (${generated.length} generated) and ${configuredPages.length} navigation entries.`,
+    `Validated ${mdxFiles.length} MDX pages (${generatedToolkits.length + generatedSdk.length} generated) and ${configuredPages.length} navigation entries.`,
   );
 }
 

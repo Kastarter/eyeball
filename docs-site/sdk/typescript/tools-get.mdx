@@ -1,9 +1,9 @@
 ---
-title: "tools.get"
-description: "Filter the packaged catalog and export model-native tool definitions without a network request."
+title: "Choose a tool format"
+description: "Filter the packaged catalog and emit model-native tool definitions without a network request."
 ---
 
-`tools.get` filters `defaultCatalog` by `toolkits` or one `capability` and returns definitions in `canonical`, `anthropic`, `openai`, `ai-sdk`, or `mcp` format.
+`tools.get` filters the packaged catalog by toolkit or capability and converts the result for Anthropic, OpenAI, AI SDK, MCP, or direct canonical use.
 
 ```ts
 import { Eyeball } from "@eyeball/sdk";
@@ -19,18 +19,12 @@ const bundle = await eyeball.tools.get({
 console.log(bundle.tools, bundle.raw, bundle.nameMap);
 ```
 
-| Option | Type | Meaning |
-| --- | --- | --- |
-| `toolkits` | `readonly string[]` | Provider slugs to include |
-| `capability` | `CapabilitySlug` | One capability to include |
-| `format` | `EyeballToolFormat` | Output adapter; defaults to `canonical` |
-| `userId` | `string` | Binds AI SDK execute callbacks |
-| `includeAsync` | `boolean` | MCP-only opt-in after Tasks support is negotiated |
-
-Return fields:
+Every format returns the same three-part bundle:
 
 - `tools`: definitions in the requested format;
 - `raw`: canonical `ToolDefinition[]`;
 - `nameMap`: reversible canonical/wire-name mapping.
 
-The method is async for API stability but does not call a hosted catalog.
+The method is async for API stability but does not call a hosted catalog. AI SDK output needs a user binding because its emitted `execute` callbacks invoke tools directly. MCP output includes async-by-nature tools only after the caller has negotiated Tasks and requests `includeAsync`.
+
+See the generated [Tools API](/sdk/generated/tools) for the complete option and result types.

@@ -1,6 +1,6 @@
 ---
-title: "tools.execute and tools.run"
-description: "Execute canonical inputs, retain envelopes, wait for async work, and handle model tool calls."
+title: "Execute tools from an agent loop"
+description: "Choose between execution envelopes, canonical output, and framework-native tool-call dispatch."
 ---
 
 ## `tools.execute`
@@ -24,7 +24,7 @@ const execution = await eyeball.tools.execute("gmail.create_draft", {
 console.log(execution.executionId, execution.status);
 ```
 
-`input` is required. Optional fields are `userId`, `mode`, `idempotencyKey`, and `connectionId`. Mode defaults from the canonical tool annotation.
+Use `tools.execute` when the application needs the execution ID, status, contract versions, or latency. Mode defaults from the canonical tool annotation; mutation retries should pass one stable `idempotencyKey`.
 
 ## `tools.run`
 
@@ -76,3 +76,5 @@ console.log(results);
 ```
 
 Framework defaults are `anthropic:<tool-use-id>` and `openai:<tool-call-id>`. Dispatch is constrained to the emitted bundle's `nameMap`; a model cannot invoke a valid catalog tool that was not advertised in that bundle.
+
+See the generated [Tools API](/sdk/generated/tools) for every overload, parameter, return type, and normalized failure path.

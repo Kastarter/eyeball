@@ -15,34 +15,40 @@ import type {
   WebhookSubscriptionEventType,
 } from "@eyeball/core";
 
+/** Fields accepted when registering a signed webhook destination. */
 export interface CreateWebhookEndpointOptions {
   url: string;
   events: readonly WebhookSubscriptionEventType[];
   active?: boolean;
 }
 
+/** Mutable webhook endpoint fields; at least one must be present. */
 export interface UpdateWebhookEndpointOptions {
   url?: string;
   events?: readonly WebhookSubscriptionEventType[];
   active?: boolean;
 }
 
+/** Cursor pagination controls for webhook endpoint listing. */
 export interface ListWebhookEndpointsOptions {
   cursor?: string;
   limit?: number;
 }
 
+/** Cursor pagination controls for one endpoint's delivery history. */
 export interface ListWebhookDeliveriesOptions {
   cursor?: string;
   limit?: number;
 }
 
+/** Local catalog filters for canonical trigger discovery. */
 export interface GetTriggersOptions {
   toolkits?: readonly string[];
   capability?: CapabilitySlug;
   deliveryMode?: TriggerDefinition["annotations"]["deliveryMode"];
 }
 
+/** Fields accepted when creating a push or polling trigger subscription. */
 export interface CreateSubscriptionOptions {
   trigger: string;
   /** Uses the client-level userId when omitted. */
@@ -54,6 +60,7 @@ export interface CreateSubscriptionOptions {
   pollIntervalSeconds?: number;
 }
 
+/** User and cursor filters for trigger subscription listing. */
 export interface ListSubscriptionsOptions {
   /** Uses the client-level userId when omitted; omit both to list the project. */
   userId?: string;
@@ -61,6 +68,7 @@ export interface ListSubscriptionsOptions {
   limit?: number;
 }
 
+/** Tool-definition formats emitted for supported model frameworks and MCP. */
 export type EyeballToolFormat =
   | "canonical"
   | "anthropic"
@@ -68,6 +76,7 @@ export type EyeballToolFormat =
   | "ai-sdk"
   | "mcp";
 
+/** Compile-time mapping from a requested format to its emitted tool container. */
 export interface EyeballToolFormatMap {
   canonical: readonly ToolDefinition[];
   anthropic: AnthropicToolDescriptor[];
@@ -76,6 +85,7 @@ export interface EyeballToolFormatMap {
   mcp: McpToolDescriptor[];
 }
 
+/** Local catalog filters and conversion controls for `tools.get`. */
 export interface GetToolsOptions<
   Format extends EyeballToolFormat = "canonical",
 > {
@@ -92,12 +102,14 @@ export interface GetToolsOptions<
   includeAsync?: boolean;
 }
 
+/** Converted model tools plus canonical definitions and reversible names. */
 export interface GetToolsResult<Format extends EyeballToolFormat> {
   tools: EyeballToolFormatMap[Format];
   nameMap: ToolNameMap;
   raw: readonly ToolDefinition[];
 }
 
+/** Query and optional local catalog filters for `tools.search`. */
 export interface SearchToolsOptions {
   query: string;
   limit?: number;
@@ -108,10 +120,12 @@ export interface SearchToolsOptions {
   userId?: string;
 }
 
+/** Canonical definitions ranked by local catalog relevance. */
 export interface SearchToolsResult {
   tools: readonly ToolDefinition[];
 }
 
+/** Canonical input and execution controls for `tools.execute`. */
 export interface ExecuteToolOptions {
   /** Uses the client-level userId when omitted. */
   userId?: string;
@@ -127,6 +141,7 @@ export interface ExecuteToolOptions {
   connectionId?: ConnectionId;
 }
 
+/** Local polling cadence and deadline for terminal execution state. */
 export interface WaitForExecutionOptions {
   /** Milliseconds between polls. Defaults to 500. */
   pollMs?: number;
@@ -134,10 +149,12 @@ export interface WaitForExecutionOptions {
   timeoutMs?: number;
 }
 
+/** Execution and polling controls for `tools.run`. */
 export interface RunToolOptions
   extends Omit<ExecuteToolOptions, "input">,
     WaitForExecutionOptions {}
 
+/** Project execution-history filters and cursor controls. */
 export interface ListExecutionsOptions {
   status?: ExecutionStatus;
   /** Canonical dotted or restricted wire name. */
@@ -148,11 +165,13 @@ export interface ListExecutionsOptions {
   limit?: number;
 }
 
+/** One cursor page of public execution records. */
 export interface ExecutionPage {
   executions: readonly ExecutionRecord[];
   nextCursor?: string;
 }
 
+/** Name, media type, and exact content staged by `files.upload`. */
 export interface UploadFileOptions {
   name: string;
   mimeType?: string;
@@ -160,18 +179,21 @@ export interface UploadFileOptions {
   content: Uint8Array | string;
 }
 
+/** User and toolkit fields for a development connection fixture. */
 export interface CreateConnectionOptions {
   /** Uses the client-level userId when omitted. */
   userId?: string;
   toolkit: string;
 }
 
+/** Successful development connection creation result. */
 export interface ConnectedConnection {
   connectionId: ConnectionId;
   redirectUrl: null;
   status: "connected";
 }
 
+/** Public connection status returned by the development executor API. */
 export interface ConnectionSummary {
   connectionId: ConnectionId;
   createdAt: string;
@@ -180,21 +202,26 @@ export interface ConnectionSummary {
   status: "connected" | "expired" | "revoked";
 }
 
+/** Collection of development connection summaries. */
 export interface ConnectionPage {
   connections: readonly ConnectionSummary[];
 }
 
+/** Result returned after a development connection is revoked. */
 export interface RevokedConnection {
   connectionId: ConnectionId;
   status: "revoked";
 }
 
+/** Injectable millisecond clock used to bound execution polling. */
 export interface EyeballClock {
   now(): number;
 }
 
+/** Injectable sleep function used by polling and safe GET retry delays. */
 export type EyeballSleep = (milliseconds: number) => Promise<void>;
 
+/** Authentication, executor location, user binding, and transport seams. */
 export interface EyeballOptions {
   apiKey: string;
   baseUrl: string;
@@ -209,6 +236,7 @@ export interface EyeballOptions {
   allowInsecureHttp?: boolean;
 }
 
+/** Name-map boundary and execution controls for framework tool-call dispatch. */
 export interface ExecuteToolCallsOptions {
   /** Exact map emitted with the model-facing tool bundle. Unmapped calls are rejected. */
   nameMap: ToolNameMap;
@@ -220,6 +248,7 @@ export interface ExecuteToolCallsOptions {
   timeoutMs?: number;
 }
 
+/** Anthropic `tool_use` block accepted by `executeToolCalls`. */
 export interface AnthropicToolCall {
   type: "tool_use";
   id: string;
@@ -227,6 +256,7 @@ export interface AnthropicToolCall {
   input: unknown;
 }
 
+/** Anthropic `tool_result` block returned by `executeToolCalls`. */
 export interface AnthropicToolResultBlock {
   type: "tool_result";
   tool_use_id: string;
@@ -234,6 +264,7 @@ export interface AnthropicToolResultBlock {
   is_error?: boolean;
 }
 
+/** OpenAI function tool call accepted by `executeToolCalls`. */
 export interface OpenAIFunctionToolCall {
   id: string;
   type: "function";
@@ -243,14 +274,17 @@ export interface OpenAIFunctionToolCall {
   };
 }
 
+/** OpenAI custom tool call represented in the public input union. */
 export interface OpenAICustomToolCall {
   id: string;
   type: "custom";
   custom: { name: string; input: string };
 }
 
+/** OpenAI function or custom tool call accepted by `executeToolCalls`. */
 export type OpenAIToolCall = OpenAIFunctionToolCall | OpenAICustomToolCall;
 
+/** OpenAI tool result message returned by `executeToolCalls`. */
 export interface OpenAIToolResultMessage {
   role: "tool";
   tool_call_id: string;

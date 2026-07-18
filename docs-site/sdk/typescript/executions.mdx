@@ -1,6 +1,6 @@
 ---
-title: "Executions client"
-description: "Get one execution, list scoped history, or wait for terminal state."
+title: "Inspect and wait for executions"
+description: "Retrieve an execution, filter project history, or poll async work to terminal state."
 ---
 
 ## Get
@@ -53,3 +53,5 @@ console.log(terminal.status);
 ```
 
 `wait` polls until `succeeded` or `failed` and throws a normalized `timeout` error when its local deadline expires.
+
+See the generated [Executions API](/sdk/generated/executions) for filters, pagination, polling controls, and execution record unions.

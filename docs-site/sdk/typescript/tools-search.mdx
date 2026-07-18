@@ -1,6 +1,6 @@
 ---
-title: "tools.search"
-description: "Rank the local catalog by intent with toolkit and capability filters."
+title: "Search the tool catalog"
+description: "Rank the local catalog by intent before exposing a focused tool set to a model."
 ---
 
 `tools.search` uses local BM25F ranking.
@@ -26,3 +26,5 @@ console.log(found.tools.map((tool) => tool.name));
 The result is `{ tools: readonly ToolDefinition[] }`. To send those tools to a model, call `tools.get` with the corresponding toolkit and framework format.
 
 MCP exposes a compact equivalent as `eyeball.search_tools`, whose wire input accepts only `query` and optional `limit`.
+
+See the generated [Tools API](/sdk/generated/tools) for all search fields and return types.

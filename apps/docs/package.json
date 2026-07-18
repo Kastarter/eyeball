@@ -7,7 +7,8 @@
     "dev": "next dev --port 3003",
     "build": "next build --webpack",
     "start": "next start --port 3003",
-    "test": "vitest run",
+    "test": "vitest run && pnpm --dir ../.. docs:sdk:test",
+    "docs:check": "pnpm --dir ../.. docs:check",
     "typecheck": "tsc --noEmit",
     "lint": "biome check app src next.config.ts postcss.config.mjs vitest.config.ts"
   },

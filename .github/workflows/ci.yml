@@ -10,6 +10,9 @@ permissions:
 jobs:
   ci:
     runs-on: ubuntu-latest
+    env:
+      NODE_OPTIONS: --max-old-space-size=2048
+      VITEST_MAX_THREADS: 1
     steps:
       - name: Check out repository
         uses: actions/checkout@v4
@@ -27,14 +30,14 @@ jobs:
       - name: Install dependencies
         run: pnpm install --frozen-lockfile
 
-      - name: Generate toolkit reference
+      - name: Generate documentation references
         run: pnpm docs:generate
 
       - name: Check generated documentation drift
-        run: git diff --exit-code -- docs-site/docs.json docs-site/toolkits/generated
+        run: git diff --exit-code -- docs-site/docs.json docs-site/toolkits/generated docs-site/sdk/generated
 
       - name: Validate documentation structure
-        run: pnpm docs:check
+        run: pnpm turbo run docs:check --concurrency=1
 
       - name: Typecheck documentation snippets
         run: pnpm docs:snippets
@@ -43,13 +46,13 @@ jobs:
         run: pnpm docs:typecheck
 
       - name: Build
-        run: pnpm turbo build
+        run: pnpm turbo build --concurrency=1
 
       - name: Typecheck
-        run: pnpm turbo typecheck
+        run: pnpm turbo typecheck --concurrency=1
 
       - name: Test
-        run: pnpm turbo test
+        run: pnpm turbo test --concurrency=1
 
       - name: Check formatting and linting
         run: pnpm exec biome check .

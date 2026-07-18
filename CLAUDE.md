@@ -28,6 +28,8 @@ Open-core tool and integration platform for AI agents: one typed, authenticated 
 - `pnpm test:contract` defaults to built mocks and writes ignored `apps/executor/contract-report.json`.
 - Real certification uses `EYEBALL_CONTRACT_TARGET=real`; missing credentials are explicit skips.
 - `scripts/generate-docs.ts` owns generated toolkit pages and nav; never hand-edit them.
+- `scripts/generate-sdk-docs.ts` extracts the SDK export graph with the TypeScript compiler API; `docs-site/sdk/generated/` is checksum-guarded and never hand-edited.
+- Public SDK client methods require TSDoc summaries, parameter guidance, normalized `@throws`, and runnable examples for primary workflows.
 - After docs or catalog changes run all four `docs:*` validation commands.
 - `apps/docs` reads `docs-site/docs.json` and MDX at build time; keep Mintlify-compatible component behavior in the renderer so authored pages stay unchanged.
 - `/mocks/` is the read-only nested repository; `docs-site/mocks/` is tracked authored content.
@@ -64,7 +66,7 @@ Open-core tool and integration platform for AI agents: one typed, authenticated 
 - Catalog `1.1` contains 37 manifests/toolkits and the implemented capability adapters.
 - The manifest-derived matrix has 493 rows: 227 smoke and 266 explicit `not_supported`.
 - The dashboard, SDK, MCP gateway, local encrypted vault, auth CLI, and public docs source are built.
-- The self-hosted docs renderer builds all 103 authored pages with local navigation, search, syntax highlighting, and dark/light themes.
+- The self-hosted docs renderer builds all 111 authored/generated pages with local navigation, search, syntax highlighting, and dark/light themes.
 - Search-mode MCP exposes both discovery and a generic executor-backed dispatch tool.
 - MCP Streamable HTTP supports JSON and SSE POST responses, authenticated GET event streams, DELETE teardown, one-way credential-bound sessions, and opt-in 2025-11-25 Tasks with execution-backed polling and progress notifications.
 - `pnpm dev:stack` boots 30-provider Mockhouse, executor, and MCP gateway with dev connections.
