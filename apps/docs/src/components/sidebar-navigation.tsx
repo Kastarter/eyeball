@@ -1,12 +1,23 @@
+"use client";
+
 import Link from "next/link";
+import { usePathname } from "next/navigation";
+import { type RefObject, useEffect, useRef } from "react";
 import type { NavigationEntry, NavigationGroup } from "../lib/content";
-import { pathToHref } from "../lib/content";
 import { Icon } from "./icon";
 
 interface SidebarNavigationProps {
-  currentPath: string;
   navigation: NavigationGroup[];
   titles: Record<string, string>;
+}
+
+function pathToHref(docPath: string): string {
+  return docPath === "index" ? "/" : `/${docPath}`;
+}
+
+function pathnameToDocPath(pathname: string): string {
+  const docPath = pathname.replace(/^\/+|\/+$/g, "");
+  return docPath || "index";
 }
 
 function containsPath(
@@ -22,11 +33,13 @@ function containsPath(
 
 function NavigationEntries({
   currentPath,
+  activeLinkRef,
   entries,
   level,
   titles,
 }: {
   currentPath: string;
+  activeLinkRef: RefObject<HTMLAnchorElement | null>;
   entries: NavigationEntry[];
   level: number;
   titles: Record<string, string>;
@@ -42,6 +55,7 @@ function NavigationEntries({
                 aria-current={active ? "page" : undefined}
                 className={active ? "sidebar-link is-active" : "sidebar-link"}
                 href={pathToHref(entry)}
+                ref={active ? activeLinkRef : undefined}
               >
                 <span>{titles[entry] ?? entry}</span>
               </Link>
@@ -59,6 +73,7 @@ function NavigationEntries({
               </summary>
               <NavigationEntries
                 currentPath={currentPath}
+                activeLinkRef={activeLinkRef}
                 entries={entry.pages}
                 level={level + 1}
                 titles={titles}
@@ -72,10 +87,34 @@ function NavigationEntries({
 }
 
 export function SidebarNavigation({
-  currentPath,
   navigation,
   titles,
 }: SidebarNavigationProps) {
+  const currentPath = pathnameToDocPath(usePathname());
+  const activeLinkRef = useRef<HTMLAnchorElement>(null);
+  const didAutoScrollRef = useRef(false);
+
+  useEffect(() => {
+    const activeLink = activeLinkRef.current;
+    if (
+      !activeLink ||
+      activeLink.getAttribute("href") !== pathToHref(currentPath)
+    ) {
+      return;
+    }
+
+    let details = activeLink.closest("details");
+    while (details) {
+      details.open = true;
+      details = details.parentElement?.closest("details") ?? null;
+    }
+
+    if (!didAutoScrollRef.current) {
+      didAutoScrollRef.current = true;
+      activeLink.scrollIntoView({ block: "nearest", inline: "nearest" });
+    }
+  }, [currentPath]);
+
   return (
     <nav aria-label="Documentation" className="sidebar-navigation">
       {navigation.map((group) => {
@@ -88,6 +127,7 @@ export function SidebarNavigation({
             </summary>
             <NavigationEntries
               currentPath={currentPath}
+              activeLinkRef={activeLinkRef}
               entries={group.pages}
               level={1}
               titles={titles}

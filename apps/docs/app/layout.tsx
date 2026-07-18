@@ -1,6 +1,12 @@
 import type { Metadata, Viewport } from "next";
 import Script from "next/script";
 import type { ReactNode } from "react";
+import { DocsShell } from "@/src/components/docs-shell";
+import {
+  getDocsConfig,
+  getPageTitleMap,
+  getSearchIndex,
+} from "@/src/lib/content";
 import "./globals.css";
 
 export const metadata: Metadata = {
@@ -37,7 +43,13 @@ export default function RootLayout({
         <Script id="eyeball-docs-theme" strategy="beforeInteractive">
           {themeScript}
         </Script>
-        {children}
+        <DocsShell
+          config={getDocsConfig()}
+          searchIndex={getSearchIndex()}
+          titles={getPageTitleMap()}
+        >
+          {children}
+        </DocsShell>
       </body>
     </html>
   );
