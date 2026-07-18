@@ -6,6 +6,7 @@ import {
   type ResolvedCredential,
   TOOL_ERROR_CODES,
 } from "@eyeball/core";
+import { SpanKind, SpanStatusCode } from "@opentelemetry/api";
 
 export type ProviderHttpClient = (
   path: string | URL,
@@ -185,6 +186,22 @@ export function createProviderHttpClient(
 ): ProviderHttpClient {
   return async (path, init = {}) => {
     const url = resolveProviderUrl(context.baseUrl, path);
+    const operation = context.tool.name.slice(
+      context.tool.name.indexOf(".") + 1,
+    );
+    const span = context.telemetry?.tracer.startSpan(
+      "eyeball.adapter.http",
+      {
+        kind: SpanKind.CLIENT,
+        attributes: {
+          "eyeball.toolkit": context.tool.toolkit,
+          "eyeball.operation": operation,
+          "http.request.method": init.method?.toUpperCase() ?? "GET",
+          "server.address": url.hostname,
+        },
+      },
+      context.telemetry.context,
+    );
     const headers = new Headers(init.headers);
     const authorization =
       options.authorization === undefined
@@ -194,66 +211,83 @@ export function createProviderHttpClient(
       headers.set("Authorization", authorization);
     }
 
-    let response: Response;
     try {
-      response = await context.fetchImpl(url, {
-        ...init,
-        headers,
-        redirect: "manual",
-      });
-    } catch (error) {
-      throw new EyeballError({
-        code: isAbortError(error)
-          ? TOOL_ERROR_CODES.TIMEOUT
-          : TOOL_ERROR_CODES.PROVIDER_UNAVAILABLE,
-        message: isAbortError(error)
-          ? "The provider request timed out."
-          : "The provider could not be reached.",
-        cause: error,
-      });
-    }
+      let response: Response;
+      try {
+        response = await context.fetchImpl(url, {
+          ...init,
+          headers,
+          redirect: "manual",
+        });
+      } catch (error) {
+        throw new EyeballError({
+          code: isAbortError(error)
+            ? TOOL_ERROR_CODES.TIMEOUT
+            : TOOL_ERROR_CODES.PROVIDER_UNAVAILABLE,
+          message: isAbortError(error)
+            ? "The provider request timed out."
+            : "The provider could not be reached.",
+          cause: error,
+        });
+      }
 
-    if (response.status >= 200 && response.status < 300) {
-      return response;
-    }
+      span?.setAttribute("http.response.status_code", response.status);
 
-    if (response.status >= 300 && response.status < 400) {
+      if (response.status >= 200 && response.status < 300) {
+        span?.setStatus({ code: SpanStatusCode.OK });
+        return response;
+      }
+
+      if (response.status >= 300 && response.status < 400) {
+        throw new EyeballError({
+          code: TOOL_ERROR_CODES.PROVIDER_ERROR,
+          message: "The provider returned an unexpected redirect.",
+          retryable: false,
+          providerDetail: {
+            toolkit: context.tool.toolkit,
+            status: response.status,
+          },
+        });
+      }
+
+      const body = await responseBody(response);
+      const detail = sanitizeProviderDetail(
+        body,
+        credentialSecrets(context.credential, authorization),
+      );
+      // Preserve provider classification signals from the original body while
+      // deriving every caller-visible field from the redacted copy.
+      const classified = fromHttpStatus(response.status, body);
+      const mapped = fromHttpStatus(response.status, detail);
+      const retryAfter =
+        parseRetryAfter(
+          response.headers.get("Retry-After"),
+          context.clock.now(),
+        ) ?? classified.retryAfter;
       throw new EyeballError({
-        code: TOOL_ERROR_CODES.PROVIDER_ERROR,
-        message: "The provider returned an unexpected redirect.",
-        retryable: false,
+        code: classified.code,
+        message: mapped.message,
+        retryable: classified.retryable,
+        ...(retryAfter === undefined ? {} : { retryAfter }),
         providerDetail: {
           toolkit: context.tool.toolkit,
           status: response.status,
+          ...(detail === undefined ? {} : { detail }),
         },
+        cause: mapped,
       });
+    } catch (error) {
+      span?.setStatus({ code: SpanStatusCode.ERROR });
+      span?.setAttribute(
+        "error.type",
+        error instanceof Error ? error.name : "unknown",
+      );
+      if (error instanceof EyeballError) {
+        span?.setAttribute("eyeball.error.code", error.code);
+      }
+      throw error;
+    } finally {
+      span?.end();
     }
-
-    const body = await responseBody(response);
-    const detail = sanitizeProviderDetail(
-      body,
-      credentialSecrets(context.credential, authorization),
-    );
-    // Preserve provider classification signals from the original body while
-    // deriving every caller-visible field from the redacted copy.
-    const classified = fromHttpStatus(response.status, body);
-    const mapped = fromHttpStatus(response.status, detail);
-    const retryAfter =
-      parseRetryAfter(
-        response.headers.get("Retry-After"),
-        context.clock.now(),
-      ) ?? classified.retryAfter;
-    throw new EyeballError({
-      code: classified.code,
-      message: mapped.message,
-      retryable: classified.retryable,
-      ...(retryAfter === undefined ? {} : { retryAfter }),
-      providerDetail: {
-        toolkit: context.tool.toolkit,
-        status: response.status,
-        ...(detail === undefined ? {} : { detail }),
-      },
-      cause: mapped,
-    });
   };
 }

@@ -25,4 +25,4 @@ Mocks replace only the provider side of the adapter boundary.
 
 The default execution store and queue are in-memory. For durable production work, implement the exported store/queue interfaces and preserve terminal immutability and idempotency semantics.
 
-Expose the gateway and dashboard through your own TLS, authentication, rate limiting, and observability layer.
+Expose the gateway and dashboard through your own TLS, authentication, and rate limiting layer. The executor provides [redacted structured logs and optional OpenTelemetry signals](/self-hosting/observability); collectors, retention, dashboards, alerts, and access control remain deployment responsibilities.

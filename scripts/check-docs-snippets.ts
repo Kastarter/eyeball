@@ -241,7 +241,11 @@ async function main(): Promise<void> {
       paths: {
         "@eyeball/catalog": ["packages/catalog/dist/index.d.ts"],
         "@eyeball/core": ["packages/core/dist/index.d.ts"],
+        "@eyeball/executor": ["apps/executor/src/index.ts"],
         "@eyeball/sdk": ["packages/sdk/src/index.ts"],
+        "@opentelemetry/api": [
+          "apps/executor/node_modules/@opentelemetry/api/build/src/index.d.ts",
+        ],
       },
       types: ["node"],
     });

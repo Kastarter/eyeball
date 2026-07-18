@@ -33,12 +33,12 @@ import {
   validateOutput,
 } from "@eyeball/core";
 import { defaultToolkitAdapters } from "@eyeball/toolkits";
+import type { Context, Span } from "@opentelemetry/api";
 import {
   AdapterRegistry,
   type Clock,
   type ExecutorLogger,
   type FetchImplementation,
-  noopLogger,
   systemClock,
 } from "./adapters/index.js";
 import { PromiseTaskQueue, type TaskQueue } from "./queue.js";
@@ -62,6 +62,14 @@ import {
   InMemoryExecutionStore,
   InvalidExecutionCursorError,
 } from "./store.js";
+import {
+  createExecutorTelemetryRuntime,
+  type ExecutorTelemetry,
+  type ExecutorTelemetryRuntime,
+  inTelemetrySpan,
+  markSpanError,
+  markSpanOk,
+} from "./telemetry/index.js";
 import {
   type RuntimeTriggerCatalog,
   TriggerService,
@@ -96,6 +104,11 @@ export interface ExecuteOutcome {
   replayed: boolean;
 }
 
+interface TracedExecuteResult {
+  outcome: ExecuteOutcome;
+  deferred: boolean;
+}
+
 export interface ExecuteCommand {
   projectId: string;
   request: unknown;
@@ -127,6 +140,10 @@ export interface ExecutionEngineOptions {
   queue?: TaskQueue;
   fetchImpl?: FetchImplementation;
   clock?: Clock;
+  telemetry?: ExecutorTelemetry;
+  /** Pre-resolved shared runtime used by the stock runtime factory. */
+  telemetryRuntime?: ExecutorTelemetryRuntime;
+  /** @deprecated Pass telemetry.logger instead. */
   logger?: ExecutorLogger;
   env?: Readonly<Record<string, string | undefined>>;
   executionIdFactory?: () => ExecutionId;
@@ -269,6 +286,40 @@ function canonicalize(value: unknown): unknown {
   );
 }
 
+function jsonByteLength(value: unknown): number {
+  return Buffer.byteLength(JSON.stringify(value), "utf8");
+}
+
+interface ExecutionTrace {
+  readonly span?: Span;
+  readonly context?: Context;
+  finish(status: string, error?: unknown): void;
+}
+
+function startExecutionTrace(
+  telemetry: ExecutorTelemetryRuntime,
+  command: ExecuteCommand,
+): ExecutionTrace {
+  const started = telemetry.startSpan("eyeball.execute", {
+    "eyeball.project.id": command.projectId,
+  });
+  let finished = false;
+  return {
+    ...started,
+    finish(status, error) {
+      if (finished) return;
+      finished = true;
+      started.span?.setAttribute("eyeball.execution.status", status);
+      if (error !== undefined || status === "failed" || status === "rejected") {
+        markSpanError(started.span, error);
+      } else {
+        markSpanOk(started.span);
+      }
+      started.span?.end();
+    },
+  };
+}
+
 function hashRequest(request: ExecuteRequest): string {
   return createHash("sha256")
     .update(JSON.stringify(canonicalize(request)))
@@ -334,6 +385,18 @@ class UnexpectedCredentialProviderError extends Error {
     super("Credential provider failed unexpectedly.", { cause });
     this.name = "UnexpectedCredentialProviderError";
   }
+}
+
+function credentialFailureKind(error: unknown): string {
+  if (
+    error instanceof CredentialProviderError ||
+    error instanceof EyeballError
+  ) {
+    return error.code;
+  }
+  return error instanceof UnexpectedCredentialProviderError
+    ? "unexpected_provider_error"
+    : "unexpected_error";
 }
 
 function validationMessage(
@@ -438,6 +501,7 @@ export class ExecutionEngine {
   readonly webhookDeliverer: WebhookDeliverer;
   readonly triggerService: TriggerService;
   readonly toolkitConcurrencyLimiter: ToolkitConcurrencyLimiter;
+  readonly telemetry: ExecutorTelemetryRuntime;
   readonly #fetchImpl: FetchImplementation;
   readonly #clock: Clock;
   readonly #logger: ExecutorLogger;
@@ -474,13 +538,25 @@ export class ExecutionEngine {
       options.toolkitConcurrencyLimiter ??
       new InMemoryToolkitConcurrencyLimiter();
     this.#fetchImpl = options.fetchImpl ?? fetch;
-    this.#logger = options.logger ?? noopLogger;
+    const configuredLogger = options.telemetry?.logger ?? options.logger;
+    this.telemetry =
+      options.telemetryRuntime ??
+      createExecutorTelemetryRuntime(
+        {
+          ...options.telemetry,
+          ...(configuredLogger === undefined
+            ? {}
+            : { logger: configuredLogger }),
+        },
+        this.#env,
+      );
+    this.#logger = this.telemetry.logger;
     this.webhookDeliverer =
       options.webhookDeliverer ??
       new WebhookDeliverer({
         fetchImpl: this.#fetchImpl,
         clock: this.#clock,
-        logger: this.#logger,
+        telemetry: this.telemetry,
       });
     this.triggerService =
       options.triggerService ??
@@ -490,7 +566,7 @@ export class ExecutionEngine {
         webhookDeliverer: this.webhookDeliverer,
         fetchImpl: this.#fetchImpl,
         clock: this.#clock,
-        logger: this.#logger,
+        telemetry: this.telemetry,
         env: this.#env,
       });
     if (
@@ -605,51 +681,96 @@ export class ExecutionEngine {
   }
 
   async execute(command: ExecuteCommand): Promise<ExecuteOutcome> {
-    if (command.projectId.trim().length === 0) {
-      return invalidRequest("Authenticated project ID must not be empty.");
+    const executionTrace = startExecutionTrace(this.telemetry, command);
+    try {
+      const result = await this.#execute(command, executionTrace);
+      if (!result.deferred) {
+        executionTrace.finish(result.outcome.response.status);
+      }
+      return result.outcome;
+    } catch (error) {
+      executionTrace.finish("rejected", error);
+      throw error;
     }
-    const request = parseExecuteRequest(command.request);
-    const tool = this.catalog.getTool(request.tool);
-    if (tool === undefined) {
-      return notSupported(`Tool ${request.tool} is not supported.`);
-    }
-    const manifest = this.catalog.getManifest(tool.toolkit);
-    const effectiveScopes = this.catalog.getEffectiveScopes(tool.name);
-    if (manifest === undefined || effectiveScopes === undefined) {
-      return notSupported(`Tool ${request.tool} is not supported.`);
-    }
+  }
 
-    const validation = validateInput(tool, request.input);
-    if (!validation.ok) {
-      return invalidRequest(validationMessage(validation.errors));
-    }
-    const canonicalRequest: ExecuteRequest = {
-      ...request,
-      mode: request.mode ?? (tool.annotations.async ? "async" : "sync"),
-      input: validation.value,
-    };
-    if (tool.annotations.async && canonicalRequest.mode === "sync") {
-      return invalidRequest(
-        `Tool ${tool.name} is async by nature and does not accept sync mode.`,
-      );
-    }
-    if (
-      command.idempotencyKey !== undefined &&
-      command.idempotencyKey.length === 0
-    ) {
-      return invalidRequest("Idempotency-Key must not be empty.");
-    }
-    if (
-      command.executionId !== undefined &&
-      !isExecutionId(command.executionId)
-    ) {
-      return invalidRequest("The reserved execution ID is invalid.");
-    }
-    if (!tool.annotations.readOnly && command.idempotencyKey === undefined) {
-      return invalidRequest(
-        `Idempotency-Key is required for mutating tool ${tool.name}.`,
-      );
-    }
+  async #execute(
+    command: ExecuteCommand,
+    executionTrace: ExecutionTrace,
+  ): Promise<TracedExecuteResult> {
+    const validated = await inTelemetrySpan(
+      this.telemetry,
+      "eyeball.execute.validate",
+      { "eyeball.project.id": command.projectId },
+      async (_spanContext, span) => {
+        if (command.projectId.trim().length === 0) {
+          return invalidRequest("Authenticated project ID must not be empty.");
+        }
+        const request = parseExecuteRequest(command.request);
+        const tool = this.catalog.getTool(request.tool);
+        if (tool === undefined) {
+          return notSupported(`Tool ${request.tool} is not supported.`);
+        }
+        const manifest = this.catalog.getManifest(tool.toolkit);
+        const effectiveScopes = this.catalog.getEffectiveScopes(tool.name);
+        if (manifest === undefined || effectiveScopes === undefined) {
+          return notSupported(`Tool ${request.tool} is not supported.`);
+        }
+
+        const validation = validateInput(tool, request.input);
+        span?.setAttribute("eyeball.schema.valid", validation.ok);
+        if (!validation.ok) {
+          return invalidRequest(validationMessage(validation.errors));
+        }
+        const canonicalRequest: ExecuteRequest = {
+          ...request,
+          mode: request.mode ?? (tool.annotations.async ? "async" : "sync"),
+          input: validation.value,
+        };
+        if (tool.annotations.async && canonicalRequest.mode === "sync") {
+          return invalidRequest(
+            `Tool ${tool.name} is async by nature and does not accept sync mode.`,
+          );
+        }
+        if (
+          command.idempotencyKey !== undefined &&
+          command.idempotencyKey.length === 0
+        ) {
+          return invalidRequest("Idempotency-Key must not be empty.");
+        }
+        if (
+          command.executionId !== undefined &&
+          !isExecutionId(command.executionId)
+        ) {
+          return invalidRequest("The reserved execution ID is invalid.");
+        }
+        if (
+          !tool.annotations.readOnly &&
+          command.idempotencyKey === undefined
+        ) {
+          return invalidRequest(
+            `Idempotency-Key is required for mutating tool ${tool.name}.`,
+          );
+        }
+        return {
+          canonicalRequest,
+          tool,
+          manifest,
+          requiredScopes: effectiveScopes.required,
+        };
+      },
+      executionTrace.context,
+    );
+    const { canonicalRequest, tool, manifest, requiredScopes } = validated;
+    executionTrace.span?.setAttribute("eyeball.tool", tool.name);
+    executionTrace.span?.setAttribute(
+      "eyeball.execution.mode",
+      canonicalRequest.mode,
+    );
+    executionTrace.span?.setAttribute(
+      "eyeball.input.size_bytes",
+      jsonByteLength(canonicalRequest.input),
+    );
 
     const concurrencyLimit = manifest.limits?.maxConcurrentExecutionsPerProject;
     const concurrencyBucketKey = `${command.projectId}:${tool.toolkit}`;
@@ -662,6 +783,12 @@ export class ExecutionEngine {
       if (syncPermit === undefined) {
         const retryAfter = 1;
         const now = this.#now().valueOf();
+        this.telemetry.recordRateLimitRejection("toolkit_concurrency");
+        this.#logger.warn("rate_limit.rejected", {
+          projectId: command.projectId,
+          tool: tool.name,
+          bucket: "toolkit_concurrency",
+        });
         throw new ExecutionRequestError(
           429,
           {
@@ -680,36 +807,62 @@ export class ExecutionEngine {
     }
 
     try {
-      const createdAt = this.#now();
-      const idempotency =
-        command.idempotencyKey === undefined
-          ? undefined
-          : this.#idempotencyReservation(
-              canonicalRequest,
-              command.idempotencyKey,
-              createdAt,
-            );
-      const pending: ExecutionRecord & { status: "pending" } = {
-        executionId: command.executionId ?? this.#executionIdFactory(),
-        tool: tool.name,
-        toolVersion: tool.version,
-        catalogVersion: this.catalog.catalogVersion,
-        status: "pending",
-        userId: canonicalRequest.userId,
-        createdAt: createdAt.toISOString(),
-      };
-      const allocation = await this.store.allocate({
-        projectId: command.projectId,
-        record: pending,
-        request: canonicalRequest,
-        ...(idempotency === undefined ? {} : { idempotency }),
-      });
+      const allocation = await inTelemetrySpan(
+        this.telemetry,
+        "eyeball.execute.idempotency",
+        {
+          "eyeball.tool": tool.name,
+          "eyeball.idempotency.present": command.idempotencyKey !== undefined,
+        },
+        async (_spanContext, span) => {
+          const createdAt = this.#now();
+          const idempotency =
+            command.idempotencyKey === undefined
+              ? undefined
+              : this.#idempotencyReservation(
+                  canonicalRequest,
+                  command.idempotencyKey,
+                  createdAt,
+                );
+          const pending: ExecutionRecord & { status: "pending" } = {
+            executionId: command.executionId ?? this.#executionIdFactory(),
+            tool: tool.name,
+            toolVersion: tool.version,
+            catalogVersion: this.catalog.catalogVersion,
+            status: "pending",
+            userId: canonicalRequest.userId,
+            createdAt: createdAt.toISOString(),
+          };
+          const result = await this.store.allocate({
+            projectId: command.projectId,
+            record: pending,
+            request: canonicalRequest,
+            ...(idempotency === undefined ? {} : { idempotency }),
+          });
+          span?.setAttribute("eyeball.idempotency.result", result.kind);
+          return result;
+        },
+        executionTrace.context,
+      );
       if (allocation.kind === "conflict") {
         return invalidRequest(
           "Idempotency-Key was already used with different request parameters.",
           409,
         );
       }
+      executionTrace.span?.setAttribute(
+        "eyeball.execution.id",
+        allocation.record.executionId,
+      );
+      this.#logger.info("execution.received", {
+        executionId: allocation.record.executionId,
+        tool: tool.name,
+        projectId: command.projectId,
+        mode: canonicalRequest.mode,
+        inputSizeBytes: jsonByteLength(canonicalRequest.input),
+        inputSchemaValid: true,
+        replayed: allocation.kind === "replay",
+      });
       if (allocation.kind === "replay") {
         syncPermit?.release();
         syncPermit = undefined;
@@ -732,13 +885,16 @@ export class ExecutionEngine {
               )
             : allocation.record;
         return {
-          statusCode:
-            replayRecord.status === "pending" ||
-            replayRecord.status === "running"
-              ? 202
-              : 200,
-          response: executeResponse(replayRecord),
-          replayed: true,
+          outcome: {
+            statusCode:
+              replayRecord.status === "pending" ||
+              replayRecord.status === "running"
+                ? 202
+                : 200,
+            response: executeResponse(replayRecord),
+            replayed: true,
+          },
+          deferred: false,
         };
       }
 
@@ -751,9 +907,11 @@ export class ExecutionEngine {
               canonicalRequest,
               tool,
               manifest,
-              effectiveScopes.required,
+              requiredScopes,
               concurrencyBucketKey,
               concurrencyLimit,
+              executionTrace,
+              true,
             ),
           )
           .catch((error: unknown) => {
@@ -764,11 +922,15 @@ export class ExecutionEngine {
                 errorName: error instanceof Error ? error.name : "unknown",
               },
             );
+            executionTrace.finish("failed", error);
           });
         return {
-          statusCode: 202,
-          response: executeResponse(allocation.record),
-          replayed: false,
+          outcome: {
+            statusCode: 202,
+            response: executeResponse(allocation.record),
+            replayed: false,
+          },
+          deferred: true,
         };
       }
 
@@ -778,9 +940,11 @@ export class ExecutionEngine {
         canonicalRequest,
         tool,
         manifest,
-        effectiveScopes.required,
+        requiredScopes,
         concurrencyBucketKey,
         concurrencyLimit,
+        executionTrace,
+        false,
         syncPermit,
       );
       syncPermit = undefined;
@@ -794,9 +958,12 @@ export class ExecutionEngine {
         );
       }
       return {
-        statusCode: 200,
-        response: executeResponse(terminal),
-        replayed: false,
+        outcome: {
+          statusCode: 200,
+          response: executeResponse(terminal),
+          replayed: false,
+        },
+        deferred: false,
       };
     } finally {
       syncPermit?.release();
@@ -897,17 +1064,22 @@ export class ExecutionEngine {
     requiredScopes: readonly string[],
     concurrencyBucketKey: string,
     concurrencyLimit: number | undefined,
+    executionTrace: ExecutionTrace,
+    finishTrace: boolean,
     reservedPermit?: ConcurrencyPermit,
   ): Promise<void> {
-    const concurrencyPermit =
-      reservedPermit ??
-      (concurrencyLimit === undefined
-        ? undefined
-        : await this.toolkitConcurrencyLimiter.acquire(
-            concurrencyBucketKey,
-            concurrencyLimit,
-          ));
+    let concurrencyPermit: ConcurrencyPermit | undefined;
+    let terminalStatus: "succeeded" | "failed" | undefined;
+    let terminalError: unknown;
     try {
+      concurrencyPermit =
+        reservedPermit ??
+        (concurrencyLimit === undefined
+          ? undefined
+          : await this.toolkitConcurrencyLimiter.acquire(
+              concurrencyBucketKey,
+              concurrencyLimit,
+            ));
       const startedAt = this.#now();
       const startedAtIso = startedAt.toISOString();
       const running: ExecutionRecord & { status: "running" } = {
@@ -920,58 +1092,136 @@ export class ExecutionEngine {
         createdAt: pending.createdAt,
         startedAt: startedAtIso,
       };
-      await this.store.update(projectId, running);
+      await inTelemetrySpan(
+        this.telemetry,
+        "eyeball.execute.store",
+        { "eyeball.store.operation": "mark_running" },
+        async () => this.store.update(projectId, running),
+        executionTrace.context,
+      );
 
       try {
+        // Preserve the original execution boundary: a materialized toolkit with
+        // no adapter is a deterministic runtime capability failure and must not
+        // consult the credential provider.
         const adapter = this.adapters.require(tool.toolkit);
         let credential: ResolvedCredential;
         try {
-          credential = await this.credentialProvider.resolve({
-            projectId,
-            userId: request.userId,
-            toolkitSlug: tool.toolkit,
-            ...(request.connectionId === undefined
-              ? {}
-              : { connectionId: request.connectionId }),
-          });
-        } catch (error) {
-          if (
-            error instanceof CredentialProviderError ||
-            error instanceof EyeballError
-          ) {
-            throw error;
-          }
-          throw new UnexpectedCredentialProviderError(error);
-        }
-        await this.store.setResolvedConnection(
-          projectId,
-          pending.executionId,
-          credential.connectionId,
-        );
-        validateCredential(
-          credential,
-          request,
-          manifest,
-          requiredScopes,
-          this.#now(),
-        );
-        const output = await adapter.execute({
-          projectId,
-          userId: request.userId,
-          tool,
-          canonicalInput: request.input,
-          credential,
-          baseUrl: resolveBaseUrl(manifest, this.#env),
-          fetchImpl: this.#fetchImpl,
-          clock: this.#clock,
-          logger: this.#logger,
-          files: {
-            resolve: async (fileId) => {
-              return this.getFile(projectId, fileId);
+          credential = await inTelemetrySpan(
+            this.telemetry,
+            "eyeball.execute.credentials",
+            { "eyeball.toolkit": tool.toolkit },
+            async (credentialContext) => {
+              let resolved: ResolvedCredential;
+              try {
+                resolved = await this.credentialProvider.resolve({
+                  projectId,
+                  userId: request.userId,
+                  toolkitSlug: tool.toolkit,
+                  ...(request.connectionId === undefined
+                    ? {}
+                    : { connectionId: request.connectionId }),
+                });
+              } catch (error) {
+                if (
+                  error instanceof CredentialProviderError ||
+                  error instanceof EyeballError
+                ) {
+                  throw error;
+                }
+                throw new UnexpectedCredentialProviderError(error);
+              }
+              await inTelemetrySpan(
+                this.telemetry,
+                "eyeball.execute.store",
+                { "eyeball.store.operation": "set_connection" },
+                async () =>
+                  this.store.setResolvedConnection(
+                    projectId,
+                    pending.executionId,
+                    resolved.connectionId,
+                  ),
+                credentialContext,
+              );
+              validateCredential(
+                resolved,
+                request,
+                manifest,
+                requiredScopes,
+                this.#now(),
+              );
+              return resolved;
             },
-          },
+            executionTrace.context,
+          );
+        } catch (error) {
+          this.#logger.warn("credential.resolution_failed", {
+            executionId: pending.executionId,
+            tool: tool.name,
+            projectId,
+            kind: credentialFailureKind(error),
+          });
+          throw error;
+        }
+        this.#logger.info("execution.dispatched", {
+          executionId: pending.executionId,
+          tool: tool.name,
+          projectId,
         });
-        const canonicalOutput = this.#validateOutput(tool, output);
+        const output = await inTelemetrySpan(
+          this.telemetry,
+          "eyeball.execute.adapter-dispatch",
+          {
+            "eyeball.execution.id": pending.executionId,
+            "eyeball.tool": tool.name,
+            "eyeball.toolkit": tool.toolkit,
+          },
+          async (dispatchContext) => {
+            return adapter.execute({
+              projectId,
+              userId: request.userId,
+              tool,
+              canonicalInput: request.input,
+              credential,
+              baseUrl: resolveBaseUrl(manifest, this.#env),
+              fetchImpl: this.#fetchImpl,
+              clock: this.#clock,
+              logger: this.#logger,
+              ...(this.telemetry.tracer === undefined
+                ? {}
+                : {
+                    telemetry: {
+                      tracer: this.telemetry.tracer,
+                      ...(dispatchContext === undefined
+                        ? {}
+                        : { context: dispatchContext }),
+                    },
+                  }),
+              files: {
+                resolve: async (fileId) => {
+                  return this.getFile(projectId, fileId);
+                },
+              },
+            });
+          },
+          executionTrace.context,
+        );
+        const canonicalOutput = await inTelemetrySpan(
+          this.telemetry,
+          "eyeball.execute.normalize",
+          { "eyeball.tool": tool.name },
+          async (_normalizeContext, span) => {
+            try {
+              const normalized = this.#validateOutput(tool, output);
+              span?.setAttribute("eyeball.schema.valid", true);
+              return normalized;
+            } catch (error) {
+              span?.setAttribute("eyeball.schema.valid", false);
+              throw error;
+            }
+          },
+          executionTrace.context,
+        );
         const completedAt = this.#now();
         const terminal: ExecutionRecord & { status: "succeeded" } = {
           executionId: running.executionId,
@@ -986,15 +1236,38 @@ export class ExecutionEngine {
           output: canonicalOutput,
           latencyMs: Math.max(0, completedAt.valueOf() - startedAt.valueOf()),
         };
-        await this.store.update(projectId, terminal);
+        await inTelemetrySpan(
+          this.telemetry,
+          "eyeball.execute.store",
+          { "eyeball.store.operation": "mark_succeeded" },
+          async () => this.store.update(projectId, terminal),
+          executionTrace.context,
+        );
+        terminalStatus = "succeeded";
+        executionTrace.span?.setAttribute(
+          "eyeball.execution.latency_ms",
+          terminal.latencyMs,
+        );
+        this.telemetry.recordExecution(
+          tool.name,
+          terminal.status,
+          terminal.latencyMs,
+        );
+        this.#logger.info("execution.terminal", {
+          executionId: terminal.executionId,
+          tool: tool.name,
+          projectId,
+          latencyMs: terminal.latencyMs,
+          status: terminal.status,
+          outputSizeBytes: jsonByteLength(canonicalOutput),
+          outputSchemaValid: true,
+        });
         this.webhookDeliverer.enqueueExecution(projectId, terminal);
       } catch (error) {
+        terminalError = error;
+        markSpanError(executionTrace.span, error);
         const completedAt = this.#now();
-        this.#logger.warn("Execution completed with a normalized failure.", {
-          executionId: pending.executionId,
-          tool: tool.name,
-          errorName: error instanceof Error ? error.name : "unknown",
-        });
+        const normalized = normalizedError(error);
         const terminal: ExecutionRecord & { status: "failed" } = {
           executionId: running.executionId,
           tool: running.tool,
@@ -1005,15 +1278,45 @@ export class ExecutionEngine {
           createdAt: running.createdAt,
           startedAt: startedAtIso,
           completedAt: completedAt.toISOString(),
-          error: normalizedError(error),
+          error: normalized,
           latencyMs: Math.max(0, completedAt.valueOf() - startedAt.valueOf()),
         };
-        await this.store.update(projectId, terminal);
+        await inTelemetrySpan(
+          this.telemetry,
+          "eyeball.execute.store",
+          { "eyeball.store.operation": "mark_failed" },
+          async () => this.store.update(projectId, terminal),
+          executionTrace.context,
+        );
+        terminalStatus = "failed";
+        executionTrace.span?.setAttribute(
+          "eyeball.execution.latency_ms",
+          terminal.latencyMs,
+        );
+        this.telemetry.recordExecution(
+          tool.name,
+          terminal.status,
+          terminal.latencyMs,
+        );
+        this.#logger.warn("execution.terminal", {
+          executionId: terminal.executionId,
+          tool: tool.name,
+          projectId,
+          latencyMs: terminal.latencyMs,
+          status: terminal.status,
+          errorKind: normalized.code,
+        });
         this.webhookDeliverer.enqueueExecution(projectId, terminal);
         if (error instanceof UnexpectedCredentialProviderError) throw error;
       }
+    } catch (error) {
+      terminalError ??= error;
+      throw error;
     } finally {
       concurrencyPermit?.release();
+      if (finishTrace) {
+        executionTrace.finish(terminalStatus ?? "failed", terminalError);
+      }
     }
   }
 

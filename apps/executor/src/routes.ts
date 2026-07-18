@@ -36,6 +36,7 @@ import {
   rateLimitCapacity,
 } from "./rate-limit.js";
 import type { FileStore } from "./staged-files.js";
+import type { HttpRequestClass, HttpRequestMethod } from "./telemetry/index.js";
 import { TriggerRequestError } from "./triggers/service.js";
 import { TriggerSubscriptionStoreError } from "./triggers/subscription-store.js";
 import { WebhookDeliveryInputError } from "./webhooks/delivery-store.js";
@@ -104,6 +105,28 @@ function setRateLimitHeaders(
 
 function retryAfterSeconds(result: RateLimitResult): number {
   return Math.max(1, Math.ceil((result.retryAfterMs ?? 0) / 1_000));
+}
+
+function telemetryRequestClass(method: string, path: string): HttpRequestClass {
+  if (path === "/health") return "health";
+  if (path.startsWith("/v1/ingest/")) return "ingest";
+  if (method === "POST" && path === "/v1/execute") return "execute";
+  return "standard";
+}
+
+function telemetryRequestMethod(method: string): HttpRequestMethod {
+  switch (method.toUpperCase()) {
+    case "GET":
+    case "POST":
+    case "PUT":
+    case "PATCH":
+    case "DELETE":
+    case "HEAD":
+    case "OPTIONS":
+      return method.toUpperCase() as HttpRequestMethod;
+    default:
+      return "OTHER";
+  }
 }
 
 function rateLimitedFailure(
@@ -408,6 +431,22 @@ export function createExecutorApp(options: ExecutorAppOptions = {}): Hono<{
     options.rateLimitPolicies ?? createRateLimitPolicies(env);
   const app = new Hono<{ Variables: ExecutorVariables }>();
 
+  app.use("*", async (context, next) => {
+    const startedAt = performance.now();
+    let statusCode = 500;
+    try {
+      await next();
+      statusCode = context.res.status;
+    } finally {
+      engine.telemetry.recordHttpRequest(
+        telemetryRequestClass(context.req.method, context.req.path),
+        telemetryRequestMethod(context.req.method),
+        statusCode,
+        Math.max(0, performance.now() - startedAt),
+      );
+    }
+  });
+
   app.get("/health", (context) =>
     context.json({ status: "ok", service: "executor" }),
   );
@@ -460,6 +499,12 @@ export function createExecutorApp(options: ExecutorAppOptions = {}): Hono<{
     );
     setRateLimitHeaders(context, requestPolicy, requestLimit);
     if (!requestLimit.allowed) {
+      const bucket = executeRequest ? "request_execute" : "request_standard";
+      engine.telemetry.recordRateLimitRejection(bucket);
+      engine.telemetry.logger.warn("rate_limit.rejected", {
+        projectId,
+        bucket,
+      });
       return rateLimitedFailure(
         context,
         requestPolicy,
@@ -477,6 +522,11 @@ export function createExecutorApp(options: ExecutorAppOptions = {}): Hono<{
         dailyQuota,
       );
       if (!quota.allowed) {
+        engine.telemetry.recordRateLimitRejection("daily_execution_quota");
+        engine.telemetry.logger.warn("rate_limit.rejected", {
+          projectId,
+          bucket: "daily_execution_quota",
+        });
         return rateLimitedFailure(
           context,
           dailyQuota,

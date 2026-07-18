@@ -10,6 +10,7 @@ export * from "./runtime.js";
 export * from "./staged-files.js";
 export * from "./store.js";
 export * from "./stores/postgres/index.js";
+export * from "./telemetry/index.js";
 export * from "./triggers/index.js";
 export * from "./webhooks/index.js";
 

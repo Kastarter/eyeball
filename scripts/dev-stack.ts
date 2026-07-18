@@ -244,6 +244,7 @@ async function createMockBackedExecutor(
   );
   const executorEnv = {
     ...env,
+    EYEBALL_LOG_FORMAT: env.EYEBALL_LOG_FORMAT ?? "pretty",
     ...baseUrlOverrides(mockhouseUrl, providerSlugs),
   };
   const manifests = defaultCatalog.listManifests();

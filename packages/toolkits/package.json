@@ -21,6 +21,7 @@
     "lint": "biome check src"
   },
   "dependencies": {
-    "@eyeball/core": "workspace:*"
+    "@eyeball/core": "workspace:*",
+    "@opentelemetry/api": "^1.9.0"
   }
 }

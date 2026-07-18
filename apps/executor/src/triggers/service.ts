@@ -26,6 +26,12 @@ import type {
   FetchImplementation,
 } from "../adapters/index.js";
 import { noopLogger, systemClock } from "../adapters/index.js";
+import {
+  createExecutorTelemetryRuntime,
+  type ExecutorTelemetryRuntime,
+  markSpanError,
+  markSpanOk,
+} from "../telemetry/index.js";
 import type { WebhookDeliverer } from "../webhooks/deliverer.js";
 import { defaultTriggerAdapters, TriggerAdapterRegistry } from "./adapters.js";
 import {
@@ -60,6 +66,8 @@ export interface TriggerServiceOptions {
   adapters?: TriggerAdapterRegistry;
   fetchImpl?: FetchImplementation;
   clock?: Clock;
+  telemetry?: ExecutorTelemetryRuntime;
+  /** @deprecated Pass telemetry from ExecutionEngine instead. */
   logger?: ExecutorLogger;
   env?: Readonly<Record<string, string | undefined>>;
   subscriptionIdFactory?: () => TriggerSubscriptionId;
@@ -218,6 +226,16 @@ function validateCredential(
   }
 }
 
+function credentialFailureKind(error: unknown): string {
+  if (
+    error instanceof CredentialProviderError ||
+    error instanceof EyeballError
+  ) {
+    return error.code;
+  }
+  return "unexpected_error";
+}
+
 function secretHash(secret: string): string {
   return createHash("sha256").update(secret, "utf8").digest("hex");
 }
@@ -287,6 +305,7 @@ export class TriggerService {
   readonly #fetchImpl: FetchImplementation;
   readonly #clock: Clock;
   readonly #logger: ExecutorLogger;
+  readonly #telemetry: ExecutorTelemetryRuntime;
   readonly #env: Readonly<Record<string, string | undefined>>;
   readonly #subscriptionIdFactory: () => TriggerSubscriptionId;
   readonly #ingestSecretFactory: () => string;
@@ -304,8 +323,14 @@ export class TriggerService {
       options.adapters ?? new TriggerAdapterRegistry(defaultTriggerAdapters);
     this.#fetchImpl = options.fetchImpl ?? globalThis.fetch;
     this.#clock = options.clock ?? systemClock;
-    this.#logger = options.logger ?? noopLogger;
     this.#env = options.env ?? process.env;
+    this.#telemetry =
+      options.telemetry ??
+      createExecutorTelemetryRuntime(
+        options.logger === undefined ? {} : { logger: options.logger },
+        this.#env,
+      );
+    this.#logger = this.#telemetry.logger;
     this.#subscriptionIdFactory =
       options.subscriptionIdFactory ?? createTriggerSubscriptionId;
     this.#ingestSecretFactory =
@@ -508,43 +533,76 @@ export class TriggerService {
     rawBody: string,
     headers: Headers,
   ): Promise<TriggerIngestResult> {
-    if (!isTriggerSubscriptionId(subscriptionId)) return notFound();
-    const subscription =
-      await this.subscriptionStore.getInternal(subscriptionId);
-    if (
-      subscription === undefined ||
-      subscription.status !== "active" ||
-      subscription.ingestSecretHash === undefined ||
-      !secretMatches(secret, subscription.ingestSecretHash)
-    ) {
-      return notFound();
-    }
-    const resolved = await this.#resolveRuntime(subscription);
-    if (resolved.trigger.annotations.deliveryMode !== "push") {
-      return notFound();
-    }
-    const adapter = this.adapters.get(resolved.trigger.toolkit);
-    if (adapter?.ingestPush === undefined) {
-      return notSupported(
-        `Trigger ${resolved.trigger.name} has no push adapter.`,
-      );
-    }
-    const result = await adapter.ingestPush(
-      this.#adapterContext(subscription, resolved),
-      rawBody,
-      headers,
-    );
-    if (result.kind === "challenge") return result;
-    let accepted = 0;
-    let duplicates = 0;
-    for (const event of result.events) {
-      if (await this.#emit(subscription, resolved.trigger, event)) {
-        accepted += 1;
-      } else {
-        duplicates += 1;
+    const ingestSpan = this.#telemetry.startSpan("eyeball.trigger.ingest");
+    try {
+      if (!isTriggerSubscriptionId(subscriptionId)) return notFound();
+      const subscription =
+        await this.subscriptionStore.getInternal(subscriptionId);
+      if (
+        subscription === undefined ||
+        subscription.status !== "active" ||
+        subscription.ingestSecretHash === undefined ||
+        !secretMatches(secret, subscription.ingestSecretHash)
+      ) {
+        return notFound();
       }
+      ingestSpan.span?.setAttribute(
+        "eyeball.trigger.subscription.id",
+        subscription.subscriptionId,
+      );
+      const resolved = await this.#resolveRuntime(subscription);
+      ingestSpan.span?.setAttribute("eyeball.trigger", resolved.trigger.name);
+      if (resolved.trigger.annotations.deliveryMode !== "push") {
+        return notFound();
+      }
+      const adapter = this.adapters.get(resolved.trigger.toolkit);
+      if (adapter?.ingestPush === undefined) {
+        return notSupported(
+          `Trigger ${resolved.trigger.name} has no push adapter.`,
+        );
+      }
+      const result = await adapter.ingestPush(
+        this.#adapterContext(subscription, resolved),
+        rawBody,
+        headers,
+      );
+      if (result.kind === "challenge") {
+        this.#logger.info("trigger.ingest", {
+          subscriptionId,
+          trigger: resolved.trigger.name,
+          status: "challenge",
+          deduped: false,
+        });
+        markSpanOk(ingestSpan.span);
+        return result;
+      }
+      let accepted = 0;
+      let duplicates = 0;
+      for (const event of result.events) {
+        if (await this.#emit(subscription, resolved.trigger, event)) {
+          accepted += 1;
+        } else {
+          duplicates += 1;
+        }
+      }
+      ingestSpan.span?.setAttribute("eyeball.trigger.accepted", accepted);
+      ingestSpan.span?.setAttribute("eyeball.trigger.duplicates", duplicates);
+      this.#logger.info("trigger.ingest", {
+        subscriptionId,
+        trigger: resolved.trigger.name,
+        status: "accepted",
+        accepted,
+        duplicates,
+        deduped: duplicates > 0,
+      });
+      markSpanOk(ingestSpan.span);
+      return { kind: "accepted", accepted, duplicates };
+    } catch (error) {
+      markSpanError(ingestSpan.span, error);
+      throw error;
+    } finally {
+      ingestSpan.span?.end();
     }
-    return { kind: "accepted", accepted, duplicates };
   }
 
   async runDue(): Promise<TriggerPollTickResult> {
@@ -565,19 +623,41 @@ export class TriggerService {
       if (this.#polling.has(subscription.subscriptionId)) continue;
       this.#polling.add(subscription.subscriptionId);
       result.polled += 1;
+      const pollSpan = this.#telemetry.startSpan("eyeball.trigger.poll", {
+        "eyeball.trigger.subscription.id": subscription.subscriptionId,
+        "eyeball.trigger": subscription.trigger,
+      });
       try {
         const counts = await this.#pollOne(subscription, trigger, state, now);
         result.emitted += counts.emitted;
         result.duplicates += counts.duplicates;
-      } catch (error) {
-        result.failed += 1;
-        this.#logger.warn("Trigger polling attempt failed.", {
+        pollSpan.span?.setAttribute("eyeball.trigger.emitted", counts.emitted);
+        pollSpan.span?.setAttribute(
+          "eyeball.trigger.duplicates",
+          counts.duplicates,
+        );
+        this.#logger.info("trigger.poll", {
           subscriptionId: subscription.subscriptionId,
           trigger: subscription.trigger,
-          errorName: error instanceof Error ? error.name : "unknown",
+          status: "succeeded",
+          emitted: counts.emitted,
+          duplicates: counts.duplicates,
+          deduped: counts.duplicates > 0,
+        });
+        markSpanOk(pollSpan.span);
+      } catch (error) {
+        result.failed += 1;
+        markSpanError(pollSpan.span, error);
+        this.#logger.warn("trigger.poll", {
+          subscriptionId: subscription.subscriptionId,
+          trigger: subscription.trigger,
+          status: "failed",
+          deduped: false,
+          errorKind: error instanceof Error ? error.name : "unknown",
         });
         await this.#scheduleNext(subscription, state, now);
       } finally {
+        pollSpan.span?.end();
         this.#polling.delete(subscription.subscriptionId);
       }
     }
@@ -676,6 +756,7 @@ export class TriggerService {
       now.toISOString(),
       new Date(now.valueOf() + this.#dedupRetentionMs).toISOString(),
     );
+    this.#telemetry.recordTriggerEvent(trigger.name, !claimed);
     if (!claimed) return false;
     const data: TriggerEventData = {
       subscriptionId: subscription.subscriptionId,
@@ -713,21 +794,32 @@ export class TriggerService {
     if (manifest === undefined || scopes === undefined) {
       return notSupported(`Trigger ${subscription.trigger} is not supported.`);
     }
-    const credential = await this.credentialProvider.resolve({
-      projectId: subscription.projectId,
-      userId: subscription.userId,
-      toolkitSlug: trigger.toolkit,
-      ...(subscription.connectionId === undefined
-        ? {}
-        : { connectionId: subscription.connectionId }),
-    });
-    validateCredential(
-      credential,
-      subscription,
-      manifest,
-      scopes.required,
-      this.#now(),
-    );
+    let credential: ResolvedCredential;
+    try {
+      credential = await this.credentialProvider.resolve({
+        projectId: subscription.projectId,
+        userId: subscription.userId,
+        toolkitSlug: trigger.toolkit,
+        ...(subscription.connectionId === undefined
+          ? {}
+          : { connectionId: subscription.connectionId }),
+      });
+      validateCredential(
+        credential,
+        subscription,
+        manifest,
+        scopes.required,
+        this.#now(),
+      );
+    } catch (error) {
+      this.#logger.warn("credential.resolution_failed", {
+        subscriptionId: subscription.subscriptionId,
+        trigger: subscription.trigger,
+        projectId: subscription.projectId,
+        kind: credentialFailureKind(error),
+      });
+      throw error;
+    }
     return {
       trigger,
       manifest,
@@ -779,6 +871,7 @@ export class TriggerPollingScheduler {
   readonly #logger: ExecutorLogger;
   #timer: ReturnType<typeof setInterval> | undefined;
   #running = false;
+  readonly #idleWaiters = new Set<() => void>();
 
   constructor(options: TriggerPollingSchedulerOptions) {
     this.#service = options.service;
@@ -803,6 +896,8 @@ export class TriggerPollingScheduler {
         })
         .finally(() => {
           this.#running = false;
+          for (const resolve of this.#idleWaiters) resolve();
+          this.#idleWaiters.clear();
         });
     }, this.#intervalMs);
     this.#timer.unref?.();
@@ -812,6 +907,11 @@ export class TriggerPollingScheduler {
     if (this.#timer === undefined) return;
     clearInterval(this.#timer);
     this.#timer = undefined;
+  }
+
+  onIdle(): Promise<void> {
+    if (!this.#running) return Promise.resolve();
+    return new Promise((resolve) => this.#idleWaiters.add(resolve));
   }
 
   tick(): Promise<TriggerPollTickResult> {

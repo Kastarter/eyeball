@@ -20,8 +20,14 @@ import {
   type WebhookSubscriptionEventType,
 } from "@eyeball/core";
 import type { Clock, ExecutorLogger } from "../adapters/index.js";
-import { noopLogger, systemClock } from "../adapters/index.js";
+import { systemClock } from "../adapters/index.js";
 import { PromiseTaskQueue, type TaskQueue } from "../queue.js";
+import {
+  createExecutorTelemetryRuntime,
+  type ExecutorTelemetryRuntime,
+  markSpanError,
+  markSpanOk,
+} from "../telemetry/index.js";
 import {
   InMemoryWebhookDeliveryStore,
   type WebhookDeliveryStore,
@@ -49,6 +55,8 @@ export interface WebhookDelivererOptions {
   fetchImpl?: typeof globalThis.fetch;
   clock?: Clock;
   sleep?: WebhookSleep;
+  telemetry?: ExecutorTelemetryRuntime;
+  /** @deprecated Pass telemetry from ExecutionEngine instead. */
   logger?: ExecutorLogger;
   retryDelaysMs?: readonly number[];
   selectionQueue?: TaskQueue;
@@ -163,6 +171,7 @@ export class WebhookDeliverer {
   readonly #clock: Clock;
   readonly #sleep: WebhookSleep;
   readonly #logger: ExecutorLogger;
+  readonly #telemetry: ExecutorTelemetryRuntime;
   readonly #selectionQueue: TaskQueue;
   readonly #attemptQueue: TaskQueue;
   readonly #attemptTimeoutMs: number;
@@ -177,7 +186,12 @@ export class WebhookDeliverer {
     this.#fetchImpl = options.fetchImpl ?? globalThis.fetch;
     this.#clock = options.clock ?? systemClock;
     this.#sleep = options.sleep ?? defaultSleep;
-    this.#logger = options.logger ?? noopLogger;
+    this.#telemetry =
+      options.telemetry ??
+      createExecutorTelemetryRuntime(
+        options.logger === undefined ? {} : { logger: options.logger },
+      );
+    this.#logger = this.#telemetry.logger;
     this.retryDelaysMs = validRetryDelays(
       options.retryDelaysMs ?? DEFAULT_WEBHOOK_RETRY_DELAYS_MS,
     );
@@ -358,6 +372,16 @@ export class WebhookDeliverer {
       });
       let statusCode: number | undefined;
       let errorMessage: string | undefined;
+      let attemptError: unknown;
+      const attemptSpan = this.#telemetry.startSpan(
+        "eyeball.webhook.delivery_attempt",
+        {
+          "eyeball.webhook.endpoint.id": endpoint.endpointId,
+          "eyeball.webhook.delivery.id": delivery.deliveryId,
+          "eyeball.webhook.attempt": index + 1,
+          "eyeball.webhook.event_type": event.type,
+        },
+      );
       try {
         await this.#attemptQueue.enqueue(async () => {
           statusCode = await this.#request(
@@ -369,11 +393,34 @@ export class WebhookDeliverer {
           );
         });
       } catch (error) {
+        attemptError = error;
         errorMessage =
           error instanceof WebhookAttemptTimeoutError
             ? error.message
             : "Webhook request failed before receiving an HTTP response.";
       }
+      if (statusCode !== undefined) {
+        attemptSpan.span?.setAttribute("http.response.status_code", statusCode);
+      }
+      const telemetryStatus =
+        statusCode !== undefined && statusCode >= 200 && statusCode < 300
+          ? "succeeded"
+          : statusCode !== undefined
+            ? "http_error"
+            : attemptError instanceof WebhookAttemptTimeoutError
+              ? "timeout"
+              : "transport_error";
+      attemptSpan.span?.setAttribute("eyeball.webhook.status", telemetryStatus);
+      if (telemetryStatus === "succeeded") markSpanOk(attemptSpan.span);
+      else markSpanError(attemptSpan.span, attemptError);
+      attemptSpan.span?.end();
+      this.#telemetry.recordWebhookDeliveryAttempt(telemetryStatus);
+      this.#logger.info("webhook.delivery_attempt", {
+        endpointId: endpoint.endpointId,
+        attempt: index + 1,
+        status: telemetryStatus,
+        ...(statusCode === undefined ? {} : { statusCode }),
+      });
       const completedAt = this.#now();
       const attempt: WebhookDeliveryAttempt = {
         attempt: index + 1,

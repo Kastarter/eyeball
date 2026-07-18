@@ -62,3 +62,5 @@ The contract suite runs the same schema, migrations, and Drizzle queries against
 When `EYEBALL_DATABASE_URL` is absent, all current in-memory defaults remain unchanged for a zero-config local process.
 
 Provider base-URL overrides use the manifest-declared environment variable for that adapter. Keep those variables trusted; requests cannot supply an arbitrary origin.
+
+For redacted JSON logs, optional OTLP traces and metrics, and graceful exporter flushing, see [Observability](/self-hosting/observability).

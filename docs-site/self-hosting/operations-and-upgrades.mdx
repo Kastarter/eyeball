@@ -9,8 +9,8 @@ Before production:
 - persist idempotency correlation and immutable terminal records;
 - run the executor, gateway, and dashboard behind TLS and authentication;
 - rate-limit bearer keys and MCP sessions;
-- keep provider credentials out of logs, traces, errors, and client bundles;
-- provide metrics for queue age, execution latency, retry codes, and provider saturation;
+- configure the executor's redacted logs and optional OpenTelemetry export, then add deployment metrics for queue age and provider saturation;
+- keep provider credentials out of custom logs, traces, errors, collector configuration, and client bundles;
 - back up execution/voice history according to retention policy;
 - replace the process-local webhook stores/queue, retain pending jobs across restarts, and alert on exhausted deliveries; signing and retry semantics are fixed by RFC 001.
 

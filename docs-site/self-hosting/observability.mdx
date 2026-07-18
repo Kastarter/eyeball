@@ -1,0 +1,129 @@
+---
+title: "Observability"
+description: "Operate the executor with structured redacted logs and opt-in OpenTelemetry traces and metrics."
+---
+
+The stock executor emits structured lifecycle logs and exposes pluggable tracing and metrics seams. Logging is available without an observability dependency. OpenTelemetry uses `@opentelemetry/api` on execution paths and loads its SDK and OTLP exporters only when explicitly enabled.
+
+## Structured logs
+
+Production-style output is one JSON object per line. `pnpm dev:stack` defaults to the easier-to-scan pretty format. Set `EYEBALL_LOG_FORMAT=pretty` to select it explicitly, or `EYEBALL_LOG_LEVEL=debug|info|warn|error` to change the minimum level. Built-in logging is silent when `NODE_ENV=test` or `VITEST=true`; tests and custom runtimes can inject a logger through `telemetry.logger`.
+
+| Key | Type | Meaning |
+| --- | --- | --- |
+| `level` | `debug`, `info`, `warn`, or `error` | Event severity. |
+| `ts` | ISO 8601 string | Time the logger emitted the event. |
+| `msg` | string | Stable event name. |
+| `fields` | object | Centrally redacted operational metadata. |
+
+The main event names and fields are:
+
+| Event | Important fields |
+| --- | --- |
+| `execution.received` | `executionId`, `tool`, `projectId`, `mode`, `inputSizeBytes`, `inputSchemaValid`, `replayed` |
+| `execution.dispatched` | `executionId`, `tool`, `projectId` |
+| `execution.terminal` | `executionId`, `tool`, `projectId`, `status`, `latencyMs`, plus output size/schema status on success or error kind on failure |
+| `webhook.delivery_attempt` | `endpointId`, `attempt`, `status`, optional HTTP `statusCode` |
+| `trigger.ingest` | `subscriptionId`, `trigger`, status or accepted/duplicate counts, `deduped` |
+| `trigger.poll` | `subscriptionId`, `trigger`, status, emitted/duplicate counts, `deduped` |
+| `rate_limit.rejected` | `projectId`, safe bucket name, and `tool` when applicable |
+| `credential.resolution_failed` | execution or subscription identity, toolkit/tool context, and failure `kind` only |
+
+For example:
+
+```json
+{"level":"info","ts":"2026-07-18T10:00:00.000Z","msg":"execution.terminal","fields":{"executionId":"exe_abc","tool":"slack.send_message","projectId":"proj_local","latencyMs":42,"status":"succeeded","outputSizeBytes":118,"outputSchemaValid":true}}
+```
+
+### Redaction guarantees
+
+Every built-in logger and every injected logger delegate receives fields through the same recursive redactor. It applies depth and collection bounds as well as these rules:
+
+- credential objects, passwords, tokens, API keys, idempotency keys, private keys, signatures, `Authorization`, proxy authorization, and cookie headers become `[REDACTED]`;
+- canonical input/output, payload, raw body, content, and byte fields become size-only markers such as `[REDACTED:body:118 bytes]`;
+- webhook, ingest, and signing secrets expose at most their first four characters inside a redaction marker;
+- binary values become size-only markers, while file metadata such as name, MIME type, and size may remain;
+- unexpectedly long strings become size-only markers, and errors retain their class name rather than message or stack;
+- circular, deeply nested, and oversized structures are bounded before serialization.
+
+Do not bypass this logger with direct `console` calls in executor paths. Provider response bodies may be useful for API errors, but they are canonical/provider data and do not belong in logs or span attributes.
+
+<Warning>
+  Redaction applies to structured fields, not the `msg` string. Keep custom message strings static and place operational values in metadata. Never interpolate credentials, bodies, webhook URLs, or provider payloads into a message.
+</Warning>
+
+## OpenTelemetry export
+
+Export is off by default. With `EYEBALL_OTEL` unset, the runtime does not load an SDK, create exporters, contact a collector, or install a global provider.
+
+Enable OTLP over HTTP with a collector base endpoint:
+
+```bash
+EYEBALL_OTEL=1 \
+OTEL_SERVICE_NAME=eyeball-executor \
+OTEL_EXPORTER_OTLP_ENDPOINT=https://otel-collector.example.com \
+EYEBALL_API_KEYS="eyeball_local_key:proj_local" \
+  pnpm --filter @eyeball/executor start
+```
+
+The shared `OTEL_EXPORTER_OTLP_ENDPOINT` is treated as a base and receives `/v1/traces` and `/v1/metrics`. Use `OTEL_EXPORTER_OTLP_TRACES_ENDPOINT` or `OTEL_EXPORTER_OTLP_METRICS_ENDPOINT` when a signal needs its own complete URL. `OTEL_METRIC_EXPORT_INTERVAL` controls the metric export interval in milliseconds and defaults to 60 seconds. OTLP endpoints must be HTTP(S) URLs without embedded credentials or fragments; use the standard OTLP header environment variables for collector authentication.
+
+Custom deployments can inject any OpenTelemetry `Tracer` and `Meter` without enabling the stock exporters:
+
+```ts
+import { noopLogger } from "@eyeball/core";
+import { createExecutorRuntime } from "@eyeball/executor";
+import { metrics, trace } from "@opentelemetry/api";
+
+const runtime = await createExecutorRuntime({
+  telemetry: {
+    logger: noopLogger,
+    tracer: trace.getTracer("my-eyeball-runtime"),
+    meter: metrics.getMeter("my-eyeball-runtime"),
+  },
+});
+
+await runtime.close();
+```
+
+This is also the test seam: use in-memory span exporters and metric readers, not a live collector.
+
+## Span reference
+
+| Span | Kind and purpose | Safe attributes |
+| --- | --- | --- |
+| `eyeball.execute` | Root span for one execution | execution ID, project ID, tool, mode, terminal status, input size, latency |
+| `eyeball.execute.validate` | Canonical request and schema validation | project ID, schema-valid flag |
+| `eyeball.execute.idempotency` | Reservation or replay lookup | tool, key-presence flag, reservation result |
+| `eyeball.execute.credentials` | Credential resolution and validation | toolkit only |
+| `eyeball.execute.adapter-dispatch` | Adapter invocation | execution ID, tool, toolkit |
+| `eyeball.adapter.http` | Client call through the shared provider HTTP seam | toolkit, operation, method, response status, destination host only |
+| `eyeball.execute.normalize` | Canonical output validation | tool, schema-valid flag |
+| `eyeball.execute.store` | Execution state transition | store operation name |
+| `eyeball.webhook.delivery_attempt` | One signed delivery attempt | endpoint/delivery IDs, event type, attempt, safe outcome status, optional HTTP status |
+| `eyeball.trigger.ingest` | One push-trigger ingest | subscription ID, trigger, accepted/duplicate counts |
+| `eyeball.trigger.poll` | One polling-trigger cycle | subscription ID, trigger, emitted/duplicate counts |
+
+Provider HTTP spans never include the full URL, path, query, headers, request body, response body, or credential. Error spans contain an error class/code only, not a message or stack.
+
+## Metric reference
+
+| Metric | Type | Labels | Meaning |
+| --- | --- | --- | --- |
+| `executions_total` | counter | `tool`, `status` | Terminal executions by canonical tool and outcome. |
+| `execution_latency_ms` | histogram | `tool` | End-to-end execution latency. |
+| `http_requests_total` | counter | `request_class`, `method`, `status_code` | Executor HTTP requests by bounded route class. |
+| `http_request_duration_ms` | histogram | `request_class`, `method`, `status_code` | Executor HTTP request duration. |
+| `webhook_delivery_attempts_total` | counter | `status` | Signed webhook attempts by safe outcome category. |
+| `trigger_events_total` | counter | `trigger`, `deduped` | Normalized trigger events, including duplicates. |
+| `rate_limit_rejections_total` | counter | `bucket` | Rejected standard, execute, daily-quota, or toolkit-concurrency checks. |
+
+HTTP `request_class` values are limited to `health`, `execute`, `ingest`, and `standard`; request paths and URLs are never labels. Rate-limit bucket values are limited to `request_standard`, `request_execute`, `daily_execution_quota`, and `toolkit_concurrency`.
+
+Label values are deliberately bounded operational identifiers. Never add project IDs, user IDs, endpoint IDs, execution IDs, URLs, credential data, canonical bodies, or other unbounded/sensitive values as metric labels.
+
+## Graceful shutdown
+
+The stock server handles `SIGINT` and `SIGTERM`. It stops accepting requests and trigger polling, waits for execution and webhook queues to become idle, closes PostgreSQL persistence, and then shuts down OpenTelemetry so buffered spans and metrics can flush.
+
+Custom server entry points should stop their HTTP listener and call `ExecutorRuntime.close()` before exiting. Collectors, retention, dashboards, alerts, and telemetry-backend access control remain deployment responsibilities.

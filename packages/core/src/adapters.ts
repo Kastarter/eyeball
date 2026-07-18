@@ -1,3 +1,4 @@
+import type { Context, Tracer } from "@opentelemetry/api";
 import type { ResolvedCredential } from "./credentials.js";
 import type { FileId, StagedFileMetadata } from "./types/execution.js";
 import type { JsonValue, ToolDefinition, ToolkitSlug } from "./types/tool.js";
@@ -40,6 +41,12 @@ export interface FileResolver {
   resolve(fileId: FileId): Promise<ResolvedFile>;
 }
 
+/** Optional execution span propagated into provider HTTP helpers. */
+export interface AdapterTelemetry {
+  tracer: Tracer;
+  context?: Context;
+}
+
 export interface AdapterContext {
   /** Trusted project scope from the authenticated executor request. */
   projectId: string;
@@ -52,6 +59,7 @@ export interface AdapterContext {
   fetchImpl: FetchImplementation;
   clock: Clock;
   logger: ExecutorLogger;
+  telemetry?: AdapterTelemetry;
   files: FileResolver;
 }
 
