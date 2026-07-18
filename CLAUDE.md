@@ -21,6 +21,7 @@ Open-core tool and integration platform for AI agents: one typed, authenticated 
 - Webhooks sign `<unix-seconds>.<raw-body>` as `v1=<HMAC-SHA256 hex>`; attempts time out at 10s and retry after 0s/30s/2m/10m/1h.
 - Trigger events deliver as `trigger.<toolkit>.<name>` through signed webhooks; push ingest secrets appear only in create-time URLs.
 - `EYEBALL_DATABASE_URL` enables the executor's five-connection Postgres pool and applies committed Drizzle migrations at boot; absent keeps all zero-config in-memory defaults.
+- Executor HTTP limits share project buckets: standard 120/min with 240 burst, execute 60/min with 120 burst; `EYEBALL_RATE_LIMIT_*` overrides them and daily quota is off by default.
 - The docs shell follows Mintlify-derived geometry: a 56px top bar, 576px prose column, and 256px/264px navigation rails.
 - `pnpm test:contract` defaults to built mocks and writes ignored `apps/executor/contract-report.json`.
 - Real certification uses `EYEBALL_CONTRACT_TARGET=real`; missing credentials are explicit skips.
@@ -35,6 +36,7 @@ Open-core tool and integration platform for AI agents: one typed, authenticated 
 - `@eyeball/catalog` owns manifests, auth metadata, versions, and deterministic tool search.
 - `@eyeball/toolkits` owns adapters; the executor resolves one manifest and credential per call.
 - Execution storage and scheduling sit behind `ExecutionStore` and `TaskQueue`.
+- Authenticated throttling sits behind async `RateLimiter`; manifest concurrency caps use a project/toolkit semaphore around adapter dispatch.
 - Webhook endpoints/delivery logs sit behind injectable stores; delivery is async and concurrency-one per endpoint.
 - Trigger subscriptions, cursors, and dedup claims sit behind injectable stores; Slack push and Gmail polling normalize against catalog schemas.
 - Executor-owned Drizzle stores persist executions/idempotency, webhook endpoints/delivery attempts, and trigger subscriptions/state/dedup against pg or PGlite with the same schema and migrations.
@@ -67,6 +69,7 @@ Open-core tool and integration platform for AI agents: one typed, authenticated 
 - Project-scoped signed execution webhooks and development voice-session event delivery are implemented with in-process defaults.
 - Catalog `1.1` includes `gmail.email_received` polling and `slack.message_received` push, with executor subscription CRUD and SDK clients.
 - Postgres durable stores are wired behind `EYEBALL_DATABASE_URL`; shared contracts run all stores against both memory and one embedded PGlite database.
+- Project request token buckets, optional UTC daily execution quotas, and manifest-declared toolkit concurrency caps are implemented.
 
 ## Known Issues
 
@@ -77,6 +80,7 @@ Open-core tool and integration platform for AI agents: one typed, authenticated 
 - Trigger records and dedup claims are durable with Postgres, while the polling scheduler still needs distributed leases, replay/backfill, provider signature verification, and an atomic claim/outbox.
 - Provider idempotency propagation is separate from working executor-level replay protection.
 - The stock executor remains process-local without `EYEBALL_DATABASE_URL`; Postgres makes records and 24-hour idempotency durable, but async task queues are still process-local.
+- Stock rate and concurrency limiters are process-local; multi-replica global enforcement requires injected distributed implementations.
 - The local vault serializes only within one process; do not share one file across executors.
 - The local vault detects ciphertext tampering but not rollback to an older valid file; restore trusted backups and revoke upstream.
 - Mocks include documented test shims where vendors lack canonical retrieval operations.

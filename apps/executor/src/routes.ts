@@ -26,6 +26,15 @@ import {
   ExecutionRequestError,
   type ListExecutionsQuery,
 } from "./engine.js";
+import {
+  createRateLimitPolicies,
+  type ExecutorRateLimitPolicies,
+  InMemoryRateLimiter,
+  type RateLimiter,
+  type RateLimitPolicy,
+  type RateLimitResult,
+  rateLimitCapacity,
+} from "./rate-limit.js";
 import type { FileStore } from "./staged-files.js";
 import { TriggerRequestError } from "./triggers/service.js";
 import { TriggerSubscriptionStoreError } from "./triggers/subscription-store.js";
@@ -56,6 +65,8 @@ export interface ExecutorAppOptions {
   apiKeys?: ApiKeyringInput;
   env?: Readonly<Record<string, string | undefined>>;
   requestIdFactory?: () => string;
+  rateLimiter?: RateLimiter;
+  rateLimitPolicies?: ExecutorRateLimitPolicies;
   /** Enables the process-local fixture connection route. Never use as a cloud vault. */
   devVault?: DevVaultCredentialProvider;
   /** Enables request-driven mock voice progression; requires devVault. */
@@ -73,11 +84,46 @@ function bearerToken(header: string | undefined): string | undefined {
 function requestFailure(
   context: ExecutorContext,
   error: EyeballError,
-  status: 401 | 403 | 404 | 409 | 413 | 422 | 500,
+  status: 401 | 403 | 404 | 409 | 413 | 422 | 429 | 500,
 ): Response {
   return context.json(
     createErrorEnvelope(error, context.get("requestId")),
     status,
+  );
+}
+
+function setRateLimitHeaders(
+  context: ExecutorContext,
+  policy: RateLimitPolicy,
+  result: RateLimitResult,
+): void {
+  context.header("RateLimit-Limit", String(rateLimitCapacity(policy)));
+  context.header("RateLimit-Remaining", String(result.remaining));
+  context.header("RateLimit-Reset", String(Math.ceil(result.resetAt / 1_000)));
+}
+
+function retryAfterSeconds(result: RateLimitResult): number {
+  return Math.max(1, Math.ceil((result.retryAfterMs ?? 0) / 1_000));
+}
+
+function rateLimitedFailure(
+  context: ExecutorContext,
+  policy: RateLimitPolicy,
+  result: RateLimitResult,
+  message: string,
+): Response {
+  setRateLimitHeaders(context, policy, result);
+  const retryAfter = retryAfterSeconds(result);
+  context.header("Retry-After", String(retryAfter));
+  return requestFailure(
+    context,
+    new EyeballError({
+      code: TOOL_ERROR_CODES.RATE_LIMITED,
+      message,
+      retryable: true,
+      retryAfter,
+    }),
+    429,
   );
 }
 
@@ -171,6 +217,22 @@ function invalidQuery(context: ExecutorContext, message: string): Response {
 
 function handleRouteError(context: ExecutorContext, error: unknown): Response {
   if (error instanceof ExecutionRequestError) {
+    if (error.httpStatus === 429) {
+      if (error.rateLimit !== undefined) {
+        context.header("RateLimit-Limit", String(error.rateLimit.limit));
+        context.header(
+          "RateLimit-Remaining",
+          String(error.rateLimit.remaining),
+        );
+        context.header(
+          "RateLimit-Reset",
+          String(Math.ceil(error.rateLimit.resetAt / 1_000)),
+        );
+      }
+      if (error.retryAfter !== undefined) {
+        context.header("Retry-After", String(Math.ceil(error.retryAfter)));
+      }
+    }
     return requestFailure(context, error, error.httpStatus);
   }
   if (error instanceof TriggerRequestError) {
@@ -341,6 +403,9 @@ export function createExecutorApp(options: ExecutorAppOptions = {}): Hono<{
   const requestIdFactory =
     options.requestIdFactory ??
     (() => `req_${randomUUID().replaceAll("-", "")}`);
+  const rateLimiter = options.rateLimiter ?? new InMemoryRateLimiter();
+  const rateLimitPolicies =
+    options.rateLimitPolicies ?? createRateLimitPolicies(env);
   const app = new Hono<{ Variables: ExecutorVariables }>();
 
   app.get("/health", (context) =>
@@ -373,6 +438,52 @@ export function createExecutorApp(options: ExecutorAppOptions = {}): Hono<{
       context.req.header(USER_ID_HEADER) !== principal.userId
     ) {
       return pinnedUserFailure(context);
+    }
+    await next();
+  });
+
+  app.use("/v1/*", async (context, next) => {
+    if (context.req.path.startsWith("/v1/ingest/")) {
+      await next();
+      return;
+    }
+    const projectId = context.get("projectId");
+    const executeRequest =
+      context.req.method === "POST" && context.req.path === "/v1/execute";
+    const requestPolicy = executeRequest
+      ? rateLimitPolicies.execute
+      : rateLimitPolicies.standard;
+    const requestClass = executeRequest ? "execute" : "standard";
+    const requestLimit = await rateLimiter.check(
+      `project:${projectId}:requests:${requestClass}`,
+      requestPolicy,
+    );
+    setRateLimitHeaders(context, requestPolicy, requestLimit);
+    if (!requestLimit.allowed) {
+      return rateLimitedFailure(
+        context,
+        requestPolicy,
+        requestLimit,
+        executeRequest
+          ? "Execution request rate limit exceeded."
+          : "Authenticated project request rate limit exceeded.",
+      );
+    }
+
+    const dailyQuota = rateLimitPolicies.dailyExecutionQuota;
+    if (executeRequest && dailyQuota !== undefined) {
+      const quota = await rateLimiter.check(
+        `project:${projectId}:quota:daily-executions`,
+        dailyQuota,
+      );
+      if (!quota.allowed) {
+        return rateLimitedFailure(
+          context,
+          dailyQuota,
+          quota,
+          "Daily project execution quota exceeded.",
+        );
+      }
     }
     await next();
   });

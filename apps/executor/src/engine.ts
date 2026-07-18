@@ -43,6 +43,11 @@ import {
 } from "./adapters/index.js";
 import { PromiseTaskQueue, type TaskQueue } from "./queue.js";
 import {
+  type ConcurrencyPermit,
+  InMemoryToolkitConcurrencyLimiter,
+  type ToolkitConcurrencyLimiter,
+} from "./rate-limit.js";
+import {
   DEFAULT_FILE_TTL_MS,
   DEFAULT_MAX_FILE_SIZE_BYTES,
   type FileStore,
@@ -131,15 +136,30 @@ export interface ExecutionEngineOptions {
   idempotencyRetentionMs?: number;
   webhookDeliverer?: WebhookDeliverer;
   triggerService?: TriggerService;
+  toolkitConcurrencyLimiter?: ToolkitConcurrencyLimiter;
+}
+
+export interface ExecutionRateLimitMetadata {
+  limit: number;
+  remaining: number;
+  resetAt: number;
 }
 
 export class ExecutionRequestError extends EyeballError {
-  readonly httpStatus: 404 | 409 | 413 | 422;
+  readonly httpStatus: 404 | 409 | 413 | 422 | 429;
+  readonly rateLimit?: ExecutionRateLimitMetadata;
 
-  constructor(httpStatus: 404 | 409 | 413 | 422, options: EyeballErrorOptions) {
+  constructor(
+    httpStatus: 404 | 409 | 413 | 422 | 429,
+    options: EyeballErrorOptions,
+    rateLimit?: ExecutionRateLimitMetadata,
+  ) {
     super(options);
     this.name = "ExecutionRequestError";
     this.httpStatus = httpStatus;
+    if (rateLimit !== undefined) {
+      this.rateLimit = rateLimit;
+    }
   }
 }
 
@@ -417,6 +437,7 @@ export class ExecutionEngine {
   readonly queue: TaskQueue;
   readonly webhookDeliverer: WebhookDeliverer;
   readonly triggerService: TriggerService;
+  readonly toolkitConcurrencyLimiter: ToolkitConcurrencyLimiter;
   readonly #fetchImpl: FetchImplementation;
   readonly #clock: Clock;
   readonly #logger: ExecutorLogger;
@@ -449,6 +470,9 @@ export class ExecutionEngine {
       "maxFileSizeBytes",
     );
     this.queue = options.queue ?? new PromiseTaskQueue();
+    this.toolkitConcurrencyLimiter =
+      options.toolkitConcurrencyLimiter ??
+      new InMemoryToolkitConcurrencyLimiter();
     this.#fetchImpl = options.fetchImpl ?? fetch;
     this.#logger = options.logger ?? noopLogger;
     this.webhookDeliverer =
@@ -627,115 +651,156 @@ export class ExecutionEngine {
       );
     }
 
-    const createdAt = this.#now();
-    const idempotency =
-      command.idempotencyKey === undefined
-        ? undefined
-        : this.#idempotencyReservation(
-            canonicalRequest,
-            command.idempotencyKey,
-            createdAt,
-          );
-    const pending: ExecutionRecord & { status: "pending" } = {
-      executionId: command.executionId ?? this.#executionIdFactory(),
-      tool: tool.name,
-      toolVersion: tool.version,
-      catalogVersion: this.catalog.catalogVersion,
-      status: "pending",
-      userId: canonicalRequest.userId,
-      createdAt: createdAt.toISOString(),
-    };
-    const allocation = await this.store.allocate({
-      projectId: command.projectId,
-      record: pending,
-      request: canonicalRequest,
-      ...(idempotency === undefined ? {} : { idempotency }),
-    });
-    if (allocation.kind === "conflict") {
-      return invalidRequest(
-        "Idempotency-Key was already used with different request parameters.",
-        409,
+    const concurrencyLimit = manifest.limits?.maxConcurrentExecutionsPerProject;
+    const concurrencyBucketKey = `${command.projectId}:${tool.toolkit}`;
+    let syncPermit: ConcurrencyPermit | undefined;
+    if (canonicalRequest.mode === "sync" && concurrencyLimit !== undefined) {
+      syncPermit = this.toolkitConcurrencyLimiter.tryAcquire(
+        concurrencyBucketKey,
+        concurrencyLimit,
       );
+      if (syncPermit === undefined) {
+        const retryAfter = 1;
+        const now = this.#now().valueOf();
+        throw new ExecutionRequestError(
+          429,
+          {
+            code: TOOL_ERROR_CODES.RATE_LIMITED,
+            message: `The ${tool.toolkit} concurrency limit is currently full.`,
+            retryable: true,
+            retryAfter,
+          },
+          {
+            limit: concurrencyLimit,
+            remaining: 0,
+            resetAt: now + retryAfter * 1_000,
+          },
+        );
+      }
     }
-    if (allocation.kind === "replay") {
-      if (
-        command.executionId !== undefined &&
-        allocation.record.executionId !== command.executionId
-      ) {
+
+    try {
+      const createdAt = this.#now();
+      const idempotency =
+        command.idempotencyKey === undefined
+          ? undefined
+          : this.#idempotencyReservation(
+              canonicalRequest,
+              command.idempotencyKey,
+              createdAt,
+            );
+      const pending: ExecutionRecord & { status: "pending" } = {
+        executionId: command.executionId ?? this.#executionIdFactory(),
+        tool: tool.name,
+        toolVersion: tool.version,
+        catalogVersion: this.catalog.catalogVersion,
+        status: "pending",
+        userId: canonicalRequest.userId,
+        createdAt: createdAt.toISOString(),
+      };
+      const allocation = await this.store.allocate({
+        projectId: command.projectId,
+        record: pending,
+        request: canonicalRequest,
+        ...(idempotency === undefined ? {} : { idempotency }),
+      });
+      if (allocation.kind === "conflict") {
         return invalidRequest(
-          "Reserved execution ID does not match the existing idempotent execution.",
+          "Idempotency-Key was already used with different request parameters.",
           409,
         );
       }
-      const replayRecord =
-        canonicalRequest.mode === "sync" &&
-        (allocation.record.status === "pending" ||
-          allocation.record.status === "running")
-          ? await this.store.waitForTerminal(
-              command.projectId,
-              allocation.record.executionId,
-            )
-          : allocation.record;
-      return {
-        statusCode:
-          replayRecord.status === "pending" || replayRecord.status === "running"
-            ? 202
-            : 200,
-        response: executeResponse(replayRecord),
-        replayed: true,
-      };
-    }
-
-    if (canonicalRequest.mode === "async") {
-      void this.queue
-        .enqueue(() =>
-          this.#runAllocated(
-            command.projectId,
-            allocation.record,
-            canonicalRequest,
-            tool,
-            manifest,
-            effectiveScopes.required,
-          ),
-        )
-        .catch((error: unknown) => {
-          this.#logger.error(
-            "Queued execution failed outside the engine boundary.",
-            {
-              executionId: allocation.record.executionId,
-              errorName: error instanceof Error ? error.name : "unknown",
-            },
+      if (allocation.kind === "replay") {
+        syncPermit?.release();
+        syncPermit = undefined;
+        if (
+          command.executionId !== undefined &&
+          allocation.record.executionId !== command.executionId
+        ) {
+          return invalidRequest(
+            "Reserved execution ID does not match the existing idempotent execution.",
+            409,
           );
-        });
+        }
+        const replayRecord =
+          canonicalRequest.mode === "sync" &&
+          (allocation.record.status === "pending" ||
+            allocation.record.status === "running")
+            ? await this.store.waitForTerminal(
+                command.projectId,
+                allocation.record.executionId,
+              )
+            : allocation.record;
+        return {
+          statusCode:
+            replayRecord.status === "pending" ||
+            replayRecord.status === "running"
+              ? 202
+              : 200,
+          response: executeResponse(replayRecord),
+          replayed: true,
+        };
+      }
+
+      if (canonicalRequest.mode === "async") {
+        void this.queue
+          .enqueue(() =>
+            this.#runAllocated(
+              command.projectId,
+              allocation.record,
+              canonicalRequest,
+              tool,
+              manifest,
+              effectiveScopes.required,
+              concurrencyBucketKey,
+              concurrencyLimit,
+            ),
+          )
+          .catch((error: unknown) => {
+            this.#logger.error(
+              "Queued execution failed outside the engine boundary.",
+              {
+                executionId: allocation.record.executionId,
+                errorName: error instanceof Error ? error.name : "unknown",
+              },
+            );
+          });
+        return {
+          statusCode: 202,
+          response: executeResponse(allocation.record),
+          replayed: false,
+        };
+      }
+
+      await this.#runAllocated(
+        command.projectId,
+        allocation.record,
+        canonicalRequest,
+        tool,
+        manifest,
+        effectiveScopes.required,
+        concurrencyBucketKey,
+        concurrencyLimit,
+        syncPermit,
+      );
+      syncPermit = undefined;
+      const terminal = await this.store.get(
+        command.projectId,
+        allocation.record.executionId,
+      );
+      if (terminal === undefined) {
+        throw new Error(
+          "Allocated execution disappeared from the execution store.",
+        );
+      }
       return {
-        statusCode: 202,
-        response: executeResponse(allocation.record),
+        statusCode: 200,
+        response: executeResponse(terminal),
         replayed: false,
       };
+    } finally {
+      syncPermit?.release();
     }
-
-    await this.#runAllocated(
-      command.projectId,
-      allocation.record,
-      canonicalRequest,
-      tool,
-      manifest,
-      effectiveScopes.required,
-    );
-    const terminal = await this.store.get(
-      command.projectId,
-      allocation.record.executionId,
-    );
-    if (terminal === undefined) {
-      throw new Error(
-        "Allocated execution disappeared from the execution store.",
-      );
-    }
-    return {
-      statusCode: 200,
-      response: executeResponse(terminal),
-      replayed: false,
-    };
   }
 
   async getExecution(
@@ -830,110 +895,125 @@ export class ExecutionEngine {
     tool: ToolDefinition,
     manifest: ProviderManifest,
     requiredScopes: readonly string[],
+    concurrencyBucketKey: string,
+    concurrencyLimit: number | undefined,
+    reservedPermit?: ConcurrencyPermit,
   ): Promise<void> {
-    const startedAt = this.#now();
-    const startedAtIso = startedAt.toISOString();
-    const running: ExecutionRecord & { status: "running" } = {
-      executionId: pending.executionId,
-      tool: pending.tool,
-      toolVersion: pending.toolVersion,
-      catalogVersion: pending.catalogVersion,
-      status: "running",
-      userId: pending.userId,
-      createdAt: pending.createdAt,
-      startedAt: startedAtIso,
-    };
-    await this.store.update(projectId, running);
-
+    const concurrencyPermit =
+      reservedPermit ??
+      (concurrencyLimit === undefined
+        ? undefined
+        : await this.toolkitConcurrencyLimiter.acquire(
+            concurrencyBucketKey,
+            concurrencyLimit,
+          ));
     try {
-      const adapter = this.adapters.require(tool.toolkit);
-      let credential: ResolvedCredential;
+      const startedAt = this.#now();
+      const startedAtIso = startedAt.toISOString();
+      const running: ExecutionRecord & { status: "running" } = {
+        executionId: pending.executionId,
+        tool: pending.tool,
+        toolVersion: pending.toolVersion,
+        catalogVersion: pending.catalogVersion,
+        status: "running",
+        userId: pending.userId,
+        createdAt: pending.createdAt,
+        startedAt: startedAtIso,
+      };
+      await this.store.update(projectId, running);
+
       try {
-        credential = await this.credentialProvider.resolve({
+        const adapter = this.adapters.require(tool.toolkit);
+        let credential: ResolvedCredential;
+        try {
+          credential = await this.credentialProvider.resolve({
+            projectId,
+            userId: request.userId,
+            toolkitSlug: tool.toolkit,
+            ...(request.connectionId === undefined
+              ? {}
+              : { connectionId: request.connectionId }),
+          });
+        } catch (error) {
+          if (
+            error instanceof CredentialProviderError ||
+            error instanceof EyeballError
+          ) {
+            throw error;
+          }
+          throw new UnexpectedCredentialProviderError(error);
+        }
+        await this.store.setResolvedConnection(
+          projectId,
+          pending.executionId,
+          credential.connectionId,
+        );
+        validateCredential(
+          credential,
+          request,
+          manifest,
+          requiredScopes,
+          this.#now(),
+        );
+        const output = await adapter.execute({
           projectId,
           userId: request.userId,
-          toolkitSlug: tool.toolkit,
-          ...(request.connectionId === undefined
-            ? {}
-            : { connectionId: request.connectionId }),
-        });
-      } catch (error) {
-        if (
-          error instanceof CredentialProviderError ||
-          error instanceof EyeballError
-        ) {
-          throw error;
-        }
-        throw new UnexpectedCredentialProviderError(error);
-      }
-      await this.store.setResolvedConnection(
-        projectId,
-        pending.executionId,
-        credential.connectionId,
-      );
-      validateCredential(
-        credential,
-        request,
-        manifest,
-        requiredScopes,
-        this.#now(),
-      );
-      const output = await adapter.execute({
-        projectId,
-        userId: request.userId,
-        tool,
-        canonicalInput: request.input,
-        credential,
-        baseUrl: resolveBaseUrl(manifest, this.#env),
-        fetchImpl: this.#fetchImpl,
-        clock: this.#clock,
-        logger: this.#logger,
-        files: {
-          resolve: async (fileId) => {
-            return this.getFile(projectId, fileId);
+          tool,
+          canonicalInput: request.input,
+          credential,
+          baseUrl: resolveBaseUrl(manifest, this.#env),
+          fetchImpl: this.#fetchImpl,
+          clock: this.#clock,
+          logger: this.#logger,
+          files: {
+            resolve: async (fileId) => {
+              return this.getFile(projectId, fileId);
+            },
           },
-        },
-      });
-      const canonicalOutput = this.#validateOutput(tool, output);
-      const completedAt = this.#now();
-      const terminal: ExecutionRecord & { status: "succeeded" } = {
-        executionId: running.executionId,
-        tool: running.tool,
-        toolVersion: running.toolVersion,
-        catalogVersion: running.catalogVersion,
-        status: "succeeded",
-        userId: running.userId,
-        createdAt: running.createdAt,
-        startedAt: startedAtIso,
-        completedAt: completedAt.toISOString(),
-        output: canonicalOutput,
-        latencyMs: Math.max(0, completedAt.valueOf() - startedAt.valueOf()),
-      };
-      await this.store.update(projectId, terminal);
-      this.webhookDeliverer.enqueueExecution(projectId, terminal);
-    } catch (error) {
-      const completedAt = this.#now();
-      this.#logger.warn("Execution completed with a normalized failure.", {
-        executionId: pending.executionId,
-        tool: tool.name,
-        errorName: error instanceof Error ? error.name : "unknown",
-      });
-      const terminal: ExecutionRecord & { status: "failed" } = {
-        executionId: running.executionId,
-        tool: running.tool,
-        toolVersion: running.toolVersion,
-        catalogVersion: running.catalogVersion,
-        status: "failed",
-        userId: running.userId,
-        createdAt: running.createdAt,
-        startedAt: startedAtIso,
-        completedAt: completedAt.toISOString(),
-        error: normalizedError(error),
-        latencyMs: Math.max(0, completedAt.valueOf() - startedAt.valueOf()),
-      };
-      await this.store.update(projectId, terminal);
-      this.webhookDeliverer.enqueueExecution(projectId, terminal);
-      if (error instanceof UnexpectedCredentialProviderError) throw error;
+        });
+        const canonicalOutput = this.#validateOutput(tool, output);
+        const completedAt = this.#now();
+        const terminal: ExecutionRecord & { status: "succeeded" } = {
+          executionId: running.executionId,
+          tool: running.tool,
+          toolVersion: running.toolVersion,
+          catalogVersion: running.catalogVersion,
+          status: "succeeded",
+          userId: running.userId,
+          createdAt: running.createdAt,
+          startedAt: startedAtIso,
+          completedAt: completedAt.toISOString(),
+          output: canonicalOutput,
+          latencyMs: Math.max(0, completedAt.valueOf() - startedAt.valueOf()),
+        };
+        await this.store.update(projectId, terminal);
+        this.webhookDeliverer.enqueueExecution(projectId, terminal);
+      } catch (error) {
+        const completedAt = this.#now();
+        this.#logger.warn("Execution completed with a normalized failure.", {
+          executionId: pending.executionId,
+          tool: tool.name,
+          errorName: error instanceof Error ? error.name : "unknown",
+        });
+        const terminal: ExecutionRecord & { status: "failed" } = {
+          executionId: running.executionId,
+          tool: running.tool,
+          toolVersion: running.toolVersion,
+          catalogVersion: running.catalogVersion,
+          status: "failed",
+          userId: running.userId,
+          createdAt: running.createdAt,
+          startedAt: startedAtIso,
+          completedAt: completedAt.toISOString(),
+          error: normalizedError(error),
+          latencyMs: Math.max(0, completedAt.valueOf() - startedAt.valueOf()),
+        };
+        await this.store.update(projectId, terminal);
+        this.webhookDeliverer.enqueueExecution(projectId, terminal);
+        if (error instanceof UnexpectedCredentialProviderError) throw error;
+      }
+    } finally {
+      concurrencyPermit?.release();
     }
   }
 

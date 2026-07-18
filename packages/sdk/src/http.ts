@@ -90,11 +90,13 @@ export class EyeballHttpClient {
   readonly #apiKey: string;
   readonly #baseUrl: string;
   readonly #fetch: typeof globalThis.fetch;
+  readonly #sleep: (milliseconds: number) => Promise<void>;
 
   constructor(options: {
     apiKey: string;
     baseUrl: string;
     fetchImpl: typeof globalThis.fetch;
+    sleep: (milliseconds: number) => Promise<void>;
     allowInsecureHttp?: boolean;
   }) {
     if (options.apiKey.trim().length === 0) {
@@ -106,6 +108,7 @@ export class EyeballHttpClient {
       options.allowInsecureHttp ?? false,
     );
     this.#fetch = options.fetchImpl;
+    this.#sleep = options.sleep;
   }
 
   async request<T>(
@@ -121,26 +124,43 @@ export class EyeballHttpClient {
       headers.set("Content-Type", "application/json");
     }
 
-    let response: Response;
-    try {
-      response = await this.#fetch(`${this.#baseUrl}${path}`, {
-        ...init,
-        headers,
-      });
-    } catch (cause) {
-      throw new EyeballError({
-        code: TOOL_ERROR_CODES.PROVIDER_UNAVAILABLE,
-        message: "The Eyeball executor could not be reached.",
-        retryable: true,
-        cause,
-      });
-    }
+    const method = (init.method ?? "GET").toUpperCase();
+    const retryableRead = method === "GET" || method === "HEAD";
+    for (let attempt = 0; attempt < 2; attempt += 1) {
+      let response: Response;
+      try {
+        response = await this.#fetch(`${this.#baseUrl}${path}`, {
+          ...init,
+          headers,
+        });
+      } catch (cause) {
+        throw new EyeballError({
+          code: TOOL_ERROR_CODES.PROVIDER_UNAVAILABLE,
+          message: "The Eyeball executor could not be reached.",
+          retryable: true,
+          cause,
+        });
+      }
 
-    const body = parsedBody(await response.text());
-    if (!response.ok) {
-      throw envelopeError(body) ?? fromHttpStatus(response.status, body);
+      const body = parsedBody(await response.text());
+      if (response.ok) {
+        return body as T;
+      }
+      const error =
+        envelopeError(body) ?? fromHttpStatus(response.status, body);
+      if (
+        attempt === 0 &&
+        retryableRead &&
+        response.status === 429 &&
+        error.code === TOOL_ERROR_CODES.RATE_LIMITED &&
+        error.retryAfter !== undefined
+      ) {
+        await this.#sleep(error.retryAfter * 1_000);
+        continue;
+      }
+      throw error;
     }
-    return body as T;
+    throw new Error("Unreachable HTTP retry state.");
   }
 }
 

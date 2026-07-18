@@ -4,6 +4,7 @@ export * from "./dev-vault.js";
 export * from "./dev-voice-sessions.js";
 export * from "./engine.js";
 export * from "./queue.js";
+export * from "./rate-limit.js";
 export * from "./routes.js";
 export * from "./runtime.js";
 export * from "./staged-files.js";

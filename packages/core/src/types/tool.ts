@@ -242,6 +242,10 @@ export interface ProviderManifest {
     /** Trusted executor env var used by eyeball-mocks; never tool input. */
     baseUrlOverrideEnv?: string;
   };
+  limits?: {
+    /** Maximum adapter calls in flight for this toolkit within one project. */
+    maxConcurrentExecutionsPerProject?: number;
+  };
   implements: readonly ProviderToolImplementation[];
   /** Additive reaction surface. Absence means the provider publishes no triggers. */
   triggers?: readonly ProviderTriggerImplementation[];

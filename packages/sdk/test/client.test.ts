@@ -446,22 +446,27 @@ describe("Eyeball SDK", () => {
     });
     expect(sleeps).toEqual([5, 5, 2]);
 
+    const rateLimitRequests: Request[] = [];
+    const rateLimitSleeps: number[] = [];
     const failingClient = client(
-      testFetch(() =>
-        jsonResponse(
-          {
-            requestId: "req_rate_limit",
-            error: {
-              code: "rate_limited",
-              message: "Executor quota exceeded.",
-              retryable: true,
-              retryAfter: 7,
-              provider: { toolkit: "gmail", status: 429 },
+      testFetch(
+        () =>
+          jsonResponse(
+            {
+              requestId: "req_rate_limit",
+              error: {
+                code: "rate_limited",
+                message: "Executor quota exceeded.",
+                retryable: true,
+                retryAfter: 7,
+                provider: { toolkit: "gmail", status: 429 },
+              },
             },
-          },
-          429,
-        ),
+            429,
+          ),
+        rateLimitRequests,
       ),
+      { sleep: async (milliseconds) => rateLimitSleeps.push(milliseconds) },
     );
     await expect(
       failingClient.executions.get("exe_rate_limit"),
@@ -472,6 +477,45 @@ describe("Eyeball SDK", () => {
       providerDetail: { toolkit: "gmail", status: 429 },
       requestId: "req_rate_limit",
     });
+    expect(rateLimitSleeps).toEqual([7_000]);
+    expect(rateLimitRequests).toHaveLength(2);
+  });
+
+  it("does not automatically retry a rate-limited mutation", async () => {
+    const requests: Request[] = [];
+    const sleeps: number[] = [];
+    const eb = client(
+      testFetch(
+        () =>
+          jsonResponse(
+            {
+              requestId: "req_mutation_rate_limit",
+              error: {
+                code: "rate_limited",
+                message: "Executor quota exceeded.",
+                retryable: true,
+                retryAfter: 3,
+              },
+            },
+            429,
+          ),
+        requests,
+      ),
+      { sleep: async (milliseconds) => sleeps.push(milliseconds) },
+    );
+
+    await expect(
+      eb.files.upload({
+        name: "not-retried.txt",
+        mimeType: "text/plain",
+        content: "mutation",
+      }),
+    ).rejects.toMatchObject({
+      code: TOOL_ERROR_CODES.RATE_LIMITED,
+      retryAfter: 3,
+    });
+    expect(requests).toHaveLength(1);
+    expect(sleeps).toEqual([]);
   });
 
   it("creates dev connections and explains the private cloud boundary", async () => {

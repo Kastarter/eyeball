@@ -810,11 +810,13 @@ export class Eyeball {
     if (options.userId !== undefined && options.userId.trim().length === 0) {
       throw new TypeError("userId must not be empty when provided.");
     }
+    const sleep = options.sleep ?? systemSleep;
     const context: ClientContext = {
       http: new EyeballHttpClient({
         apiKey: options.apiKey,
         baseUrl: options.baseUrl,
         fetchImpl,
+        sleep,
         ...(options.allowInsecureHttp === undefined
           ? {}
           : { allowInsecureHttp: options.allowInsecureHttp }),
@@ -823,7 +825,7 @@ export class Eyeball {
         ? {}
         : { defaultUserId: options.userId }),
       clock: options.clock ?? systemClock,
-      sleep: options.sleep ?? systemSleep,
+      sleep,
     };
     this.executions = new ExecutionsClient(context);
     this.tools = new ToolsClient(context, this.executions);

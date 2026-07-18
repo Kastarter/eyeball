@@ -238,7 +238,7 @@ describe("catalog registry build errors", () => {
     expect(registry.listManifests()).toEqual([]);
   });
 
-  it("rejects catalog-version mismatches and malformed endpoints", () => {
+  it("rejects catalog-version, endpoint, and concurrency-limit errors", () => {
     const registry = new CatalogRegistry({
       contracts: emailCapabilityContracts,
     });
@@ -252,6 +252,12 @@ describe("catalog registry build errors", () => {
     malformedEndpoint.endpoint.baseUrl = "file:///etc/passwd";
     expect(() => registry.registerManifest(malformedEndpoint)).toThrow(
       /HTTP\(S\) base URL/,
+    );
+
+    const malformedLimit = cloneManifest();
+    malformedLimit.limits = { maxConcurrentExecutionsPerProject: 0 };
+    expect(() => registry.registerManifest(malformedLimit)).toThrow(
+      /max concurrent executions per project must be a positive safe integer/,
     );
   });
 

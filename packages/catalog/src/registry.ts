@@ -396,6 +396,15 @@ function assertManifestHeader(
       `${context} has invalid base URL override environment variable.`,
     );
   }
+  const concurrencyLimit = manifest.limits?.maxConcurrentExecutionsPerProject;
+  if (
+    concurrencyLimit !== undefined &&
+    (!Number.isSafeInteger(concurrencyLimit) || concurrencyLimit < 1)
+  ) {
+    throw new Error(
+      `${context} max concurrent executions per project must be a positive safe integer.`,
+    );
+  }
   if (
     manifest.implements.length === 0 &&
     (manifest.triggers === undefined || manifest.triggers.length === 0)

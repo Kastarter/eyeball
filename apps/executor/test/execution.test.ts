@@ -49,8 +49,10 @@ interface HarnessOptions {
   emptyOutput?: boolean;
   includeAdapter?: boolean;
   invalidOutput?: boolean;
+  maxConcurrentExecutionsPerProject?: number;
   outputDefault?: boolean;
   pinnedUserId?: string;
+  queueConcurrency?: number;
   readOnly?: boolean;
   token?: string;
 }
@@ -104,7 +106,7 @@ function echoContract(options: HarnessOptions): CapabilityToolContract {
   };
 }
 
-function echoManifest(): ProviderManifest {
+function echoManifest(options: HarnessOptions = {}): ProviderManifest {
   return {
     schemaVersion: "1.0",
     catalogVersion: "2.0",
@@ -122,6 +124,14 @@ function echoManifest(): ProviderManifest {
       baseUrl: "https://provider.example.test/v1",
       baseUrlOverrideEnv: "EYEBALL_ECHO_BASE_URL",
     },
+    ...(options.maxConcurrentExecutionsPerProject === undefined
+      ? {}
+      : {
+          limits: {
+            maxConcurrentExecutionsPerProject:
+              options.maxConcurrentExecutionsPerProject,
+          },
+        }),
     implements: [
       {
         capability: "ai_media_utilities",
@@ -228,7 +238,7 @@ function createHarness(options: HarnessOptions = {}) {
   const catalog = new CatalogRegistry({
     catalogVersion: "2.0",
     contracts: [echoContract(options)],
-    manifests: [echoManifest()],
+    manifests: [echoManifest(options)],
   });
   const token = options.token ?? VALID_TOKEN;
   const credential: ResolvedCredential = options.credential ?? {
@@ -256,7 +266,7 @@ function createHarness(options: HarnessOptions = {}) {
     },
   };
   const store = new InMemoryExecutionStore();
-  const queue = new PromiseTaskQueue(1);
+  const queue = new PromiseTaskQueue(options.queueConcurrency ?? 1);
   let executionSequence = 0;
   const fetchImpl = (async (input: RequestInfo | URL, init?: RequestInit) =>
     vendor.request(new Request(input, init))) as typeof fetch;
@@ -586,6 +596,171 @@ describe("RFC 001 execution API", () => {
     expect(second.status).toBe(200);
     expect(await first.json()).toEqual(await second.json());
     expect(harness.calls).toHaveLength(1);
+  });
+
+  it("rejects overlapping sync dispatch at the manifest concurrency cap", async () => {
+    let markStarted!: () => void;
+    let releaseAdapter!: () => void;
+    let invocation = 0;
+    const started = new Promise<void>((resolve) => {
+      markStarted = resolve;
+    });
+    const released = new Promise<void>((resolve) => {
+      releaseAdapter = resolve;
+    });
+    const harness = createHarness({
+      maxConcurrentExecutionsPerProject: 1,
+      beforeAdapterExecute: async () => {
+        invocation += 1;
+        if (invocation === 1) {
+          markStarted();
+          await released;
+        }
+      },
+    });
+
+    const firstPromise = postExecute(
+      harness.app,
+      executeRequest("first-concurrent"),
+    );
+    await started;
+    const rejected = await postExecute(
+      harness.app,
+      executeRequest("second-concurrent"),
+    );
+
+    expect(rejected.status).toBe(429);
+    expect(rejected.headers.get("RateLimit-Limit")).toBe("1");
+    expect(rejected.headers.get("RateLimit-Remaining")).toBe("0");
+    expect(rejected.headers.get("Retry-After")).toBe("1");
+    await expect(rejected.json()).resolves.toMatchObject({
+      error: {
+        code: TOOL_ERROR_CODES.RATE_LIMITED,
+        retryable: true,
+        retryAfter: 1,
+      },
+      requestId: "req_test",
+    });
+
+    releaseAdapter();
+    expect((await firstPromise).status).toBe(200);
+    const afterRelease = await postExecute(
+      harness.app,
+      executeRequest("after-release"),
+    );
+    expect(afterRelease.status).toBe(200);
+    await expect(afterRelease.json()).resolves.toMatchObject({
+      status: "succeeded",
+    });
+  });
+
+  it("releases a manifest concurrency permit after adapter failure", async () => {
+    let markStarted!: () => void;
+    let releaseFailure!: () => void;
+    let invocation = 0;
+    const started = new Promise<void>((resolve) => {
+      markStarted = resolve;
+    });
+    const failureReleased = new Promise<void>((resolve) => {
+      releaseFailure = resolve;
+    });
+    const harness = createHarness({
+      maxConcurrentExecutionsPerProject: 1,
+      beforeAdapterExecute: async () => {
+        invocation += 1;
+        if (invocation === 1) {
+          markStarted();
+          await failureReleased;
+          throw new Error("intentional adapter failure");
+        }
+      },
+    });
+
+    const failingPromise = postExecute(
+      harness.app,
+      executeRequest("failing-concurrent"),
+    );
+    await started;
+    expect(
+      (await postExecute(harness.app, executeRequest("blocked-by-failure")))
+        .status,
+    ).toBe(429);
+    releaseFailure();
+    const failed = await failingPromise;
+    expect(failed.status).toBe(200);
+    await expect(failed.json()).resolves.toMatchObject({
+      status: "failed",
+      error: { code: TOOL_ERROR_CODES.PROVIDER_ERROR },
+    });
+
+    const afterFailure = await postExecute(
+      harness.app,
+      executeRequest("after-failure"),
+    );
+    expect(afterFailure.status).toBe(200);
+    await expect(afterFailure.json()).resolves.toMatchObject({
+      status: "succeeded",
+    });
+  });
+
+  it("keeps capped async work pending until a toolkit permit is available", async () => {
+    let markStarted!: () => void;
+    let releaseFirst!: () => void;
+    let invocation = 0;
+    const started = new Promise<void>((resolve) => {
+      markStarted = resolve;
+    });
+    const firstReleased = new Promise<void>((resolve) => {
+      releaseFirst = resolve;
+    });
+    const harness = createHarness({
+      maxConcurrentExecutionsPerProject: 1,
+      queueConcurrency: 2,
+      beforeAdapterExecute: async () => {
+        invocation += 1;
+        if (invocation === 1) {
+          markStarted();
+          await firstReleased;
+        }
+      },
+    });
+
+    const first = await postExecute(
+      harness.app,
+      executeRequest("async-first", { mode: "async" }),
+    );
+    const firstBody = (await first.json()) as { executionId: string };
+    await started;
+    const second = await postExecute(
+      harness.app,
+      executeRequest("async-second", { mode: "async" }),
+    );
+    const secondBody = (await second.json()) as { executionId: string };
+    await Promise.resolve();
+
+    expect(first.status).toBe(202);
+    expect(second.status).toBe(202);
+    expect(invocation).toBe(1);
+    const pendingSecond = await authenticatedGet(
+      harness.app,
+      `/v1/executions/${secondBody.executionId}`,
+    );
+    await expect(pendingSecond.json()).resolves.toMatchObject({
+      status: "pending",
+    });
+
+    releaseFirst();
+    await harness.queue.onIdle();
+    expect(invocation).toBe(2);
+    for (const executionId of [firstBody.executionId, secondBody.executionId]) {
+      const terminal = await authenticatedGet(
+        harness.app,
+        `/v1/executions/${executionId}`,
+      );
+      await expect(terminal.json()).resolves.toMatchObject({
+        status: "succeeded",
+      });
+    }
   });
 
   it("preserves a trusted reserved ID across idempotent worker retries", async () => {

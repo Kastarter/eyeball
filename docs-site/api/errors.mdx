@@ -31,3 +31,55 @@ Failed execution records carry the same normalized error under `error`.
 | Unsupported deployment/adapter surface | `not_supported` |
 
 Use the code and `retryable` field rather than inferring behavior from status alone. The complete remediation guide is [Errors](/concepts/errors).
+
+## Rate limits and quotas
+
+The executor applies project-scoped limits after API-key authentication. All keys for the same project share the same buckets, including keys pinned to one end user. This prevents creating extra keys from multiplying a project's capacity. The in-memory implementation is the zero-configuration default; deployments can inject a distributed implementation through the asynchronous `RateLimiter` seam.
+
+| Policy | Sustained default | Burst/default limit | Scope |
+| --- | ---: | ---: | --- |
+| Standard authenticated requests | 120 requests/minute | 240 requests | Project |
+| `POST /v1/execute` requests | 60 requests/minute | 120 requests | Project |
+| Daily execution requests | Off | Off | Project, UTC day |
+| Outbound adapter concurrency | Unlimited | Unlimited | Project + toolkit |
+
+The standard and execute token buckets are independent. A busy execution workload therefore does not exhaust the cheaper read bucket used by routes such as `GET /v1/executions`. Daily quota windows reset at 00:00 UTC when enabled. Outbound concurrency remains unlimited unless a provider manifest declares `limits.maxConcurrentExecutionsPerProject`.
+
+When a manifest cap is full, a synchronous request is rejected before allocation with HTTP 429 and a one-second retry hint. An accepted asynchronous execution remains pending and waits for a toolkit permit inside the task queue. Permits are released after both successful and failed adapter calls. The stock semaphore is process-local; multi-replica deployments should inject a distributed implementation if they need a global concurrency ceiling.
+
+Rate-limited request failures use the RFC 001 pre-allocation envelope:
+
+```json
+{
+  "error": {
+    "code": "rate_limited",
+    "message": "Execution request rate limit exceeded.",
+    "retryable": true,
+    "retryAfter": 1
+  },
+  "requestId": "req_01JZ6X..."
+}
+```
+
+Provider HTTP 429 responses happen after allocation instead. They are normalized to the same `rate_limited` code, preserve a known `retryAfter`, and appear on the failed execution record.
+
+### Response headers
+
+| Header | Meaning |
+| --- | --- |
+| `RateLimit-Limit` | Token-bucket burst capacity, or the fixed-window quota |
+| `RateLimit-Remaining` | Whole requests remaining at response time |
+| `RateLimit-Reset` | Unix timestamp in seconds when the bucket fully refills or the quota window resets |
+| `Retry-After` | Whole seconds to wait; present on HTTP 429 responses |
+
+### Environment configuration
+
+| Variable | Default | Purpose |
+| --- | ---: | --- |
+| `EYEBALL_RATE_LIMIT_REQUESTS_PER_MINUTE` | `120` | Standard-route sustained refill rate |
+| `EYEBALL_RATE_LIMIT_REQUEST_BURST` | `240` | Standard-route token capacity |
+| `EYEBALL_RATE_LIMIT_EXECUTE_PER_MINUTE` | `60` | Execute-route sustained refill rate |
+| `EYEBALL_RATE_LIMIT_EXECUTE_BURST` | `120` | Execute-route token capacity |
+| `EYEBALL_RATE_LIMIT_DAILY_EXECUTIONS` | Off | Daily project execution-request quota; a positive integer enables it, while `0` or `off` disables it |
+
+The TypeScript SDK waits for `retryAfter` and retries exactly once for idempotent `GET` and `HEAD` requests. It never automatically retries `POST`, `PATCH`, or `DELETE`, including tool execution and file upload.
