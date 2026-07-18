@@ -2,7 +2,7 @@
 
 Eyeball is one typed, authenticated tool API for AI agents: agents discover canonical tools once, execute them through the SDK or MCP, and let Eyeball handle provider-specific payloads, credentials, retries, and audit records. The source tree ships a local-first stack with deterministic provider doubles, so the same execution path can be developed and tested without live SaaS accounts before it is certified against real providers.
 
-> **Status:** `0.1.0` source preview. The local platform is runnable; the hosted cloud boundary remains in development.
+> **Status:** `0.1.0` source preview. The publishing pipeline is ready; access to the `@eyeball` npm organization is pending, and no npm release is claimed yet. The local platform is runnable; the hosted cloud boundary remains in development.
 
 ## Architecture
 
@@ -166,5 +166,6 @@ ANTHROPIC_API_KEY=... pnpm demo:anthropic
 - [Product specification](./SPEC.md)
 - [Engineering and product documentation](./docs/)
 - [Authored public documentation source](./docs-site/)
+- [Public package release process](./docs/RELEASING.md)
 - [Real-provider certification guide](./docs/CERTIFICATION.md)
 - [Mock-provider repository](./mocks/README.md)

@@ -12,6 +12,7 @@ Open-core tool and integration platform for AI agents: one typed, authenticated 
 ## Conventions
 
 - Public package exports use ESM `.js` specifiers from `src/index.ts` barrels.
+- Changesets keeps `core`, `catalog`, `toolkits`, and `sdk` in one fixed version group; apps and the experimental bridge remain private.
 - Canonical tools use `toolkit.operation`; restricted names use reversible `toolkit__operation`.
 - `/v1/*` is API-key/project scoped; `/health` is public.
 - Staged-file uploads use padded-base64 JSON; defaults are 25 MiB and one hour via `EYEBALL_FILE_MAX_BYTES` / `EYEBALL_FILE_TTL_MS`.
@@ -63,6 +64,7 @@ Open-core tool and integration platform for AI agents: one typed, authenticated 
 ## Current State
 
 - Source version is `0.1.0`; all nine main workspaces build, test, typecheck, and lint.
+- A baseline Changeset plans the four public packages together for `0.2.0`; package manifests, tarball checks, version stamping, and manual provenance publishing are automated.
 - Catalog `1.1` contains 37 manifests/toolkits and the implemented capability adapters.
 - The manifest-derived matrix has 493 rows: 227 smoke and 266 explicit `not_supported`.
 - The dashboard, SDK, MCP gateway, local encrypted vault, auth CLI, and public docs source are built.
@@ -97,5 +99,5 @@ Open-core tool and integration platform for AI agents: one typed, authenticated 
 - The local vault serializes only within one process; do not share one file across executors.
 - The local vault detects ciphertext tampering but not rollback to an older valid file; restore trusted backups and revoke upstream.
 - Mocks include documented test shims where vendors lack canonical retrieval operations.
-- Package sources are a preview; do not claim npm or hosted Cloud publication.
+- Package publishing automation is ready, but `@eyeball` npm organization access, final license review, and the first public release remain pending; do not claim npm or hosted Cloud publication.
 - Managed sandboxes may reject loopback and tsx IPC sockets with `EPERM`; use in-process apps.

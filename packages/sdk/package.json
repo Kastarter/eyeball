@@ -1,10 +1,24 @@
 {
   "name": "@eyeball/sdk",
   "version": "0.1.0",
+  "description": "TypeScript client for Eyeball tool discovery, execution, and automation APIs.",
   "private": false,
   "type": "module",
+  "license": "SEE LICENSE IN LICENSE.md",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/eyeball-ai/eyeball.git",
+    "directory": "packages/sdk"
+  },
+  "homepage": "https://github.com/eyeball-ai/eyeball#readme",
+  "engines": {
+    "node": ">=20"
+  },
+  "sideEffects": false,
   "files": [
-    "dist"
+    "dist",
+    "README.md",
+    "LICENSE.md"
   ],
   "main": "./dist/index.js",
   "types": "./dist/index.d.ts",
@@ -13,6 +27,9 @@
       "types": "./dist/index.d.ts",
       "import": "./dist/index.js"
     }
+  },
+  "publishConfig": {
+    "access": "public"
   },
   "scripts": {
     "build": "tsc -p tsconfig.json",

@@ -1,6 +1,6 @@
 # Changelog
 
-All notable source-tree changes are documented here. Eyeball has not yet claimed an npm or hosted Cloud release.
+All notable source-tree changes are documented here. The npm publishing pipeline is ready, but `@eyeball` organization access and the first npm release remain pending; no hosted Cloud release is claimed.
 
 ## [0.1.0] - 2026-07-17
 

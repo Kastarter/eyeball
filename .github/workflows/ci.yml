@@ -30,6 +30,11 @@ jobs:
       - name: Install dependencies
         run: pnpm install --frozen-lockfile
 
+      - name: Validate release metadata
+        run: |
+          pnpm changeset:status
+          pnpm release:version
+
       - name: Generate documentation references
         run: pnpm docs:generate
 
@@ -47,6 +52,9 @@ jobs:
 
       - name: Build
         run: pnpm turbo build --concurrency=1
+
+      - name: Verify publishable package manifests
+        run: pnpm test:release
 
       - name: Typecheck
         run: pnpm turbo typecheck --concurrency=1

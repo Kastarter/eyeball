@@ -1,0 +1,24 @@
+{
+  "$schema": "https://unpkg.com/@changesets/config@3.1.4/schema.json",
+  "changelog": "@changesets/cli/changelog",
+  "commit": false,
+  "fixed": [
+    ["@eyeball/core", "@eyeball/catalog", "@eyeball/toolkits", "@eyeball/sdk"]
+  ],
+  "linked": [],
+  "access": "public",
+  "baseBranch": "main",
+  "updateInternalDependencies": "patch",
+  "bumpVersionsWithWorkspaceProtocolOnly": true,
+  "privatePackages": {
+    "version": false,
+    "tag": false
+  },
+  "ignore": [
+    "@eyeball/bridge",
+    "@eyeball/dashboard",
+    "@eyeball/docs",
+    "@eyeball/executor",
+    "@eyeball/mcp-gateway"
+  ]
+}

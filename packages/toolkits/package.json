@@ -1,10 +1,24 @@
 {
   "name": "@eyeball/toolkits",
   "version": "0.1.0",
+  "description": "Provider adapters for Eyeball's canonical integration toolkits.",
   "private": false,
   "type": "module",
+  "license": "SEE LICENSE IN LICENSE.md",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/eyeball-ai/eyeball.git",
+    "directory": "packages/toolkits"
+  },
+  "homepage": "https://github.com/eyeball-ai/eyeball#readme",
+  "engines": {
+    "node": ">=20"
+  },
+  "sideEffects": false,
   "files": [
-    "dist"
+    "dist",
+    "README.md",
+    "LICENSE.md"
   ],
   "main": "./dist/index.js",
   "types": "./dist/index.d.ts",
@@ -13,6 +27,9 @@
       "types": "./dist/index.d.ts",
       "import": "./dist/index.js"
     }
+  },
+  "publishConfig": {
+    "access": "public"
   },
   "scripts": {
     "build": "tsc -p tsconfig.json",

@@ -1,0 +1,150 @@
+name: Release
+
+on:
+  push:
+    branches:
+      - main
+  workflow_dispatch:
+    inputs:
+      confirm:
+        description: Type "publish" after the Changesets version PR has merged
+        required: true
+        type: string
+
+permissions:
+  contents: read
+
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: false
+
+env:
+  NODE_OPTIONS: --max-old-space-size=2048
+  VITEST_MAX_THREADS: 1
+
+jobs:
+  changeset-status:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 24
+
+      - name: Enable pnpm
+        run: |
+          corepack enable
+          corepack prepare pnpm@11.9.0 --activate
+
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile
+
+      - name: Validate Changesets state
+        run: pnpm changeset:status
+
+      - name: Verify fixed package versions
+        run: pnpm release:version
+
+  version-pr:
+    if: github.event_name == 'push'
+    needs: changeset-status
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+      pull-requests: write
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 24
+
+      - name: Enable pnpm
+        run: |
+          corepack enable
+          corepack prepare pnpm@11.9.0 --activate
+
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile
+
+      - name: Open or update the version PR
+        uses: changesets/action@v1
+        with:
+          version: pnpm version-packages
+          title: "chore(release): version public packages"
+          commit: "chore(release): version public packages"
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+  publish:
+    if: github.event_name == 'workflow_dispatch' && inputs.confirm == 'publish'
+    needs: changeset-status
+    runs-on: ubuntu-latest
+    environment: npm
+    permissions:
+      contents: read
+      id-token: write
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Set up Node.js and npm registry
+        uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          registry-url: https://registry.npmjs.org
+          scope: "@eyeball"
+
+      - name: Enable pnpm
+        run: |
+          corepack enable
+          corepack prepare pnpm@11.9.0 --activate
+
+      - name: Require npm publishing credentials
+        env:
+          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
+        run: test -n "$NODE_AUTH_TOKEN"
+
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile
+
+      - name: Require the version PR to be merged
+        run: |
+          pnpm changeset status --output /tmp/eyeball-changeset-status.json
+          node --input-type=module -e '
+          import { readFileSync } from "node:fs";
+          const status = JSON.parse(readFileSync("/tmp/eyeball-changeset-status.json", "utf8"));
+          if (status.releases.some((release) => release.type !== "none")) {
+            console.error("Pending changesets remain. Merge the Changesets version PR before publishing.");
+            process.exit(1);
+          }'
+
+      - name: Build public packages serially
+        run: pnpm release:build
+
+      - name: Verify package manifests and versions
+        run: pnpm test:release
+
+      - name: Preview npm tarballs
+        run: pnpm release:dry-run
+
+      - name: Publish public packages with npm provenance
+        env:
+          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
+        run: >-
+          pnpm --filter @eyeball/core
+          --filter @eyeball/catalog
+          --filter @eyeball/toolkits
+          --filter @eyeball/sdk
+          -r publish --access public --provenance --no-git-checks
