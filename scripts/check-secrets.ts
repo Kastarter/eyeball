@@ -1,7 +1,7 @@
 #!/usr/bin/env node
 
 import { execFileSync } from "node:child_process";
-import { lstatSync, readFileSync } from "node:fs";
+import { lstatSync, readFileSync, realpathSync } from "node:fs";
 import { dirname, extname, resolve } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
 
@@ -207,8 +207,14 @@ export function scanRepository(root: string): SecretFinding[] {
     }
     const absolute = resolve(root, path);
     const stat = lstatSync(absolute, { throwIfNoEntry: false });
-    if (stat === undefined || !stat.isFile() || stat.size > MAX_TEXT_FILE_BYTES)
+    if (stat === undefined || !stat.isFile()) continue;
+    if (stat.size > MAX_TEXT_FILE_BYTES) {
+      // Visible skip: a secret hidden in an oversized file must not pass silently.
+      process.stderr.write(
+        `secret scan: skipping oversized tracked file ${path} (${stat.size} bytes)\n`,
+      );
       continue;
+    }
     const bytes = readFileSync(absolute);
     if (bytes.includes(0)) continue;
     findings.push(...scanText(path, bytes.toString("utf8")));
@@ -249,10 +255,26 @@ function main(): void {
   process.exitCode = 1;
 }
 
-const entryPoint = process.argv[1];
-if (
-  entryPoint !== undefined &&
-  import.meta.url === pathToFileURL(resolve(entryPoint)).href
-) {
+// Security gate: this guard must FAIL CLOSED. If we cannot prove we were
+// imported as a library (test imports), assume direct CLI execution and scan —
+// a path-comparison miss must never silently skip the scan and exit 0.
+function isDirectExecution(): boolean {
+  const entryPoint = process.argv[1];
+  if (entryPoint === undefined) return false;
+  try {
+    const entryUrl = pathToFileURL(realpathSync(resolve(entryPoint))).href;
+    const moduleUrl = pathToFileURL(
+      realpathSync(fileURLToPath(import.meta.url)),
+    ).href;
+    if (entryUrl === moduleUrl) return true;
+    // Library import (e.g. vitest): the entry point is a different real file.
+    return false;
+  } catch {
+    // Cannot resolve paths — fail closed by running the scan.
+    return true;
+  }
+}
+
+if (isDirectExecution()) {
   main();
 }
