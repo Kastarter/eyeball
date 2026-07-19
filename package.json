@@ -1,6 +1,6 @@
 {
   "name": "eyeball",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "private": true,
   "type": "module",
   "packageManager": "pnpm@11.9.0",
@@ -25,7 +25,7 @@
     "docs:sdk": "node --import tsx scripts/generate-sdk-docs.ts",
     "docs:sdk:check": "node --import tsx scripts/generate-sdk-docs.ts --check",
     "docs:sdk:test": "vitest run scripts/generate-sdk-docs.test.ts",
-    "docs:check": "node --import tsx scripts/generate-sdk-docs.ts --check && node --import tsx scripts/check-docs.ts",
+    "docs:check": "node --import tsx scripts/generate-docs.ts --check && node --import tsx scripts/generate-sdk-docs.ts --check && node --import tsx scripts/check-docs.ts",
     "docs:snippets": "node --import tsx scripts/check-docs-snippets.ts",
     "docs:typecheck": "tsc -p tsconfig.docs.json",
     "db:migrate": "node --import tsx scripts/migrate.ts",

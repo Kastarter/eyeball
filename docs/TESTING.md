@@ -1,6 +1,6 @@
 # Eyeball Testing Strategy
 
-- Status: initial strategy
+- Status: implemented for the 0.2.0 source release
 - Scope: `packages/core`, `packages/sdk`, `packages/bridge`, `apps/executor`, `apps/voice-worker`, `apps/mcp-gateway`, and the separate
   `eyeball-mocks` repository
 - Primary runner: Vitest for TypeScript suites; scripted clients for protocol-level E2E
@@ -9,7 +9,7 @@ This document defines how Eyeball proves that canonical tools behave consistentl
 surfaces. The center of gravity is contract testing through the real executor and adapters, with deterministic
 provider APIs supplied by `eyeball-mocks`.
 
-The normative execution behavior and closed error taxonomy come from [RFC 001 §§3–4](./rfcs/001-canonical-tools.md#3-execution-api).
+The normative execution behavior and closed error taxonomy come from [RFC 001 §§3–4](./rfcs/001-canonical-tools.md#3-execution-api); voice and trigger additions come from [RFC 002](./rfcs/002-voice-agents.md) and [RFC 004](./rfcs/004-triggers.md).
 Mock behavior, fixtures, and the real-auth swap are owned by [MOCKS.md](./MOCKS.md); this document references rather
 than redefines them.
 

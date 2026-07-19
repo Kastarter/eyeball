@@ -3,6 +3,16 @@ title: "Changelog"
 description: "Track documentation, catalog, SDK, executor, gateway, and toolkit contract changes."
 ---
 
+<Update label="2026-07-19" description="0.2.0 source release">
+
+- Added project-scoped staged files and attachment support, signed webhooks, Gmail/Slack triggers, optional Postgres stores, request quotas, and redacted OpenTelemetry seams.
+- Added the versioned Python voice worker, WebRTC activation, Twilio number lifecycle, Streamable HTTP/SSE MCP Tasks, generated SDK reference, landing page, and demo assets.
+- Expanded the manifest-derived contract matrix to 493 rows: 227 account-free smoke rows pass and 266 unsupported rows are explicit.
+- Implemented private-cloud tenancy, Auth Vault/connect flows, key lifecycle, audit, dashboard cloud mode, and hybrid Stripe billing in source; deployment and live validation remain pending.
+- Cut the root plus `@eyeball/core`, `@eyeball/catalog`, `@eyeball/toolkits`, and `@eyeball/sdk` to `0.2.0`, with npm publication still blocked on organization access and final license approval.
+
+</Update>
+
 <Update label="2026-07-17" description="0.1.0 integrated source preview">
 
 - Added the self-hosted documentation site with SDK and MCP onboarding, stack integration guides, concepts, capability guides, API reference, mocks, and self-hosting boundaries.
@@ -14,6 +24,6 @@ description: "Track documentation, catalog, SDK, executor, gateway, and toolkit 
 
 </Update>
 
-This entry describes the source-tree preview. It does not claim an npm or hosted Cloud release.
+These entries describe checked-in source. They do not claim an npm or hosted Cloud release, real-provider certification, or final license approval.
 
 See [SDK and API](/changelog/sdk-api), [Catalog](/changelog/catalog), and [Deprecations](/changelog/deprecations) for scoped changes.

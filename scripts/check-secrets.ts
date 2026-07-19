@@ -206,8 +206,9 @@ export function scanRepository(root: string): SecretFinding[] {
       continue;
     }
     const absolute = resolve(root, path);
-    const stat = lstatSync(absolute);
-    if (!stat.isFile() || stat.size > MAX_TEXT_FILE_BYTES) continue;
+    const stat = lstatSync(absolute, { throwIfNoEntry: false });
+    if (stat === undefined || !stat.isFile() || stat.size > MAX_TEXT_FILE_BYTES)
+      continue;
     const bytes = readFileSync(absolute);
     if (bytes.includes(0)) continue;
     findings.push(...scanText(path, bytes.toString("utf8")));

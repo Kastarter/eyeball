@@ -57,6 +57,7 @@ const privateWorkspaces = [
   { directory: "apps/dashboard", name: "@eyeball/dashboard" },
   { directory: "apps/docs", name: "@eyeball/docs" },
   { directory: "apps/executor", name: "@eyeball/executor" },
+  { directory: "apps/landing", name: "@eyeball/landing" },
   { directory: "apps/mcp-gateway", name: "@eyeball/mcp-gateway" },
 ] as const;
 
@@ -81,7 +82,7 @@ describe("release workspace boundary", () => {
     expect(publishable.map(({ directory }) => directory)).toEqual(
       publishablePackageDirectories,
     );
-    expect([...publishable, ...privateWorkspaces]).toHaveLength(9);
+    expect([...publishable, ...privateWorkspaces]).toHaveLength(10);
 
     for (const expected of publishable) {
       const manifest = readManifest(expected.directory);

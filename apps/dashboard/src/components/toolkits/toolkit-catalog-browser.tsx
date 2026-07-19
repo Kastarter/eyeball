@@ -323,7 +323,9 @@ function TryItPanel({
         // RFC 001: mutating tools require caller-supplied idempotency identity.
         selectedTool.annotations.readOnly
           ? {}
-          : { idempotencyKey: `dashboard-tryit:${selectedTool.name}:${crypto.randomUUID()}` },
+          : {
+              idempotencyKey: `dashboard-tryit:${selectedTool.name}:${crypto.randomUUID()}`,
+            },
       );
       if (execution.status === "failed") {
         setState({

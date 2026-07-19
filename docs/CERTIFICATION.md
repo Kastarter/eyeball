@@ -18,7 +18,7 @@ never interpreted as a certification pass.
 | `deepgram` | — | — | not yet certified | — |
 | `discord` | — | — | not yet certified | — |
 | `elevenlabs` | — | — | not yet certified | — |
-| `firecrawl` | — | — | not yet certified | — |
+| `firecrawl` | — | — | not shipped | Planned catalog 1.0 P0 entry; no executable manifest. |
 | `github` | — | — | not yet certified | — |
 | `gmail` | — | — | not yet certified | — |
 | `google-calendar` | — | — | not yet certified | — |
@@ -29,16 +29,20 @@ never interpreted as a certification pass.
 | `linear` | — | — | not yet certified | — |
 | `linkedin-data` | — | — | not yet certified | — |
 | `livekit` | — | — | not yet certified | — |
+| `mailgun` | — | — | not yet certified | — |
 | `microsoft-outlook` | — | — | not yet certified | — |
 | `notion` | — | — | not yet certified | — |
 | `odoo` | — | — | not yet certified | — |
 | `pipecat` | — | — | not yet certified | — |
 | `quickbooks` | — | — | not yet certified | — |
 | `reddit-data` | — | — | not yet certified | — |
-| `serper` | — | — | not yet certified | — |
+| `resend` | — | — | not yet certified | — |
+| `sendgrid` | — | — | not yet certified | — |
+| `serper` | — | — | not shipped | Planned catalog 1.0 P0 entry; no executable manifest. |
 | `shopify` | — | — | not yet certified | — |
 | `slack` | — | — | not yet certified | — |
 | `snapchat-data` | — | — | not yet certified | — |
+| `smtp` | — | — | not yet certified | — |
 | `stripe` | — | — | not yet certified | — |
 | `telegram` | — | — | not yet certified | — |
 | `tiktok-data` | — | — | not yet certified | — |
@@ -50,5 +54,6 @@ never interpreted as a certification pass.
 | `youtube-data` | — | — | not yet certified | — |
 | `zendesk` | — | — | not yet certified | — |
 
-The frozen catalog 1.0 P0 inventory is listed in full, including `firecrawl` and `serper`, whose executable manifests
-are not yet shipped. The additive catalog 1.1 `voice-agents` provider is included as well.
+The register covers all 37 executable manifests present in the default catalog. It also preserves the frozen catalog
+1.0 P0 entries `firecrawl` and `serper`, explicitly marked `not shipped`, plus the additive catalog 1.1
+`voice-agents` provider.

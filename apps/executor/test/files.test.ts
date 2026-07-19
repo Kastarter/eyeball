@@ -172,6 +172,22 @@ describe.sequential("staged files", () => {
     });
   });
 
+  it("rejects an oversized upload body before JSON parsing", async () => {
+    const { app } = createHarness({ maxFileSizeBytes: 3 });
+    const oversized = await app.request("/v1/files", {
+      method: "POST",
+      headers: authorization(KEY_A),
+      body: JSON.stringify({
+        name: "x".repeat(17 * 1_024),
+        content: "",
+      }),
+    });
+    expect(oversized.status).toBe(413);
+    await expect(oversized.json()).resolves.toMatchObject({
+      error: { code: "invalid_input" },
+    });
+  });
+
   it("hides files across projects from both HTTP and adapter resolution", async () => {
     const { app } = createHarness({ withAdapter: true });
     const uploaded = await stage(app, KEY_A);

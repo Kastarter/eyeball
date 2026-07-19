@@ -3,7 +3,7 @@ import { CATALOG_VERSION, CatalogRegistry, VERSION } from "../src/index.js";
 
 describe("@eyeball/catalog", () => {
   it("exports package and catalog versions from its public barrel", () => {
-    expect(VERSION).toBe("0.1.0");
+    expect(VERSION).toBe("0.2.0");
     expect(CATALOG_VERSION).toBe("1.1");
     expect(new CatalogRegistry().catalogVersion).toBe("1.1");
   });

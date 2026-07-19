@@ -1,5 +1,9 @@
+import { execFileSync } from "node:child_process";
+import { mkdtempSync, rmSync, unlinkSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { describe, expect, it } from "vitest";
-import { scanText } from "./check-secrets.js";
+import { scanRepository, scanText } from "./check-secrets.js";
 
 describe("tracked-file secret scanner", () => {
   it("detects known production prefixes without returning the secret", () => {
@@ -91,5 +95,26 @@ describe("tracked-file secret scanner", () => {
       line: 1,
       rule: "eyeball-live-api-key",
     });
+  });
+
+  it("skips index-visible files deleted from the worktree", () => {
+    const root = mkdtempSync(join(tmpdir(), "eyeball-secret-scan-"));
+    try {
+      execFileSync("git", ["init", "--quiet"], { cwd: root });
+      writeFileSync(
+        join(root, "kept.ts"),
+        'export const token = "fixture:valid";\n',
+      );
+      writeFileSync(
+        join(root, "removed.ts"),
+        'export const token = "fixture:removed";\n',
+      );
+      execFileSync("git", ["add", "kept.ts", "removed.ts"], { cwd: root });
+      unlinkSync(join(root, "removed.ts"));
+
+      expect(scanRepository(root)).toEqual([]);
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
   });
 });

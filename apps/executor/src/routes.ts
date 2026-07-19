@@ -53,6 +53,7 @@ const EXECUTION_STATUSES = new Set<ExecutionStatus>([
 ]);
 
 const MAX_TRIGGER_INGEST_BODY_BYTES = 1024 * 1024;
+const FILE_UPLOAD_JSON_OVERHEAD_BYTES = 16 * 1024;
 
 export { parseApiKeyring } from "@eyeball/core";
 
@@ -1068,49 +1069,74 @@ export function createExecutorApp(options: ExecutorAppOptions = {}): Hono<{
     },
   );
 
-  app.post("/v1/files", async (context) => {
-    let request: unknown;
-    try {
-      request = await context.req.json();
-    } catch {
-      return invalidQuery(context, "Request body must be valid JSON.");
-    }
-    if (!isRecord(request)) {
-      return invalidQuery(context, "File upload must be a JSON object.");
-    }
-    const unknownKey = Object.keys(request).find(
-      (key) => key !== "name" && key !== "mimeType" && key !== "content",
-    );
-    if (unknownKey !== undefined) {
-      return invalidQuery(context, `Unknown file upload field: ${unknownKey}.`);
-    }
-    if (typeof request.name !== "string") {
-      return invalidQuery(context, "name must be a string.");
-    }
-    if (
-      request.mimeType !== undefined &&
-      typeof request.mimeType !== "string"
-    ) {
-      return invalidQuery(context, "mimeType must be a string.");
-    }
-    if (typeof request.content !== "string") {
-      return invalidQuery(context, "content must be a base64 string.");
-    }
-    const content = decodeBase64(request.content);
-    if (content === undefined) {
-      return invalidQuery(context, "content must be canonical padded base64.");
-    }
-    try {
-      const file = await engine.stageFile(context.get("projectId"), {
-        name: request.name,
-        mimeType: request.mimeType ?? "application/octet-stream",
-        content,
-      });
-      return context.json(file, 201);
-    } catch (error) {
-      return handleRouteError(context, error);
-    }
-  });
+  app.post(
+    "/v1/files",
+    bodyLimit({
+      maxSize:
+        Math.ceil(engine.maxFileSizeBytes / 3) * 4 +
+        FILE_UPLOAD_JSON_OVERHEAD_BYTES,
+      onError: (context) =>
+        requestFailure(
+          context as ExecutorContext,
+          new EyeballError({
+            code: TOOL_ERROR_CODES.INVALID_INPUT,
+            message:
+              "File upload payload exceeds the configured staging limit.",
+            retryable: false,
+          }),
+          413,
+        ),
+    }),
+    async (context) => {
+      let request: unknown;
+      try {
+        request = await context.req.json();
+      } catch {
+        return invalidQuery(context, "Request body must be valid JSON.");
+      }
+      if (!isRecord(request)) {
+        return invalidQuery(context, "File upload must be a JSON object.");
+      }
+      const unknownKey = Object.keys(request).find(
+        (key) => key !== "name" && key !== "mimeType" && key !== "content",
+      );
+      if (unknownKey !== undefined) {
+        return invalidQuery(
+          context,
+          `Unknown file upload field: ${unknownKey}.`,
+        );
+      }
+      if (typeof request.name !== "string") {
+        return invalidQuery(context, "name must be a string.");
+      }
+      if (
+        request.mimeType !== undefined &&
+        typeof request.mimeType !== "string"
+      ) {
+        return invalidQuery(context, "mimeType must be a string.");
+      }
+      if (typeof request.content !== "string") {
+        return invalidQuery(context, "content must be a base64 string.");
+      }
+      const content = decodeBase64(request.content);
+      if (content === undefined) {
+        return invalidQuery(
+          context,
+          "content must be canonical padded base64.",
+        );
+      }
+      try {
+        const file = await engine.stageFile(context.get("projectId"), {
+          name: request.name,
+          mimeType: request.mimeType ?? "application/octet-stream",
+          content,
+        });
+        return context.json(file, 201);
+      } catch (error) {
+        return handleRouteError(context, error);
+      }
+    },
+  );
 
   app.get("/v1/files/:id", async (context) => {
     try {

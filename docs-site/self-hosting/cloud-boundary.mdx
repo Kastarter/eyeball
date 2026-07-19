@@ -7,7 +7,7 @@ description: "Know exactly which capabilities ship in the repository and which r
 
 - canonical capability contracts and 37-toolkit default catalog;
 - provider adapters and execution engine;
-- validation, normalized errors, idempotency, in-memory records and queue;
+- validation, normalized errors, idempotency, in-memory defaults, optional Postgres-backed records, and process-local queues;
 - signed webhook endpoint registry, asynchronous delivery engine, delivery log, and verification helper;
 - TypeScript SDK;
 - Streamable HTTP MCP gateway and `eyeball.search_tools`;
@@ -15,16 +15,18 @@ description: "Know exactly which capabilities ship in the repository and which r
 - `EnvCredentialProvider`, `MockCredentialProvider`, and opt-in development vault;
 - separate deterministic provider-mock workspace.
 
-## eyeball Cloud
+## Private Cloud source
 
 - hosted OAuth authorization and callback endpoints;
 - encrypted end-user token vault and refresh lifecycle;
 - hosted connect/reconnect UI and consent repair;
-- managed runtime, persistence, scaling, and operations.
+- tenancy, project-key lifecycle, audit, usage metering, and billing control-plane APIs.
+
+The private repository implements those control-plane paths in source, but no hosted deployment, managed executor fleet, production scaling/operations layer, or live-provider certification is claimed for `0.2.0`.
 
 ## Bring your own
 
-Self-hosters can implement the exported credential, execution, webhook endpoint, webhook delivery-log, and queue boundaries, plus their own TLS, identity, authorization, persistence, observability, egress policy, and secret management. The stock webhook stores and queues are process-local development defaults.
+Self-hosters can implement the exported credential, execution, webhook endpoint, webhook delivery-log, and queue boundaries, plus their own TLS, identity, authorization, persistence, observability, egress policy, and secret management. The stock stores are in memory unless `EYEBALL_DATABASE_URL` enables the provided Postgres implementations; task, webhook-delivery, and polling queues remain process-local.
 
 <Note>
   “Open core” here is a product boundary, not an API fiction. The OSS `connections.create` route is a fixture seam; it never pretends to return a hosted OAuth redirect.

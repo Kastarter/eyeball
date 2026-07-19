@@ -24,7 +24,7 @@ const PILLARS = [
   {
     number: "03",
     title: "Beyond SaaS CRUD",
-    copy: "Place calls, run realtime voice agents, and retrieve social data alongside the business systems wrappers already cover.",
+    copy: "Build call and realtime voice-agent flows, and retrieve social data alongside the business systems wrappers already cover.",
     signal: "voice · social · real world",
   },
   {
@@ -255,7 +255,7 @@ export default function HomePage() {
             </div>
             <p>
               Eyeball keeps the model-facing layer compact while owning the
-              provider details that make tools reliable in production.
+              provider details that reliable execution depends on.
             </p>
           </div>
           <div className="pillar-grid">

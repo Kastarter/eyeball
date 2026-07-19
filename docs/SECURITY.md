@@ -154,7 +154,9 @@ Staged-file records are currently scoped only to a project, not to their
 uploading user. File IDs are high-entropy and expire after one hour by default,
 but a pinned user who obtains another same-project user's file ID can retrieve
 its metadata or reference its bytes in an execution. Treat file IDs as bearer
-capabilities until user ownership is enforced in the file-store contract.
+capabilities until user ownership is enforced in the file-store contract. The
+JSON upload route applies a streaming body ceiling derived from the configured
+decoded-byte limit plus 16 KiB for metadata before parsing or base64 decoding.
 
 ### Executor to providers
 
@@ -245,6 +247,8 @@ untrusted hosted traffic.
 | SEC-016 | P2 | Fixed, basic control | The repository had no offline credential-pattern gate. | Added `scripts/check-secrets.ts`, regression tests, and the guard to root lint. Add gitleaks with an audited allowlist in production CI. |
 | SEC-018 | P2 | Fixed | Transitive `esbuild<=0.24.2` and `postcss<8.5.10` fell in the Moderate ranges for [GHSA-67mh-4wv8-2f99](https://github.com/advisories/GHSA-67mh-4wv8-2f99) and [GHSA-qx2v-qp2m-jg93](https://github.com/advisories/GHSA-qx2v-qp2m-jg93). | Workspace overrides select `esbuild@0.25.12` and `postcss@8.5.10`; the cloud lock also overrides the old esbuild path. Current audits no longer report either advisory. |
 | SEC-019 | P2 | Fixed | Unauthenticated trigger ingest buffered an unbounded body before checking the path credential, enabling memory-pressure denial of service. | Added Hono's streaming body limiter at 1 MiB before route parsing, with an oversized-body regression test. |
+| SEC-020 | P2 | Fixed | Webhook private-host validation accepted root-dot local names such as `localhost.`; alternate IPv4 literals also needed explicit regression coverage. | Strip terminal DNS root dots before classification and test decimal, hexadecimal, octal, short-form, encoded-dot, local-name, IPv6, and IPv4-mapped loopback inputs. DNS resolution and rebinding remain SEC-002. |
+| SEC-021 | P2 | Fixed | Authenticated staged-file uploads enforced their decoded-byte limit only after buffering and parsing the JSON body, allowing memory-pressure denial of service above the configured limit. | Added Hono's streaming body limiter before JSON parsing, sized for canonical base64 plus 16 KiB of metadata, with an oversized-body regression test. |
 
 ## Secrets audit notes
 
@@ -312,9 +316,11 @@ The following are explicit limitations, not implied guarantees:
 - The local vault is safe for one process, must not be shared between executors,
   detects ciphertext tampering, and does not detect rollback to an older valid
   vault file.
-- Hosted OAuth-vault operations, billing policy, license finalization, backups,
-  and real-provider certification are incomplete. Packages are preview source,
-  not a claim of npm or hosted-cloud availability.
+- Hosted OAuth and billing are implemented in the private cloud source, but
+  production KMS/backup operations, live Stripe/provider validation, delinquency
+  enforcement policy, cloud deployment, license finalization, and real-provider
+  certification are incomplete. Packages are preview source, not a claim of npm
+  or hosted-cloud availability.
 - Mockhouse includes documented shims where provider APIs lack canonical
   retrieval operations; passing mock contracts does not certify a real vendor.
 

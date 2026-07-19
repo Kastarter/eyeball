@@ -2,7 +2,7 @@
 
 Eyeball is one typed, authenticated tool API for AI agents: agents discover canonical tools once, execute them through the SDK or MCP, and let Eyeball handle provider-specific payloads, credentials, retries, and audit records. The source tree ships a local-first stack with deterministic provider doubles, so the same execution path can be developed and tested without live SaaS accounts before it is certified against real providers.
 
-> **Status:** `0.1.0` source preview. The publishing pipeline is ready; access to the `@eyeball` npm organization is pending, and no npm release is claimed yet. The local platform is runnable; the hosted cloud boundary remains in development.
+> **Status:** `0.2.0` has been cut in source. The publishing pipeline is ready, but access to the `@eyeball` npm organization, final license approval, and the first registry release remain pending; no npm or hosted Cloud release is claimed. The local platform is runnable, and the private cloud control plane is implemented but not deployed or live-provider certified.
 
 ## Architecture
 
@@ -48,7 +48,7 @@ The MCP gateway supports JSON and SSE Streamable HTTP responses plus opt-in expe
 
 ## Repository map
 
-The main monorepo and `mocks/` are separate Git repositories checked out together.
+The main monorepo, read-only `mocks/` checkout, and private `cloud/` control plane are independent Git repositories checked out together during development.
 
 | Path | Purpose |
 | --- | --- |
@@ -61,10 +61,13 @@ The main monorepo and `mocks/` are separate Git repositories checked out togethe
 | `apps/mcp-gateway` | Stateful Streamable HTTP MCP discovery, SSE, execution, and Tasks gateway |
 | `apps/dashboard` | Next.js admin panel with demo-by-default data and an explicit cloud mode for login, org/project context, hosted connections, API keys, and audit events |
 | `apps/docs` | Self-hosted Next.js renderer for the authored public documentation |
+| `apps/landing` | Static product landing page and interactive transcript demo |
+| `apps/voice-worker` | Separately deployed Python voice-session control plane and provider-certification scaffold |
 | `docs/` | Product contracts, RFCs, testing policy, and certification guidance |
 | `docs-site/` | Authored public MDX content and navigation source |
 | `scripts/` | Documentation checks, auth CLI, and the integrated local stack |
 | `mocks/` | Nested mock-provider repository: Mockhouse plus capability packages |
+| `cloud/` | Nested private control-plane repository: tenancy, Auth Vault/connect flows, key lifecycle, audit, and billing |
 
 ## Quickstart
 
@@ -147,19 +150,19 @@ ANTHROPIC_API_KEY=... pnpm demo:anthropic
 
 ## Release status
 
-| Surface | Status in `0.1.0` |
+| Surface | Status in `0.2.0` source |
 | --- | --- |
 | Activepieces bridge breadth spike | Complete as a private experiment: five pinned pieces introspect, three actions execute in-process, and the decision is selective per-piece promotion with no wholesale vendoring; production isolation and certification remain pending ([RFC 003](./docs/rfcs/003-bridge-spike-findings.md)) |
 | 37 toolkits/provider manifests | Built in catalog `1.1` with canonical schemas and discovery |
 | 493-row contract matrix | Built: 227 smoke rows and 266 explicit `not_supported` rows |
-| Admin panel | Built as the local Next.js dashboard |
+| Admin panel | Built as a demo-default Next.js dashboard with an explicit private-cloud mode |
 | MCP gateway | JSON/SSE Streamable HTTP, authenticated session lifecycle, catalog/search discovery, execution metadata, and experimental task polling built; stock execution cancellation is not available |
-| Documentation | Built in `docs/`, the 103-page `docs-site/` source, and the self-hosted `apps/docs` renderer |
+| Documentation | Built in `docs/`, the verified 112-page `docs-site/` source, and the self-hosted `apps/docs` renderer |
 | Local credential vault | Built with encrypted single-tenant storage and development fixtures |
-| Hosted OAuth vault | Cloud work pending |
+| Hosted OAuth vault | Implemented in the private cloud repository with encrypted credentials, hosted connect flows, and refresh scheduling; deployment and live-provider certification remain pending |
 | Real-provider certification | Pending provider credentials and certification runs |
 | Voice-worker control plane | Versioned Python worker, executor bridge, SQLite recovery, account-free contract suites, and Docker/Fly certification assets built; no live carrier, media, speech, or model path is certified yet |
-| Billing | Cloud work pending |
+| Billing | Implemented in the private cloud repository with versioned plans, usage metering, and Stripe integration; live catalog bootstrap, policy sign-off, and deployment remain pending |
 
 ## Documentation map
 

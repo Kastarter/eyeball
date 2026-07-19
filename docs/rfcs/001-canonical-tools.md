@@ -1,9 +1,10 @@
 # RFC 001: Canonical Tool and Execution Contracts
 
-- Status: Draft for review
+- Status: Accepted and implemented for the 0.2.0 source release
 - Catalog baseline: 1.0
-- Last updated: 2026-07-17
+- Last updated: 2026-07-19
 - Applies to: `core`, `sdk`, `bridge`, `executor`, `mcp-gateway`, `eyeball-mocks`
+- Related decisions: RFC 002 and RFC 004 extend this contract; RFC 003 is subordinate to it
 
 ## 0. Scope and conformance
 
@@ -492,7 +493,9 @@ Content-Type: application/json
 adapter execution resolves bytes through the project-bound `AdapterContext.files` resolver.
 The `FileStore` lookup key includes the authenticated project, and a missing, expired, or
 cross-project identifier returns the same `not_found` response. The API uses the same API-key
-and pinned-user middleware as every `/v1/*` route.
+and pinned-user middleware as every `/v1/*` route. Files are not independently user-owned:
+any caller authorized for the same project, including a different pinned user who learns the
+high-entropy file ID, may retrieve its metadata or reference its bytes during the file's TTL.
 
 The process-local defaults are a 25 MiB decoded-byte limit and a one-hour TTL. Operators may
 set `EYEBALL_FILE_MAX_BYTES` and `EYEBALL_FILE_TTL_MS`; durable disk/object-store implementations
@@ -613,9 +616,10 @@ The implemented retry delays before attempts are `0s`, `30s`, `2m`, `10m`, and `
 each receiver request has a 10-second default timeout.
 Retries and later events are serialized at concurrency one per endpoint, providing
 best-effort per-endpoint order but no global ordering. Delivery scheduling is asynchronous
-after the terminal record update and never waits for receiver I/O or retries. The source preview
-ships in-memory project endpoint and delivery stores; production deployments must inject
-durable stores and queue implementations. `execution.completed` is a subscription-only
+after the terminal record update and never waits for receiver I/O or retries. The zero-config
+source default uses in-memory project endpoint and delivery stores. `EYEBALL_DATABASE_URL`
+wires the committed PostgreSQL implementations for those records, while the retry queue remains
+process-local and needs a durable queue for restart-safe production delivery. `execution.completed` is a subscription-only
 convenience selector that matches both terminal event types without changing envelope types.
 
 ## 4. Error taxonomy

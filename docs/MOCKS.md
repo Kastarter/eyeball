@@ -19,7 +19,7 @@ therefore traverses the same catalog lookup, canonical schema validation, idempo
 and webhook code used with a real provider.
 
 This specification is subordinate to the canonical contracts in `PROVIDERS.md`, RFC 001,
-and RFC 002. When a provider mock intentionally differs from a vendor, the difference MUST
+RFC 002, and RFC 004. When a provider mock intentionally differs from a vendor, the difference MUST
 not change the canonical tool's observable contract.
 
 Normative terms `MUST`, `MUST NOT`, `SHOULD`, and `MAY` are used as requirements.

@@ -1,6 +1,6 @@
 # RFC 002: Voice Agents as a First-Class Resource
 
-- Status: Accepted; catalog 1.1 audit addendum implemented
+- Status: Accepted and implemented for the 0.2.0 source release; live-provider certification pending
 - Last updated: 2026-07-19
 - Requires: RFC 001 and catalog 1.0
 - Proposes: additive catalog 1.1 `voice-agents` toolkit
@@ -578,9 +578,10 @@ final `TranscriptArtifact`. Delivery is at least once and uses RFC 001 exactly: 
 `<timestamp>.<raw-body>` with HMAC-SHA256, send the RFC 001 expanded headers and compatibility
 aliases, accept any 2xx, and retry other outcomes with the fixed bounded schedule.
 Execution-terminal webhooks remain the RFC 001 event types. The request-driven development
-session driver publishes selected durable session events through this path today; the
-persistent production voice worker must publish the same events and final transcript artifacts
-when its durable worker loop is implemented.
+session driver publishes selected session events through this path today. The production Python
+worker persists sessions, ordered events, and transcript artifacts in SQLite and exposes its
+event stream to the executor. Executor-side remote-event observation and webhook publication
+remain process-local, however, so a restart-safe observer or outbox is still required.
 
 In the restaurant transcript, the tool turns reference the child execution IDs for
 `google-calendar.create_event` and `gmail.send_email`. Sensitive provider detail is absent,

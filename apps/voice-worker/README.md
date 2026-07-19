@@ -16,7 +16,7 @@ all be certified with real credentials before use.
 ## Run contract tests
 
 ```bash
-PYTHONPATH=src python -m pytest
+PYTHONPATH=apps/voice-worker/src python -m pytest apps/voice-worker/tests
 ```
 
 The fake transport is rejected unless both of these test-only settings are

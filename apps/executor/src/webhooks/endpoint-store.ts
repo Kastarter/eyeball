@@ -164,6 +164,7 @@ function privateHostname(hostname: string): boolean {
   const normalized = hostname
     .replace(/^\[/u, "")
     .replace(/\]$/u, "")
+    .replace(/\.+$/u, "")
     .toLowerCase();
   if (
     normalized === "localhost" ||

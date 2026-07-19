@@ -11,11 +11,11 @@ The publishing pipeline is ready, but access to the `@eyeball` npm organization 
 | `@eyeball/toolkits` | Provider adapters | `core` |
 | `@eyeball/sdk` | Public TypeScript client | `core`, `catalog` |
 
-`@eyeball/bridge`, `@eyeball/executor`, `@eyeball/mcp-gateway`, `@eyeball/dashboard`, and `@eyeball/docs` are private workspaces and are never part of a recursive publish.
+`@eyeball/bridge`, `@eyeball/executor`, `@eyeball/mcp-gateway`, `@eyeball/dashboard`, `@eyeball/docs`, and `@eyeball/landing` are private workspaces and are never part of a recursive publish.
 
 The four public packages are a Changesets `fixed` group rather than independent packages. They share canonical contracts and are still pre-1.0, so one coordinated version makes compatibility and support boundaries explicit. This can be reconsidered after the APIs stabilize and the dependency graph can support independent release cadences.
 
-The current package manifests remain at `0.1.0`. `.changeset/initial-public-packages.md` is the pending baseline that plans all four packages for `0.2.0`; it does not itself claim or perform a release.
+The root and all four public package manifests are at `0.2.0`. The baseline Changeset was consumed by the local version cut, and package changelogs were generated. This source state does not claim a registry release; publication remains blocked on npm organization access, final license approval, pushing the reviewed commit, and the protected manual workflow.
 
 ## Required GitHub configuration
 
@@ -31,7 +31,7 @@ Protect the `npm` environment with required reviewers before adding `NPM_TOKEN`.
 
 ## Release flow
 
-1. Add a user-facing intent with `pnpm changeset`; select every directly affected public package and the appropriate semver bump.
+1. For a future release, add a user-facing intent with `pnpm changeset`; select every directly affected public package and the appropriate semver bump.
 2. Push to `main`. `.github/workflows/release.yml` validates Changesets state and fixed-version agreement, then `changesets/action` opens or updates the package-version PR.
 3. Review the generated package versions, internal dependency ranges, package changelogs, and release notes. Merge that PR only when the release contents are final.
 4. Run the `Release` workflow manually with `confirm=publish`. The publish job refuses to continue while pending changesets remain, then builds the four packages serially, verifies manifests and versions, previews every tarball, and publishes with npm provenance.

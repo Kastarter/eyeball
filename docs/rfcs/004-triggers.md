@@ -1,8 +1,10 @@
 # RFC 004: Canonical triggers
 
-- Status: Accepted for MVP
+- Status: Accepted and implemented for the 0.2.0 source release
 - Date: 2026-07-18
+- Last updated: 2026-07-19
 - Catalog: 1.1
+- Requires: RFC 001 signed delivery and execution identity contracts
 
 ## Summary
 
@@ -29,7 +31,7 @@ The MVP implements:
 - Historical replay, backfill, or arbitrary cursor selection.
 - Provider signature verification beyond the unguessable per-subscription ingest secret.
 - Automatic provider webhook registration or OAuth consent changes.
-- A production durable scheduler, subscription database, dedup ledger, or transactional outbox in the stock OSS executor.
+- A distributed polling scheduler, transactional claim-and-outbox delivery, or durable retry queue in the stock OSS executor. Optional PostgreSQL subscription, state, and dedup stores are implemented.
 - A guarantee that downstream webhook delivery happens exactly once. RFC 001 delivery remains at least once.
 
 ## Canonical model
@@ -151,7 +153,7 @@ For Slack `url_verification`, the route returns `{ "challenge": "..." }` immedia
 
 The subscription stores a provider-safe cadence. Gmail defaults to 60 seconds and rejects intervals below 30 seconds. On success, the state store receives the new cursor and next due time. On failure, the prior cursor is retained and the next attempt is scheduled normally. One executor process never polls the same subscription concurrently.
 
-The in-memory scheduler is an OSS development default. Production deployments invoke the same `runDue` seam from durable jobs and inject durable subscription and trigger-state stores.
+The scheduler remains an in-process OSS default. Without `EYEBALL_DATABASE_URL`, subscription and trigger state are also in memory. With that variable, the executor wires the committed PostgreSQL subscription, cursor, and dedup stores, but production multi-replica deployments still need distributed leases and durable jobs around the same `runDue` seam.
 
 ## Deduplication and delivery semantics
 
@@ -159,7 +161,7 @@ Provider identity is `(subscriptionId, providerEventId)`. Before enqueueing an e
 
 This is a best-effort exactly-once ingestion window, not end-to-end exactly-once delivery:
 
-- the stock stores are process-local and lose claims on restart;
+- the zero-config stores are process-local and lose claims on restart; the optional PostgreSQL stores retain them;
 - a provider may reuse an identity after the claim expires;
 - a durable implementation still needs transactional claim-and-outbox behavior to close crash windows; and
 - the outbound webhook engine retries at least once, so receivers must deduplicate by webhook envelope `id` and remain idempotent.
@@ -204,5 +206,5 @@ The exact raw body is signed as `<unix-seconds>.<raw-body>` with the endpoint's 
 - Slack request-signature verification and equivalent verification for future push providers.
 - Automatic provider webhook lifecycle management and provider-signing-secret rotation.
 - Pause/resume and subscription update routes.
-- Durable stores, distributed polling leases, atomic claim-and-outbox delivery, metrics, and dead-letter operations.
+- Distributed polling leases, durable scheduled jobs, atomic claim-and-outbox delivery, metrics, and dead-letter operations.
 - Additional trigger contracts and provider mappings after mock and real-provider certification.

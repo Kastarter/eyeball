@@ -12,14 +12,16 @@ Open-core tool and integration platform for AI agents: one typed, authenticated 
 ## Conventions
 
 - Public package exports use ESM `.js` specifiers from `src/index.ts` barrels.
-- Changesets keeps `core`, `catalog`, `toolkits`, and `sdk` in one fixed version group; apps and the experimental bridge remain private.
+- Release and docs copy must distinguish checked-in private Cloud source from a deployed hosted service and must not imply npm or live-provider certification.
+- Changesets keeps `core`, `catalog`, `toolkits`, and `sdk` in one fixed version group; every Node app and the experimental bridge are explicitly ignored and remain private.
 - Canonical tools use `toolkit.operation`; restricted names use reversible `toolkit__operation`.
 - `/v1/*` is API-key/project scoped; `/health` is public.
-- Staged-file uploads use padded-base64 JSON; defaults are 25 MiB and one hour via `EYEBALL_FILE_MAX_BYTES` / `EYEBALL_FILE_TTL_MS`.
+- Staged-file uploads use padded-base64 JSON; defaults are 25 MiB and one hour via `EYEBALL_FILE_MAX_BYTES` / `EYEBALL_FILE_TTL_MS`, with a pre-buffer body ceiling for encoded content plus 16 KiB metadata overhead.
 - Credential env vars use `EYEBALL_CRED_<TOOLKIT>_*`; `EYEBALL_API_KEYS` accepts `key:project[:user]`.
 - Manifest `endpoint.baseUrlOverrideEnv` values are the only trusted provider endpoint override seam.
 - HTTP and provider tests prefer Hono `app.request`; do not require loopback sockets.
 - Webhooks sign `<unix-seconds>.<raw-body>` as `v1=<HMAC-SHA256 hex>`; attempts time out at 10s and retry after 0s/30s/2m/10m/1h.
+- Webhook URL validation strips trailing DNS root dots before rejecting localhost, `.localhost`, `.local`, and literal private-network targets; delivery never follows redirects.
 - Executor logs and telemetry attributes pass through central redaction; never emit credentials, authorization headers, canonical bodies, webhook secrets, or file bytes.
 - OpenTelemetry exporters are disabled unless `EYEBALL_OTEL=1`; tests use in-memory providers and never require a collector.
 - Trigger events deliver as `trigger.<toolkit>.<name>` through signed webhooks; push ingest secrets appear only in create-time URLs.
@@ -35,12 +37,14 @@ Open-core tool and integration platform for AI agents: one typed, authenticated 
 - Dashboard cloud proxying exposes only `/v1/*`; executor proxying exposes only `/health` and `/v1/*`, and both construct upstream URLs from allowlisted inputs.
 - Executor telemetry and cloud audit redaction treat named URL fields as secret-bearing because path/query credentials remain in supported callback protocols.
 - `pnpm test:contract` defaults to built mocks and writes ignored `apps/executor/contract-report.json`.
+- The tracked-file secret scanner skips index entries deleted by an in-progress release/version change; it must still scan every existing tracked text file.
 - `pnpm bench` runs the executor/Mockhouse in-process baseline: 200 warmups, 2,000 measured requests, max 32 in flight, GC/vm_stat sampling, and a 1,500 MiB RSS abort ceiling.
 - Real certification uses `EYEBALL_CONTRACT_TARGET=real`; missing credentials are explicit skips.
+- `docs/CERTIFICATION.md` tracks every shipped manifest; planned catalog entries stay visibly marked `not shipped`.
 - `scripts/generate-docs.ts` owns generated toolkit pages and nav; never hand-edit them.
 - `scripts/generate-sdk-docs.ts` extracts the SDK export graph with the TypeScript compiler API; `docs-site/sdk/generated/` is checksum-guarded and never hand-edited.
 - Public SDK client methods require TSDoc summaries, parameter guidance, normalized `@throws`, and runnable examples for primary workflows.
-- After docs or catalog changes run all four `docs:*` validation commands.
+- After docs or catalog changes run all four `docs:*` validation commands; `docs:check` dry-runs both generators before structural validation.
 - `apps/docs` reads `docs-site/docs.json` and MDX at build time; keep Mintlify-compatible component behavior in the renderer so authored pages stay unchanged.
 - `/mocks/` is the read-only nested repository; `docs-site/mocks/` is tracked authored content.
 
@@ -75,8 +79,9 @@ Open-core tool and integration platform for AI agents: one typed, authenticated 
 
 ## Current State
 
-- Source version is `0.1.0`; all nine main workspaces build, test, typecheck, and lint.
-- A baseline Changeset plans the four public packages together for `0.2.0`; package manifests, tarball checks, version stamping, and manual provenance publishing are automated.
+- Source version is `0.2.0`; the root and four fixed-group public package manifests have been cut locally, while npm and hosted publication remain unclaimed.
+- Package changelogs, tarball checks, version stamping, and protected manual provenance publishing are automated; the baseline `0.2.0` Changeset has been consumed.
+- The final 0.2.0 review passes fresh serial build, test, typecheck, lint, docs, 493-row contract, ten-test Python worker, cloud, Mockhouse, tarball, and tracked-file secret gates.
 - Catalog `1.1` contains 37 manifests/toolkits and the implemented capability adapters.
 - The manifest-derived matrix has 493 rows: 227 smoke and 266 explicit `not_supported`.
 - The dashboard, SDK, MCP gateway, local encrypted vault, auth CLI, and public docs source are built.
@@ -86,7 +91,7 @@ Open-core tool and integration platform for AI agents: one typed, authenticated 
 - MCP Streamable HTTP supports JSON and SSE POST responses, authenticated GET event streams, DELETE teardown, one-way credential-bound sessions, and opt-in 2025-11-25 Tasks with execution-backed polling and progress notifications.
 - `pnpm dev:stack` boots 30-provider Mockhouse, executor, and MCP gateway with dev connections.
 - Deterministic MCP and restaurant voice demos run in-process; the Anthropic episode is optional.
-- The nested mocks repository has eight workspaces and 163 tests.
+- The nested mocks repository has eight workspaces and 164 tests.
 - The private Activepieces bridge spike imports five pinned pieces, introspects 67 actions and 23 triggers, hydrates Airtable dynamic fields, and executes Gmail, Slack, and Airtable against in-process mocks.
 - Staged files flow through Gmail and Outlook send/reply/draft operations plus Google Drive upload; other email providers fail non-empty attachments explicitly as `not_supported`.
 - Project-scoped signed execution webhooks and development voice-session event delivery are implemented with in-process defaults.
@@ -101,11 +106,13 @@ Open-core tool and integration platform for AI agents: one typed, authenticated 
 
 ## Known Issues
 
+- The read-only nested `mocks/README.md` still reports 163 tests; the current suite is expected to report 164 after the Twilio number-inventory addition and must be corrected in that repository by its owner.
 - The Activepieces spike is not a production breadth layer: pieces need per-tool canonical mappings, isolated execution/egress, auth alignment, license provenance, and mock/real certification before catalog promotion; do not vendor the monorepo wholesale.
-- Hosted OAuth vault, billing, license finalization, and real-provider certification are not complete.
+- Hosted OAuth and billing are implemented in private cloud source, but cloud deployment/KMS/backup operations, live Stripe/provider validation, license finalization, and real-provider certification are not complete.
 - Cloud dashboard executor keys are not auto-provisioned into UI sessions; an operator must copy a reveal-once project key into each selected project's Settings screen.
 - Voice-agent definitions, bindings, and executor-side session pointers remain process-local because the injectable `AgentStore` is synchronous. The remote worker durably owns session state and events, but a durable agent-store seam is still required for full executor restart recovery.
 - Voice-worker parity suites prove the control-plane wire contract, deterministic recovery, and mocked provider request assembly only; Twilio, LiveKit, Deepgram, ElevenLabs, Anthropic, and end-to-end audio behavior still require live-account certification.
+- One voice-worker bearer controls every session on that worker; keep the documented one-worker-per-trusted-pinned-user boundary until session-scoped capabilities or tenant isolation exist.
 - Webhook endpoints and delivery attempts are durable with Postgres, but retry queues and remote voice-event observation remain process-local. Restarting the executor during an active remote session can therefore delay or omit voice webhook publication.
 - Trigger records and dedup claims are durable with Postgres, while the polling scheduler still needs distributed leases, replay/backfill, provider signature verification, and an atomic claim/outbox.
 - Provider idempotency propagation is separate from working executor-level replay protection.

@@ -19,6 +19,7 @@
     "@eyeball/dashboard",
     "@eyeball/docs",
     "@eyeball/executor",
+    "@eyeball/landing",
     "@eyeball/mcp-gateway"
   ]
 }

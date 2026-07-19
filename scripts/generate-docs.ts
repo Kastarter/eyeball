@@ -1,6 +1,6 @@
 import { createHash } from "node:crypto";
 import { mkdir, readdir, readFile, unlink, writeFile } from "node:fs/promises";
-import { dirname, join, resolve } from "node:path";
+import { dirname, join, relative, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { defaultCatalog } from "../packages/catalog/src/default.js";
 import type {
@@ -16,6 +16,7 @@ import { validateInput } from "../packages/core/src/index.js";
 const repositoryRoot = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 const docsRoot = join(repositoryRoot, "docs-site");
 const generatedRoot = join(docsRoot, "toolkits", "generated");
+const checkMode = process.argv.includes("--check");
 
 const capabilityLabels: Readonly<Record<string, string>> = {
   calendar_scheduling: "Calendar and scheduling",
@@ -403,6 +404,11 @@ async function writeDeterministic(
     previous = undefined;
   }
   if (previous !== content) {
+    if (checkMode) {
+      throw new Error(
+        `Generated toolkit docs are out of date: ${relative(repositoryRoot, path)}. Run pnpm docs:generate.`,
+      );
+    }
     await mkdir(dirname(path), { recursive: true });
     await writeFile(path, content, "utf8");
   }
@@ -466,6 +472,11 @@ async function main(): Promise<void> {
     if (!source.includes("DO NOT EDIT")) {
       throw new Error(`Refusing to remove non-generated page ${stalePath}.`);
     }
+    if (checkMode) {
+      throw new Error(
+        `Generated toolkit docs contain a stale page: ${relative(repositoryRoot, stalePath)}. Run pnpm docs:generate.`,
+      );
+    }
     await unlink(stalePath);
   }
 
@@ -499,6 +510,11 @@ async function main(): Promise<void> {
     ...fragment,
   ];
   await writeDeterministic(docsPath, `${codeJson(docs)}\n`);
+  if (checkMode) {
+    console.log(
+      `Verified ${manifests.length} toolkit reference pages (catalog checksum ${checksum}).`,
+    );
+  }
 }
 
 main().catch((error: unknown) => {

@@ -19,7 +19,7 @@ The hosted connect flow is conceptually:
 3. The hosted vault marks the connection connected and refreshes credentials.
 4. Revocation, expired consent, or missing scopes surface as normalized auth errors and require reconnection.
 
-The released SDK's `connections.create` response currently models only a connected development fixture: `{ connectionId, redirectUrl: null, status: "connected" }`. Hosted redirect and lifecycle types belong to eyeball Cloud and are not claimed by the open-source API.
+The checked-in SDK's `connections.create` response currently models only a connected development fixture: `{ connectionId, redirectUrl: null, status: "connected" }`. Hosted redirect and lifecycle types belong to eyeball Cloud and are not claimed by the open-source API.
 
 ## Development vault
 
@@ -32,7 +32,7 @@ The optional OSS development vault is:
 
 ## Cloud vault
 
-eyeball Cloud owns hosted OAuth callbacks, encrypted refresh-token storage, consent repair, and connect UI. Those services are outside the open-source repository.
+The private Cloud source owns hosted OAuth callbacks, encrypted refresh-token storage, consent repair, and connect UI. Those services are outside the open-source repository and are not claimed as deployed or live-provider certified.
 
 <Warning>
   `EnvCredentialProvider` is suitable for service credentials in controlled deployments, not multi-tenant end-user OAuth.

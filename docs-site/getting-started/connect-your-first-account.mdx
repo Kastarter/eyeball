@@ -3,7 +3,7 @@ title: "Connect your first account"
 description: "Understand the cloud connect handoff and the intentionally narrow development-vault API."
 ---
 
-In eyeball Cloud, your application starts a hosted OAuth connect flow and later executes tools using the same `external_user_id`. The hosted vault owns refresh tokens and provider-specific consent state.
+The private Cloud source implements a hosted OAuth connect flow in which your application later executes tools using the same `external_user_id`. The vault owns refresh tokens and provider-specific consent state. This describes checked-in control-plane source, not a deployed or live-provider-certified service.
 
 The open-source executor does not implement hosted OAuth. Its optional development vault accepts prebuilt, non-secret fixtures for local testing:
 

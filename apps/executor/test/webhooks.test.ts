@@ -350,10 +350,18 @@ describe("webhook endpoint API", () => {
     expect(missing.status).toBe(404);
   });
 
-  it("rejects private and IPv4-mapped IPv6 receiver addresses", async () => {
+  it("rejects private, FQDN-loopback, and IPv4-mapped IPv6 receiver addresses", async () => {
     const harness = createHarness();
     for (const url of [
       "https://127.0.0.1/hook",
+      "https://2130706433/hook",
+      "https://0x7f000001/hook",
+      "https://0177.0.0.1/hook",
+      "https://127.1/hook",
+      "https://localhost./hook",
+      "https://localhost%2e/hook",
+      "https://service.localhost./hook",
+      "https://metadata.local./hook",
       "https://[::1]/hook",
       "https://[::ffff:127.0.0.1]/hook",
     ]) {

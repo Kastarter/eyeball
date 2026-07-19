@@ -136,6 +136,7 @@ const taskCall = rpc(
       from: "+12025550173",
       voiceAgentId: "vag_mcp_tasks",
     },
+    _meta: { "dev.eyeball/connectionId": "conn_mcp_tasks" },
     task: { ttl: 120_000 },
   },
   "call-task-1",
@@ -226,6 +227,7 @@ describe("negotiated MCP Tasks", () => {
       expect.objectContaining({
         apiKey: API_KEY,
         userId: USER_ID,
+        connectionId: "conn_mcp_tasks",
         tool: "twilio.start_call",
         idempotencyKey: `mcp:${SESSION_ID}:call-task-1`,
       }),
