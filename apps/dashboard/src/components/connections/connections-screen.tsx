@@ -26,6 +26,10 @@ import {
 } from "@/src/lib/api";
 import type { CatalogToolkitSummary } from "@/src/lib/catalog";
 import { cn } from "@/src/lib/cn";
+import {
+  CloudConnectionsScreen,
+  type CloudConnectionsScreenProps,
+} from "./cloud-connections-screen";
 
 const connectionSnippet = `import { Eyeball } from "@eyeball/sdk";
 
@@ -46,6 +50,8 @@ interface ConnectionRow extends ConnectionRecord {
 type ExecutorState = "loading" | "offline" | "online" | "unconfigured";
 
 export interface ConnectionsScreenProps {
+  dataSource?: "cloud-control" | "executor";
+  initialCloudConnections?: CloudConnectionsScreenProps["initialConnections"];
   initialConnections?: readonly ConnectionRecord[];
   initialNewConnectionOpen?: boolean;
   project: string;
@@ -255,7 +261,7 @@ function NewConnectionPanel({
   );
 }
 
-export function ConnectionsScreen({
+function ExecutorConnectionsScreen({
   initialConnections = [],
   initialNewConnectionOpen = false,
   project,
@@ -736,5 +742,33 @@ export function ConnectionsScreen({
         />
       ) : null}
     </div>
+  );
+}
+
+export function ConnectionsScreen({
+  dataSource = "executor",
+  initialCloudConnections = [],
+  initialConnections = [],
+  initialNewConnectionOpen = false,
+  project,
+  toolkits,
+}: ConnectionsScreenProps) {
+  if (dataSource === "cloud-control") {
+    return (
+      <CloudConnectionsScreen
+        initialConnections={initialCloudConnections}
+        initialNewConnectionOpen={initialNewConnectionOpen}
+        project={project}
+        toolkits={toolkits}
+      />
+    );
+  }
+  return (
+    <ExecutorConnectionsScreen
+      initialConnections={initialConnections}
+      initialNewConnectionOpen={initialNewConnectionOpen}
+      project={project}
+      toolkits={toolkits}
+    />
   );
 }

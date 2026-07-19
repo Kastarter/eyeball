@@ -59,7 +59,7 @@ The main monorepo and `mocks/` are separate Git repositories checked out togethe
 | `packages/bridge` | Compatibility boundary for external integration engines |
 | `apps/executor` | Authenticated execution API, records, queues, and development connections |
 | `apps/mcp-gateway` | Stateful Streamable HTTP MCP discovery, SSE, execution, and Tasks gateway |
-| `apps/dashboard` | Next.js admin panel and local voice-agent testing surfaces |
+| `apps/dashboard` | Next.js admin panel with demo-by-default data and an explicit cloud mode for login, org/project context, hosted connections, API keys, and audit events |
 | `apps/docs` | Self-hosted Next.js renderer for the authored public documentation |
 | `docs/` | Product contracts, RFCs, testing policy, and certification guidance |
 | `docs-site/` | Authored public MDX content and navigation source |

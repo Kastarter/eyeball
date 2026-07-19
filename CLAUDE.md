@@ -26,6 +26,8 @@ Open-core tool and integration platform for AI agents: one typed, authenticated 
 - `EYEBALL_DATABASE_URL` enables the executor's five-connection Postgres pool and applies committed Drizzle migrations at boot; absent keeps all zero-config in-memory defaults.
 - Executor HTTP limits share project buckets: standard 120/min with 240 burst, execute 60/min with 120 burst; `EYEBALL_RATE_LIMIT_*` overrides them and daily quota is off by default.
 - The docs shell follows Mintlify-derived geometry: a 56px top bar, 576px prose column, and 256px/264px navigation rails.
+- Dashboard cloud mode is explicit: `NEXT_PUBLIC_EYEBALL_MODE=cloud` selects cloud-backed features and server-only `EYEBALL_CLOUD_URL` supplies the control-plane origin; unset remains demo mode.
+- Dashboard cloud requests use the same-origin `/api/cloud` allowlist proxy; org/project context and manually pasted per-project executor keys live in validated `HttpOnly` cookies.
 - `pnpm test:contract` defaults to built mocks and writes ignored `apps/executor/contract-report.json`.
 - Real certification uses `EYEBALL_CONTRACT_TARGET=real`; missing credentials are explicit skips.
 - `scripts/generate-docs.ts` owns generated toolkit pages and nav; never hand-edit them.
@@ -60,6 +62,7 @@ Open-core tool and integration platform for AI agents: one typed, authenticated 
 - `docs/MOCKS.md` and `docs/TESTING.md` are authoritative for mock-versus-real parity.
 - The five selected Activepieces npm pieces are self-contained bundles; framework/shared are explicit bridge compatibility pins, not peers declared by those artifacts.
 - The self-hosted docs app statically generates every navigation path and builds search/TOC data from the authored MDX.
+- The dashboard uses one feature-level mode seam: auth, orgs/projects, connections, API keys, and audit switch to the cloud control plane while toolkits, executions, and voice agents retain the executor/catalog data paths.
 
 ## Current State
 
@@ -68,7 +71,8 @@ Open-core tool and integration platform for AI agents: one typed, authenticated 
 - Catalog `1.1` contains 37 manifests/toolkits and the implemented capability adapters.
 - The manifest-derived matrix has 493 rows: 227 smoke and 266 explicit `not_supported`.
 - The dashboard, SDK, MCP gateway, local encrypted vault, auth CLI, and public docs source are built.
-- The self-hosted docs renderer builds all 111 authored/generated pages with local navigation, search, syntax highlighting, and dark/light themes.
+- The self-hosted docs renderer builds all 112 authored/generated pages with local navigation, search, syntax highlighting, and dark/light themes.
+- The dashboard has demo-default and cloud modes; cloud mode adds session auth, first-run org/project/key bootstrap, real connection/key/audit screens, project switchers, and per-project executor-key settings.
 - Search-mode MCP exposes both discovery and a generic executor-backed dispatch tool.
 - MCP Streamable HTTP supports JSON and SSE POST responses, authenticated GET event streams, DELETE teardown, one-way credential-bound sessions, and opt-in 2025-11-25 Tasks with execution-backed polling and progress notifications.
 - `pnpm dev:stack` boots 30-provider Mockhouse, executor, and MCP gateway with dev connections.
@@ -88,6 +92,7 @@ Open-core tool and integration platform for AI agents: one typed, authenticated 
 
 - The Activepieces spike is not a production breadth layer: pieces need per-tool canonical mappings, isolated execution/egress, auth alignment, license provenance, and mock/real certification before catalog promotion; do not vendor the monorepo wholesale.
 - Hosted OAuth vault, billing, license finalization, and real-provider certification are not complete.
+- Cloud dashboard executor keys are not auto-provisioned into UI sessions; an operator must copy a reveal-once project key into each selected project's Settings screen.
 - Voice-agent definitions, bindings, and executor-side session pointers remain process-local because the injectable `AgentStore` is synchronous. The remote worker durably owns session state and events, but a durable agent-store seam is still required for full executor restart recovery.
 - Voice-worker parity suites prove the control-plane wire contract, deterministic recovery, and mocked provider request assembly only; Twilio, LiveKit, Deepgram, ElevenLabs, Anthropic, and end-to-end audio behavior still require live-account certification.
 - Webhook endpoints and delivery attempts are durable with Postgres, but retry queues and remote voice-event observation remain process-local. Restarting the executor during an active remote session can therefore delay or omit voice webhook publication.

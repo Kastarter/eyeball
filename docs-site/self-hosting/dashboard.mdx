@@ -1,0 +1,55 @@
+---
+title: "Run the dashboard"
+description: "Choose the default demo data layer or connect the same dashboard screens to the cloud control plane."
+---
+
+The dashboard starts in **demo mode** unless cloud mode is explicitly enabled. Demo mode keeps the existing local experience and reads toolkits, executions, connections, and voice-agent data from the configured executor.
+
+```bash
+EYEBALL_API_KEY="eyeball_local_key" \
+EYEBALL_EXECUTOR_URL="http://127.0.0.1:3000" \
+pnpm --filter @eyeball/dashboard start
+```
+
+## Cloud mode
+
+Cloud mode swaps only the data source for authentication, organization and project context, hosted connections, API keys, and audit events. Toolkits, executions, and voice agents continue to use the executor through the dashboard's existing server-side proxy.
+
+```bash
+# NEXT_PUBLIC variables are compiled into the Next.js client bundle.
+NEXT_PUBLIC_EYEBALL_MODE="cloud" \
+pnpm --filter @eyeball/dashboard build
+
+NEXT_PUBLIC_EYEBALL_MODE="cloud" \
+EYEBALL_CLOUD_URL="https://control.example.com" \
+EYEBALL_EXECUTOR_URL="https://executor.example.com" \
+pnpm --filter @eyeball/dashboard start
+```
+
+Both cloud variables are required, and `NEXT_PUBLIC_EYEBALL_MODE=cloud` must be present when the dashboard is built. `NEXT_PUBLIC_EYEBALL_MODE` is the public feature-mode selector; `EYEBALL_CLOUD_URL` is server-only and must be the control-plane base URL. The browser calls same-origin `/api/cloud/v1/*` routes, and the dashboard forwards only the cloud session cookie, CSRF cookie/header, request content type, and response cookies. It never returns the configured control-plane origin to client code.
+
+Cloud mode adds `/login` and `/signup`. After login, the first organization owner creates an organization, its first project, and an initial project API key. The full key is returned once. Copy it immediately and store it in your secret manager; later API-key lists contain only prefixes.
+
+## Connect the selected project to its executor
+
+Creating a project key in the control plane does not place that key into the browser automatically. This is an intentional trust-boundary step:
+
+1. Copy the reveal-once project key during onboarding or from **API Keys → Create key**.
+2. Open the selected project's **Settings** screen.
+3. Paste the key into **Executor credential** and save it.
+4. Repeat for each project and browser session that needs executor-backed toolkits, executions, or voice agents.
+
+The dashboard stores each pasted executor key in a project-specific, `HttpOnly`, `SameSite=Strict` browser-session cookie. Client JavaScript can query only whether a key is configured, not read the key. In cloud mode, the executor proxy selects the cookie matching the route project and ignores `EYEBALL_API_KEY`; this prevents one server-wide key from silently crossing project boundaries. Logging out clears the known projects' executor-key cookies.
+
+<Warning>
+  Cloud mode does not auto-provision or auto-inject executor credentials. The executor must already trust the pasted project key, and the dashboard and control-plane origins must be served over TLS in production.
+</Warning>
+
+## Cloud-backed screens
+
+- **Connections** lists real project connections, supports API-key and hosted OAuth creation, exposes hosted authorization as an end-user redirect link, reauthorizes `needs_reauth` OAuth connections, and requires confirmation before revoke.
+- **API Keys** lists prefixes, supports optional current-user pinning, reveals new keys once, and requires confirmation before revoke.
+- **Audit** lists organization events and filters them by action.
+- The top bar switches organizations and projects; selections are stored as validated `HttpOnly` context cookies.
+
+Unsetting `NEXT_PUBLIC_EYEBALL_MODE` returns the dashboard to demo mode. Setting `EYEBALL_CLOUD_URL` by itself does not activate cloud behavior.

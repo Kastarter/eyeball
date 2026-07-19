@@ -46,6 +46,7 @@ export interface CatalogToolView {
 
 export interface CatalogToolkitSummary {
   authClass: string;
+  authFields: readonly string[];
   capabilities: readonly { label: string; slug: string }[];
   displayName: string;
   slug: string;
@@ -167,6 +168,7 @@ export function getCatalogToolkit(
 export function getCatalogToolkitSummaries(): readonly CatalogToolkitSummary[] {
   return defaultCatalog.listManifests().map((manifest) => ({
     authClass: manifest.auth.class,
+    authFields: manifest.auth.fields ?? [],
     capabilities: capabilityViews(manifest),
     displayName: manifest.toolkit.displayName,
     slug: manifest.toolkit.slug,

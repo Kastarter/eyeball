@@ -21,20 +21,29 @@ const navItems: readonly NavItem[] = [
   { icon: "settings", label: "Settings", segment: "settings" },
 ];
 
+const cloudNavItems: readonly NavItem[] = [
+  ...navItems.slice(0, -1),
+  { icon: "activity", label: "Audit", segment: "audit" },
+  navItems[navItems.length - 1] as NavItem,
+];
+
 export function SidebarNav({
   compact = false,
+  cloud = false,
   project,
 }: {
   compact?: boolean;
+  cloud?: boolean;
   project: string;
 }) {
   const pathname = usePathname();
+  const items = cloud ? cloudNavItems : navItems;
   return (
     <nav
       aria-label="Primary"
       className={cn("sidebar-nav", compact && "sidebar-nav--compact")}
     >
-      {navItems.map((item) => {
+      {items.map((item) => {
         const href = `/${encodeURIComponent(project)}/${item.segment}`;
         const active = pathname === href || pathname.startsWith(`${href}/`);
         return (

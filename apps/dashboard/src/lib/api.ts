@@ -1,3 +1,5 @@
+import { EXECUTOR_PROJECT_HEADER } from "./executor-key-shared";
+
 export type ExecutionStatus = "pending" | "running" | "succeeded" | "failed";
 
 export type JsonValue =
@@ -152,6 +154,7 @@ export interface ExecutorClientOptions {
   apiKey?: string;
   baseUrl: string;
   fetch?: typeof globalThis.fetch;
+  projectId?: string;
 }
 
 export class ExecutorApiError extends Error {
@@ -185,11 +188,13 @@ export class ExecutorClient {
   readonly #apiKey: string | undefined;
   readonly #baseUrl: string;
   readonly #fetch: typeof globalThis.fetch;
+  readonly #projectId: string | undefined;
 
   constructor({
     apiKey,
     baseUrl,
     fetch: fetchImpl = globalThis.fetch,
+    projectId,
   }: ExecutorClientOptions) {
     if (typeof fetchImpl !== "function") {
       throw new TypeError("ExecutorClient requires a fetch implementation.");
@@ -197,6 +202,7 @@ export class ExecutorClient {
     this.#apiKey = apiKey;
     this.#baseUrl = baseUrl.replace(/\/$/, "");
     this.#fetch = fetchImpl;
+    this.#projectId = projectId;
   }
 
   async health(signal?: AbortSignal): Promise<ExecutorHealth> {
@@ -314,6 +320,9 @@ export class ExecutorClient {
   async #request<T>(path: string, init: RequestInit = {}): Promise<T> {
     const headers = new Headers(init.headers);
     headers.set("Accept", "application/json");
+    if (this.#projectId !== undefined) {
+      headers.set(EXECUTOR_PROJECT_HEADER, this.#projectId);
+    }
     if (this.#apiKey !== undefined) {
       headers.set("Authorization", `Bearer ${this.#apiKey}`);
     }
@@ -383,6 +392,28 @@ export function configuredExecutorBaseUrl(): string {
   );
 }
 
-export function dashboardExecutorClient(): ExecutorClient {
-  return new ExecutorClient({ baseUrl: DASHBOARD_EXECUTOR_PROXY_BASE_URL });
+export function dashboardProjectIdFromPathname(
+  pathname: string,
+): string | undefined {
+  const segment = pathname.split("/").filter(Boolean)[0];
+  if (segment === undefined) return undefined;
+  try {
+    return decodeURIComponent(segment);
+  } catch {
+    return undefined;
+  }
+}
+
+export function dashboardExecutorClient(projectId?: string): ExecutorClient {
+  const selectedProjectId =
+    projectId ??
+    (typeof window === "undefined"
+      ? undefined
+      : dashboardProjectIdFromPathname(window.location.pathname));
+  return new ExecutorClient({
+    baseUrl: DASHBOARD_EXECUTOR_PROXY_BASE_URL,
+    ...(selectedProjectId === undefined
+      ? {}
+      : { projectId: selectedProjectId }),
+  });
 }

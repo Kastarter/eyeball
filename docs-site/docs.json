@@ -239,6 +239,7 @@
       "pages": [
         "self-hosting/overview",
         "self-hosting/local-quickstart",
+        "self-hosting/dashboard",
         "self-hosting/architecture",
         "self-hosting/credential-provider",
         "self-hosting/mcp-gateway",
