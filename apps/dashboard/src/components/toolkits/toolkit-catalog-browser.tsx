@@ -313,12 +313,18 @@ function TryItPanel({
 
     setState({ kind: "running" });
     try {
-      const execution = await dashboardExecutorClient().execute({
-        input: result.value as Readonly<Record<string, JsonValue>>,
-        mode: selectedTool.annotations.async ? "async" : "sync",
-        tool: selectedTool.name,
-        userId: userId.trim(),
-      });
+      const execution = await dashboardExecutorClient().execute(
+        {
+          input: result.value as Readonly<Record<string, JsonValue>>,
+          mode: selectedTool.annotations.async ? "async" : "sync",
+          tool: selectedTool.name,
+          userId: userId.trim(),
+        },
+        // RFC 001: mutating tools require caller-supplied idempotency identity.
+        selectedTool.annotations.readOnly
+          ? {}
+          : { idempotencyKey: `dashboard-tryit:${selectedTool.name}:${crypto.randomUUID()}` },
+      );
       if (execution.status === "failed") {
         setState({
           code: execution.error.code,
