@@ -731,6 +731,22 @@ export function VoiceAgentsScreen({
     }));
   }
 
+  async function resolveTwilioConnectionId(): Promise<string> {
+    const page = await dashboardExecutorClient().listConnections();
+    const match = page.connections.find(
+      (connection) =>
+        connection.toolkit === "twilio" &&
+        connection.userId === DASHBOARD_USER_ID &&
+        connection.status === "connected",
+    );
+    if (match === undefined) {
+      throw new Error(
+        `No connected twilio connection exists for ${DASHBOARD_USER_ID}; create one on the Connections screen first.`,
+      );
+    }
+    return match.connectionId;
+  }
+
   async function startTestCall() {
     if (selectedDefinition === undefined) return;
     setTestState("starting");
@@ -745,7 +761,7 @@ export function VoiceAgentsScreen({
           revision: selectedDefinition.revision,
           to: "+966500000111",
           from: "+966500000222",
-          transportConnectionId: "conn_twilio_dashboard_demo",
+          transportConnectionId: await resolveTwilioConnectionId(),
           script: RESERVATION_SCRIPT,
         },
         "async",
