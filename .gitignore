@@ -22,3 +22,6 @@ __pycache__/
 
 # nested standalone repo (eyeball-mocks)
 /mocks/
+
+# nested private repo (eyeball-cloud)
+/cloud/
