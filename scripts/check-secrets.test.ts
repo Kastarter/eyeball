@@ -3,7 +3,7 @@ import { mkdtempSync, rmSync, unlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { describe, expect, it } from "vitest";
-import { scanRepository, scanText } from "./check-secrets.js";
+import { scanRepository, scanText } from "./secret-scan.js";
 
 describe("tracked-file secret scanner", () => {
   it("detects known production prefixes without returning the secret", () => {
