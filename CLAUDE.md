@@ -35,6 +35,7 @@ Open-core tool and integration platform for AI agents: one typed, authenticated 
 - Dashboard cloud proxying exposes only `/v1/*`; executor proxying exposes only `/health` and `/v1/*`, and both construct upstream URLs from allowlisted inputs.
 - Executor telemetry and cloud audit redaction treat named URL fields as secret-bearing because path/query credentials remain in supported callback protocols.
 - `pnpm test:contract` defaults to built mocks and writes ignored `apps/executor/contract-report.json`.
+- `pnpm bench` runs the executor/Mockhouse in-process baseline: 200 warmups, 2,000 measured requests, max 32 in flight, GC/vm_stat sampling, and a 1,500 MiB RSS abort ceiling.
 - Real certification uses `EYEBALL_CONTRACT_TARGET=real`; missing credentials are explicit skips.
 - `scripts/generate-docs.ts` owns generated toolkit pages and nav; never hand-edit them.
 - `scripts/generate-sdk-docs.ts` extracts the SDK export graph with the TypeScript compiler API; `docs-site/sdk/generated/` is checksum-guarded and never hand-edited.
@@ -68,6 +69,7 @@ Open-core tool and integration platform for AI agents: one typed, authenticated 
 - `docs/MOCKS.md` and `docs/TESTING.md` are authoritative for mock-versus-real parity.
 - The five selected Activepieces npm pieces are self-contained bundles; framework/shared are explicit bridge compatibility pins, not peers declared by those artifacts.
 - The self-hosted docs app statically generates every navigation path and builds search/TOC data from the authored MDX.
+- Catalog registries memoize deep-frozen materialized tool/trigger lookups; schema validators skip repeated fingerprints only for recursively frozen schemas, preserving mutation checks for mutable inputs.
 - The dashboard uses one feature-level mode seam: auth, orgs/projects, connections, API keys, and audit switch to the cloud control plane while toolkits, executions, and voice agents retain the executor/catalog data paths.
 
 ## Current State
@@ -94,6 +96,7 @@ Open-core tool and integration platform for AI agents: one typed, authenticated 
 - A separately deployed Python voice worker provides versioned remote sessions, SQLite event durability, stable child execution identity, and account-free fake/chat contract suites; Pipecat/Twilio/LiveKit paths are certification scaffolding, not proven live-call capability.
 - Voice agents expose LiveKit web-session activation plus Twilio buy/list/bind/detach/release inventory flows against account-free mocks; reassignment is detach then attach, and bound numbers cannot be released.
 - The security posture pass added product/cloud threat models, an incident-response runbook, SHA-pinned CI actions, trigger-secret rotation, and query/log/redirect hardening.
+- The 2026-07-19 Apple M4 in-process executor baseline is 0.247 ms p95 and 4,922 req/s for sync Gmail execution; adapter dispatch is the largest named traced stage.
 
 ## Known Issues
 

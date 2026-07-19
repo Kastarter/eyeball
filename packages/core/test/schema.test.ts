@@ -222,6 +222,39 @@ describe("input schema validation", () => {
     });
   });
 
+  it("keeps mutation detection for schemas with only a frozen root", () => {
+    const shallowFrozenSchema = Object.freeze(
+      structuredClone(tool.inputSchema),
+    );
+    const shallowFrozenTool = { inputSchema: shallowFrozenSchema };
+    expect(
+      validateInput(shallowFrozenTool, {
+        to: "buyer@example.com",
+        body: "First",
+      }).ok,
+    ).toBe(true);
+
+    const bodySchema = shallowFrozenSchema.properties?.body;
+    if (bodySchema === undefined || typeof bodySchema === "boolean") {
+      throw new Error("Fixture body schema is missing.");
+    }
+    bodySchema.minLength = 2;
+    expect(
+      validateInput(shallowFrozenTool, {
+        to: "buyer@example.com",
+        body: "Second",
+      }),
+    ).toMatchObject({
+      ok: false,
+      errors: [
+        {
+          keyword: "schema_profile",
+          message: expect.stringContaining("changed"),
+        },
+      ],
+    });
+  });
+
   it("does not fabricate required adapter output from schema defaults", () => {
     const outputTool = {
       outputSchema: {

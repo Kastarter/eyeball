@@ -601,6 +601,8 @@ export class CatalogRegistry {
   readonly #contracts = new Map<string, CapabilityToolContract>();
   readonly #triggerContracts = new Map<string, CapabilityTriggerContract>();
   readonly #manifests = new Map<string, ProviderManifest>();
+  readonly #materializedTools = new Map<string, ToolDefinition>();
+  readonly #materializedTriggers = new Map<string, TriggerDefinition>();
   readonly #embeddingProvider: EmbeddingProvider | undefined;
   #searchIndex: CatalogToolSearchIndex | undefined;
   readonly #searchIndexAccessor = (): CatalogToolSearchIndex =>
@@ -654,6 +656,7 @@ export class CatalogRegistry {
       this.#contracts.set(key, contract);
     }
     if (pending.size > 0) {
+      this.#materializedTools.clear();
       this.#searchIndex = undefined;
     }
     return this;
@@ -703,6 +706,9 @@ export class CatalogRegistry {
     }
     for (const [key, contract] of pending) {
       this.#triggerContracts.set(key, contract);
+    }
+    if (pending.size > 0) {
+      this.#materializedTriggers.clear();
     }
     return this;
   }
@@ -903,6 +909,8 @@ export class CatalogRegistry {
     }
 
     this.#manifests.set(manifest.toolkit.slug, clone(manifest));
+    this.#materializedTools.clear();
+    this.#materializedTriggers.clear();
     this.#searchIndex = undefined;
     return this;
   }
@@ -911,6 +919,8 @@ export class CatalogRegistry {
     if (!isCanonicalToolName(name)) {
       return undefined;
     }
+    const cached = this.#materializedTools.get(name);
+    if (cached !== undefined) return cached;
 
     const separator = name.indexOf(".");
     const toolkit = name.slice(0, separator);
@@ -931,13 +941,17 @@ export class CatalogRegistry {
     if (contract === undefined) {
       return undefined;
     }
-    return materializeTool(contract, manifest, implementation);
+    const materialized = materializeTool(contract, manifest, implementation);
+    this.#materializedTools.set(name, materialized);
+    return materialized;
   }
 
   getTrigger(name: string): TriggerDefinition | undefined {
     if (!isCanonicalToolName(name)) {
       return undefined;
     }
+    const cached = this.#materializedTriggers.get(name);
+    if (cached !== undefined) return cached;
     const separator = name.indexOf(".");
     const toolkit = name.slice(0, separator);
     const canonicalTrigger = name.slice(separator + 1);
@@ -951,9 +965,10 @@ export class CatalogRegistry {
     const contract = this.#triggerContracts.get(
       triggerImplementationKey(implementation),
     );
-    return contract === undefined
-      ? undefined
-      : materializeTrigger(contract, manifest, implementation);
+    if (contract === undefined) return undefined;
+    const materialized = materializeTrigger(contract, manifest, implementation);
+    this.#materializedTriggers.set(name, materialized);
+    return materialized;
   }
 
   getEffectiveScopes(name: string): EffectiveScopes | undefined {
@@ -1035,10 +1050,10 @@ export class CatalogRegistry {
         ) {
           continue;
         }
-        const contract = this.#contracts.get(implementationKey(implementation));
-        if (contract !== undefined) {
-          tools.push(materializeTool(contract, manifest, implementation));
-        }
+        const tool = this.getTool(
+          `${manifest.toolkit.slug}.${implementation.canonicalTool}`,
+        );
+        if (tool !== undefined) tools.push(tool);
       }
     }
 
@@ -1070,12 +1085,10 @@ export class CatalogRegistry {
         ) {
           continue;
         }
-        const contract = this.#triggerContracts.get(
-          triggerImplementationKey(implementation),
+        const trigger = this.getTrigger(
+          `${manifest.toolkit.slug}.${implementation.canonicalTrigger}`,
         );
-        if (contract !== undefined) {
-          triggers.push(materializeTrigger(contract, manifest, implementation));
-        }
+        if (trigger !== undefined) triggers.push(trigger);
       }
     }
     return triggers.sort((left, right) => left.name.localeCompare(right.name));

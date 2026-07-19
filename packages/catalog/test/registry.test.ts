@@ -63,6 +63,19 @@ describe("catalog registry materialization", () => {
     expect(Object.isFrozen(tool?.inputSchema.properties)).toBe(true);
   });
 
+  it("reuses immutable materialized lookups", () => {
+    const registry = createRegistry();
+    const tool = defined(registry.getTool("gmail.send_email"));
+    const trigger = defined(registry.getTrigger("gmail.email_received"));
+
+    expect(registry.getTool("gmail.send_email")).toBe(tool);
+    expect(
+      registry.listTools().find(({ name }) => name === "gmail.send_email"),
+    ).toBe(tool);
+    expect(registry.getTrigger("gmail.email_received")).toBe(trigger);
+    expect(registry.listTriggers()).toContain(trigger);
+  });
+
   it("accepts only the selected provider extension namespace", () => {
     const tool = defined(createRegistry().getTool("gmail.send_email"));
     expect(

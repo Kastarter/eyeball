@@ -3,11 +3,12 @@
 import { resolve } from "node:path";
 import { pathToFileURL } from "node:url";
 import { serve } from "@hono/node-server";
+import { InMemoryDevVault } from "../apps/executor/src/dev-vault.js";
 import {
-  createExecutorApp,
   ExecutionEngine,
-  InMemoryDevVault,
-} from "../apps/executor/src/index.js";
+  type ExecutionEngineOptions,
+} from "../apps/executor/src/engine.js";
+import { createExecutorApp } from "../apps/executor/src/routes.js";
 import { createMcpGatewayApp } from "../apps/mcp-gateway/src/index.js";
 import { createMockhouse } from "../mocks/apps/mockhouse/src/index.js";
 import { defaultCatalog } from "../packages/catalog/src/index.js";
@@ -57,8 +58,18 @@ export interface InProcessDevStackRuntime {
   userId: string;
   providerCount: number;
   mockhouseApp: ReturnType<typeof createMockhouse>["app"];
+  mockhouseProviders: ReturnType<typeof createMockhouse>["providers"];
+  executorEngine: ExecutionEngine;
   executorApp: ReturnType<typeof createExecutorApp>;
   mcpGatewayApp: ReturnType<typeof createMcpGatewayApp>;
+}
+
+export interface InProcessDevStackOptions extends DevStackOptions {
+  /** Deterministic, in-process-only engine seams used by tests and benchmarks. */
+  engineOptions?: Pick<
+    ExecutionEngineOptions,
+    "clock" | "executionIdFactory" | "fileIdFactory" | "telemetryRuntime"
+  >;
 }
 
 interface ListeningServer {
@@ -238,7 +249,11 @@ async function createMockBackedExecutor(
   identity: StackIdentity,
   env: Readonly<Record<string, string | undefined>>,
   fetchImpl?: typeof fetch,
-): Promise<ReturnType<typeof createExecutorApp>> {
+  engineOptions: InProcessDevStackOptions["engineOptions"] = {},
+): Promise<{
+  app: ReturnType<typeof createExecutorApp>;
+  engine: ExecutionEngine;
+}> {
   const providerSlugs = new Set(
     mockhouse.providers.map((provider) => provider.slug),
   );
@@ -270,13 +285,17 @@ async function createMockBackedExecutor(
     credentialProvider: devVault,
     env: executorEnv,
     ...(fetchImpl === undefined ? {} : { fetchImpl }),
+    ...engineOptions,
   });
-  return createExecutorApp({
+  return {
     engine,
-    devVault,
-    apiKeys: { [identity.apiKey]: identity.projectId },
-    env: executorEnv,
-  });
+    app: createExecutorApp({
+      engine,
+      devVault,
+      apiKeys: { [identity.apiKey]: identity.projectId },
+      env: executorEnv,
+    }),
+  };
 }
 
 function listen(fetch: FetchHandler, port: number): Promise<ListeningServer> {
@@ -339,7 +358,7 @@ export async function startDevStack(
     const mockhouse = createMockhouse();
     const mockhouseServer = await listen(mockhouse.app.fetch, mockhousePort);
     servers.push(mockhouseServer.server);
-    const executorApp = await createMockBackedExecutor(
+    const { app: executorApp } = await createMockBackedExecutor(
       mockhouse,
       mockhouseServer.url,
       identity,
@@ -381,7 +400,7 @@ export async function startDevStack(
 
 /** Creates the same three-service composition without opening sockets. */
 export async function createInProcessDevStack(
-  options: DevStackOptions = {},
+  options: InProcessDevStackOptions = {},
 ): Promise<InProcessDevStackRuntime> {
   const env = options.env ?? process.env;
   const identity = stackIdentity(options, env);
@@ -389,13 +408,15 @@ export async function createInProcessDevStack(
   const executorUrl = "http://executor.dev-stack.test";
   const mcpGatewayOrigin = "http://mcp-gateway.dev-stack.test";
   const mockhouse = createMockhouse();
-  const executorApp = await createMockBackedExecutor(
-    mockhouse,
-    mockhouseUrl,
-    identity,
-    env,
-    inProcessFetch(mockhouseUrl, mockhouse.app),
-  );
+  const { app: executorApp, engine: executorEngine } =
+    await createMockBackedExecutor(
+      mockhouse,
+      mockhouseUrl,
+      identity,
+      env,
+      inProcessFetch(mockhouseUrl, mockhouse.app),
+      options.engineOptions,
+    );
   const mcpGatewayApp = createMcpGatewayApp({
     executorBaseUrl: executorUrl,
     fetchImpl: inProcessFetch(executorUrl, executorApp),
@@ -409,6 +430,8 @@ export async function createInProcessDevStack(
     ...identity,
     providerCount: mockhouse.providers.length,
     mockhouseApp: mockhouse.app,
+    mockhouseProviders: mockhouse.providers,
+    executorEngine,
     executorApp,
     mcpGatewayApp,
   };

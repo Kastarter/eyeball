@@ -1,0 +1,549 @@
+{
+  "schemaVersion": 1,
+  "baselineDate": "2026-07-19",
+  "generatedAt": "2026-07-19T14:24:41.456Z",
+  "methodology": "in-process app.request with in-process Mockhouse fetch injection",
+  "environment": {
+    "node": "v26.4.0",
+    "v8": "14.6.202.34-node.21",
+    "platform": "darwin",
+    "release": "25.0.0",
+    "architecture": "arm64",
+    "cpuModel": "Apple M4",
+    "cpuCount": 10,
+    "totalMemoryBytes": 25769803776,
+    "nodeOptions": "--max-old-space-size=2048",
+    "attributionSdkVersion": "2.2.0",
+    "otelEnabledForBaseline": false,
+    "gcObservable": true,
+    "maxInFlight": 32,
+    "rssAbortBytes": 1572864000,
+    "attachmentBytes": 1048576,
+    "rateLimitOverrides": {
+      "EYEBALL_RATE_LIMIT_REQUESTS_PER_MINUTE": "1000000",
+      "EYEBALL_RATE_LIMIT_REQUEST_BURST": "1000000",
+      "EYEBALL_RATE_LIMIT_EXECUTE_PER_MINUTE": "1000000",
+      "EYEBALL_RATE_LIMIT_EXECUTE_BURST": "1000000",
+      "EYEBALL_RATE_LIMIT_DAILY_EXECUTIONS": "off"
+    }
+  },
+  "scenarios": [
+    {
+      "id": "health_http_floor",
+      "label": "Health HTTP floor",
+      "concurrency": 1,
+      "warmupIterations": 200,
+      "measuredIterations": 2000,
+      "latencyMs": {
+        "p50": 0.007,
+        "p95": 0.016,
+        "p99": 0.028,
+        "max": 0.193
+      },
+      "throughputRps": 103317.3,
+      "rssBeforeBytes": 213975040,
+      "rssAfterBytes": 217989120,
+      "rssDeltaBytes": 4014080,
+      "rssPeakBytes": 217989120,
+      "gcCount": 2
+    },
+    {
+      "id": "raw_mock_gmail_send",
+      "label": "Raw in-process Gmail mock call",
+      "concurrency": 1,
+      "warmupIterations": 200,
+      "measuredIterations": 2000,
+      "latencyMs": {
+        "p50": 0.038,
+        "p95": 0.047,
+        "p99": 0.07,
+        "max": 0.661
+      },
+      "throughputRps": 24538.6,
+      "rssBeforeBytes": 218316800,
+      "rssAfterBytes": 218841088,
+      "rssDeltaBytes": 524288,
+      "rssPeakBytes": 218841088,
+      "gcCount": 2
+    },
+    {
+      "id": "sync_execute_gmail_c1",
+      "label": "Sync Gmail execute (1 in flight)",
+      "concurrency": 1,
+      "warmupIterations": 200,
+      "measuredIterations": 2000,
+      "latencyMs": {
+        "p50": 0.191,
+        "p95": 0.247,
+        "p99": 0.353,
+        "max": 1.333
+      },
+      "throughputRps": 4922,
+      "rssBeforeBytes": 219070464,
+      "rssAfterBytes": 221921280,
+      "rssDeltaBytes": 2850816,
+      "rssPeakBytes": 221921280,
+      "gcCount": 4
+    },
+    {
+      "id": "sync_idempotency_replay",
+      "label": "Sync idempotency replay",
+      "concurrency": 1,
+      "warmupIterations": 200,
+      "measuredIterations": 2000,
+      "latencyMs": {
+        "p50": 0.066,
+        "p95": 0.081,
+        "p99": 0.118,
+        "max": 0.463
+      },
+      "throughputRps": 14432.5,
+      "rssBeforeBytes": 221872128,
+      "rssAfterBytes": 222052352,
+      "rssDeltaBytes": 180224,
+      "rssPeakBytes": 222052352,
+      "gcCount": 3
+    },
+    {
+      "id": "async_submit_poll_terminal",
+      "label": "Async submit + terminal poll",
+      "concurrency": 1,
+      "warmupIterations": 200,
+      "measuredIterations": 2000,
+      "latencyMs": {
+        "p50": 0.243,
+        "p95": 0.302,
+        "p99": 0.53,
+        "max": 1.53
+      },
+      "throughputRps": 3942.4,
+      "rssBeforeBytes": 222150656,
+      "rssAfterBytes": 223019008,
+      "rssDeltaBytes": 868352,
+      "rssPeakBytes": 223019008,
+      "gcCount": 4
+    },
+    {
+      "id": "sync_execute_1mb_attachment",
+      "label": "Sync Gmail execute + 1 MiB staged file",
+      "concurrency": 1,
+      "warmupIterations": 200,
+      "measuredIterations": 2000,
+      "latencyMs": {
+        "p50": 10.586,
+        "p95": 13.875,
+        "p99": 15.187,
+        "max": 17.273
+      },
+      "throughputRps": 90.8,
+      "rssBeforeBytes": 442253312,
+      "rssAfterBytes": 415727616,
+      "rssDeltaBytes": -26525696,
+      "rssPeakBytes": 495550464,
+      "gcCount": 185
+    },
+    {
+      "id": "sync_execute_gmail_c8",
+      "label": "Sync Gmail execute (8 in flight)",
+      "concurrency": 8,
+      "warmupIterations": 200,
+      "measuredIterations": 2000,
+      "latencyMs": {
+        "p50": 1.371,
+        "p95": 1.731,
+        "p99": 1.873,
+        "max": 2.524
+      },
+      "throughputRps": 5473.6,
+      "rssBeforeBytes": 419495936,
+      "rssAfterBytes": 425213952,
+      "rssDeltaBytes": 5718016,
+      "rssPeakBytes": 425213952,
+      "gcCount": 3
+    },
+    {
+      "id": "sync_execute_gmail_c32",
+      "label": "Sync Gmail execute (32 in flight)",
+      "concurrency": 32,
+      "warmupIterations": 200,
+      "measuredIterations": 2000,
+      "latencyMs": {
+        "p50": 5.174,
+        "p95": 5.773,
+        "p99": 6.459,
+        "max": 7.116
+      },
+      "throughputRps": 5934.3,
+      "rssBeforeBytes": 425213952,
+      "rssAfterBytes": 427130880,
+      "rssDeltaBytes": 1916928,
+      "rssPeakBytes": 427130880,
+      "gcCount": 3
+    },
+    {
+      "id": "gmail_trigger_poll_tick",
+      "label": "Gmail trigger poll tick",
+      "concurrency": 1,
+      "warmupIterations": 200,
+      "measuredIterations": 2000,
+      "latencyMs": {
+        "p50": 0.155,
+        "p95": 0.178,
+        "p99": 0.22,
+        "max": 0.511
+      },
+      "throughputRps": 6326.2,
+      "rssBeforeBytes": 427376640,
+      "rssAfterBytes": 427425792,
+      "rssDeltaBytes": 49152,
+      "rssPeakBytes": 427425792,
+      "gcCount": 3
+    },
+    {
+      "id": "webhook_delivery_attempt",
+      "label": "Signed webhook delivery attempt",
+      "concurrency": 1,
+      "warmupIterations": 200,
+      "measuredIterations": 2000,
+      "latencyMs": {
+        "p50": 0.038,
+        "p95": 0.05,
+        "p99": 0.075,
+        "max": 1.656
+      },
+      "throughputRps": 23961.6,
+      "rssBeforeBytes": 427491328,
+      "rssAfterBytes": 428130304,
+      "rssDeltaBytes": 638976,
+      "rssPeakBytes": 428130304,
+      "gcCount": 2
+    }
+  ],
+  "stageAttribution": {
+    "warmupIterations": 200,
+    "measuredIterations": 2000,
+    "rootP50Microseconds": 200.3,
+    "stages": [
+      {
+        "stage": "validate",
+        "p50Microseconds": 28.7,
+        "shareOfRootP50": 14.3
+      },
+      {
+        "stage": "idempotency",
+        "p50Microseconds": 14.1,
+        "shareOfRootP50": 7.1
+      },
+      {
+        "stage": "credentials",
+        "p50Microseconds": 44.3,
+        "shareOfRootP50": 22.1
+      },
+      {
+        "stage": "dispatch",
+        "p50Microseconds": 54.2,
+        "shareOfRootP50": 27.1
+      },
+      {
+        "stage": "normalize",
+        "p50Microseconds": 6.5,
+        "shareOfRootP50": 3.2
+      },
+      {
+        "stage": "store",
+        "p50Microseconds": 8.2,
+        "shareOfRootP50": 4.1
+      },
+      {
+        "stage": "unattributed",
+        "p50Microseconds": 43.2,
+        "shareOfRootP50": 21.6
+      }
+    ],
+    "topCostCenter": "dispatch",
+    "note": "OTel in-memory tracing is enabled only for attribution. Nested set_connection time is charged to store, not credentials; unattributed includes root-only orchestration and tracing overhead."
+  },
+  "comparison": {
+    "syncExecuteP95Ms": 0.247,
+    "rawMockP95Ms": 0.047,
+    "estimatedAppLayerOverheadP95Ms": 0.2
+  },
+  "vmStat": [
+    {
+      "afterScenario": "start",
+      "capturedAt": "2026-07-19T14:24:12.165Z",
+      "processRssBytes": 214597632,
+      "hostFreeMemoryBytes": 1571667968,
+      "available": true,
+      "pageSizeBytes": 16384,
+      "pages": {
+        "free": 87604,
+        "active": 315950,
+        "inactive": 306689,
+        "speculative": 8095,
+        "throttled": 0,
+        "wired_down": 168043,
+        "purgeable": 12083,
+        "copy-on-write": 41209623,
+        "zero_filled": 442890322,
+        "reactivated": 55328080,
+        "purged": 7305351,
+        "stored_in_compressor": 1449876,
+        "occupied_by_compressor": 645185
+      }
+    },
+    {
+      "afterScenario": "health_http_floor",
+      "capturedAt": "2026-07-19T14:24:12.225Z",
+      "processRssBytes": 217989120,
+      "hostFreeMemoryBytes": 1566212096,
+      "available": true,
+      "pageSizeBytes": 16384,
+      "pages": {
+        "free": 87516,
+        "active": 316093,
+        "inactive": 306766,
+        "speculative": 8099,
+        "throttled": 0,
+        "wired_down": 168039,
+        "purgeable": 12083,
+        "copy-on-write": 41209642,
+        "zero_filled": 442890636,
+        "reactivated": 55328080,
+        "purged": 7305351,
+        "stored_in_compressor": 1449875,
+        "occupied_by_compressor": 645185
+      }
+    },
+    {
+      "afterScenario": "raw_mock_gmail_send",
+      "capturedAt": "2026-07-19T14:24:12.402Z",
+      "processRssBytes": 218742784,
+      "hostFreeMemoryBytes": 1566212096,
+      "available": true,
+      "pageSizeBytes": 16384,
+      "pages": {
+        "free": 88040,
+        "active": 315257,
+        "inactive": 306819,
+        "speculative": 8140,
+        "throttled": 0,
+        "wired_down": 168042,
+        "purgeable": 11460,
+        "copy-on-write": 41209661,
+        "zero_filled": 442890907,
+        "reactivated": 55328080,
+        "purged": 7305351,
+        "stored_in_compressor": 1449873,
+        "occupied_by_compressor": 645184
+      }
+    },
+    {
+      "afterScenario": "sync_execute_gmail_c1",
+      "capturedAt": "2026-07-19T14:24:12.970Z",
+      "processRssBytes": 222035968,
+      "hostFreeMemoryBytes": 1566212096,
+      "available": true,
+      "pageSizeBytes": 16384,
+      "pages": {
+        "free": 87922,
+        "active": 316777,
+        "inactive": 305830,
+        "speculative": 8129,
+        "throttled": 0,
+        "wired_down": 168051,
+        "purgeable": 11444,
+        "copy-on-write": 41209730,
+        "zero_filled": 442891866,
+        "reactivated": 55328080,
+        "purged": 7305351,
+        "stored_in_compressor": 1449777,
+        "occupied_by_compressor": 645119
+      }
+    },
+    {
+      "afterScenario": "sync_idempotency_replay",
+      "capturedAt": "2026-07-19T14:24:13.199Z",
+      "processRssBytes": 222052352,
+      "hostFreeMemoryBytes": 1576042496,
+      "available": true,
+      "pageSizeBytes": 16384,
+      "pages": {
+        "free": 88086,
+        "active": 316730,
+        "inactive": 305894,
+        "speculative": 8129,
+        "throttled": 0,
+        "wired_down": 168051,
+        "purgeable": 11444,
+        "copy-on-write": 41209749,
+        "zero_filled": 442891969,
+        "reactivated": 55328080,
+        "purged": 7305351,
+        "stored_in_compressor": 1449775,
+        "occupied_by_compressor": 645115
+      }
+    },
+    {
+      "afterScenario": "async_submit_poll_terminal",
+      "capturedAt": "2026-07-19T14:24:13.863Z",
+      "processRssBytes": 223035392,
+      "hostFreeMemoryBytes": 1577254912,
+      "available": true,
+      "pageSizeBytes": 16384,
+      "pages": {
+        "free": 87648,
+        "active": 316955,
+        "inactive": 305230,
+        "speculative": 8129,
+        "throttled": 0,
+        "wired_down": 168073,
+        "purgeable": 8520,
+        "copy-on-write": 41209768,
+        "zero_filled": 442892658,
+        "reactivated": 55328080,
+        "purged": 7305351,
+        "stored_in_compressor": 1449764,
+        "occupied_by_compressor": 645111
+      }
+    },
+    {
+      "afterScenario": "sync_execute_1mb_attachment",
+      "capturedAt": "2026-07-19T14:24:39.347Z",
+      "processRssBytes": 402800640,
+      "hostFreeMemoryBytes": 1516650496,
+      "available": true,
+      "pageSizeBytes": 16384,
+      "pages": {
+        "free": 85031,
+        "active": 317265,
+        "inactive": 309363,
+        "speculative": 7559,
+        "throttled": 0,
+        "wired_down": 168336,
+        "purgeable": 8487,
+        "copy-on-write": 41211581,
+        "zero_filled": 445191288,
+        "reactivated": 55328205,
+        "purged": 7305543,
+        "stored_in_compressor": 1447798,
+        "occupied_by_compressor": 644165
+      }
+    },
+    {
+      "afterScenario": "sync_execute_gmail_c8",
+      "capturedAt": "2026-07-19T14:24:39.813Z",
+      "processRssBytes": 425213952,
+      "hostFreeMemoryBytes": 1495957504,
+      "available": true,
+      "pageSizeBytes": 16384,
+      "pages": {
+        "free": 83500,
+        "active": 319278,
+        "inactive": 308650,
+        "speculative": 7571,
+        "throttled": 0,
+        "wired_down": 168513,
+        "purgeable": 6050,
+        "copy-on-write": 41211600,
+        "zero_filled": 445194227,
+        "reactivated": 55328205,
+        "purged": 7305543,
+        "stored_in_compressor": 1447785,
+        "occupied_by_compressor": 644164
+      }
+    },
+    {
+      "afterScenario": "sync_execute_gmail_c32",
+      "capturedAt": "2026-07-19T14:24:40.246Z",
+      "processRssBytes": 427278336,
+      "hostFreeMemoryBytes": 1488257024,
+      "available": true,
+      "pageSizeBytes": 16384,
+      "pages": {
+        "free": 83291,
+        "active": 319063,
+        "inactive": 309035,
+        "speculative": 7566,
+        "throttled": 0,
+        "wired_down": 168519,
+        "purgeable": 8487,
+        "copy-on-write": 41211619,
+        "zero_filled": 445194479,
+        "reactivated": 55328205,
+        "purged": 7305543,
+        "stored_in_compressor": 1447727,
+        "occupied_by_compressor": 644129
+      }
+    },
+    {
+      "afterScenario": "gmail_trigger_poll_tick",
+      "capturedAt": "2026-07-19T14:24:40.636Z",
+      "processRssBytes": 427425792,
+      "hostFreeMemoryBytes": 1491517440,
+      "available": true,
+      "pageSizeBytes": 16384,
+      "pages": {
+        "free": 83495,
+        "active": 316845,
+        "inactive": 308829,
+        "speculative": 7561,
+        "throttled": 0,
+        "wired_down": 170987,
+        "purgeable": 6055,
+        "copy-on-write": 41211638,
+        "zero_filled": 445194597,
+        "reactivated": 55328205,
+        "purged": 7305543,
+        "stored_in_compressor": 1447723,
+        "occupied_by_compressor": 644127
+      }
+    },
+    {
+      "afterScenario": "webhook_delivery_attempt",
+      "capturedAt": "2026-07-19T14:24:40.768Z",
+      "processRssBytes": 428130304,
+      "hostFreeMemoryBytes": 1490468864,
+      "available": true,
+      "pageSizeBytes": 16384,
+      "pages": {
+        "free": 83175,
+        "active": 318113,
+        "inactive": 310051,
+        "speculative": 7561,
+        "throttled": 0,
+        "wired_down": 168504,
+        "purgeable": 8487,
+        "copy-on-write": 41211657,
+        "zero_filled": 445194740,
+        "reactivated": 55328205,
+        "purged": 7305543,
+        "stored_in_compressor": 1447723,
+        "occupied_by_compressor": 644127
+      }
+    },
+    {
+      "afterScenario": "stage_attribution",
+      "capturedAt": "2026-07-19T14:24:41.453Z",
+      "processRssBytes": 467763200,
+      "hostFreeMemoryBytes": 1441136640,
+      "available": true,
+      "pageSizeBytes": 16384,
+      "pages": {
+        "free": 80520,
+        "active": 319544,
+        "inactive": 310894,
+        "speculative": 7461,
+        "throttled": 0,
+        "wired_down": 168668,
+        "purgeable": 8500,
+        "copy-on-write": 41211788,
+        "zero_filled": 445198522,
+        "reactivated": 55328205,
+        "purged": 7305543,
+        "stored_in_compressor": 1447711,
+        "occupied_by_compressor": 644123
+      }
+    }
+  ]
+}

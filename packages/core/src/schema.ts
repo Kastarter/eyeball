@@ -35,6 +35,7 @@ export type InputValidationResult =
 
 interface CachedValidator {
   fingerprint: string;
+  immutable: boolean;
   validator: ValidateFunction<unknown>;
 }
 
@@ -75,6 +76,17 @@ function canonicalize(value: unknown): unknown {
 
 function schemaFingerprint(schema: ObjectSchema202012): string {
   return JSON.stringify(canonicalize(schema));
+}
+
+function isDeeplyFrozen(
+  value: unknown,
+  seen: WeakSet<object> = new WeakSet(),
+): boolean {
+  if (typeof value !== "object" || value === null) return true;
+  if (!Object.isFrozen(value)) return false;
+  if (seen.has(value)) return true;
+  seen.add(value);
+  return Object.values(value).every((child) => isDeeplyFrozen(child, seen));
 }
 
 function issue(
@@ -118,15 +130,17 @@ function compileValidator(
   schema: ObjectSchema202012,
   useDefaults: boolean,
 ): ValidateFunction<unknown> {
-  const fingerprint = schemaFingerprint(schema);
   const identityCache = useDefaults ? inputValidators : outputValidators;
   const cached = identityCache.get(schema);
   if (cached !== undefined) {
-    if (cached.fingerprint !== fingerprint) {
+    if (!cached.immutable && cached.fingerprint !== schemaFingerprint(schema)) {
       throw new Error("Schema object changed after it was compiled.");
     }
     return cached.validator;
   }
+
+  const fingerprint = schemaFingerprint(schema);
+  const immutable = isDeeplyFrozen(schema);
 
   const idCacheKey =
     schema.$id === undefined
@@ -140,7 +154,7 @@ function compileValidator(
         `Schema $id ${schema.$id} is already registered with a different definition.`,
       );
     }
-    identityCache.set(schema, identified);
+    identityCache.set(schema, { ...identified, immutable });
     return identified.validator;
   }
 
@@ -148,10 +162,10 @@ function compileValidator(
   // registrations in one instance. Compile each unique schema identity in isolation,
   // then share the validator across structurally equivalent copies by $id.
   const compiled = createCompiler(useDefaults).compile(schema as AnySchema);
-  const entry = { fingerprint, validator: compiled };
+  const entry = { fingerprint, immutable, validator: compiled };
   identityCache.set(schema, entry);
   if (idCacheKey !== undefined) {
-    validatorsById.set(idCacheKey, entry);
+    validatorsById.set(idCacheKey, { fingerprint, validator: compiled });
   }
   return compiled;
 }
