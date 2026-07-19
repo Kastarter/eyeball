@@ -1,0 +1,27 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1200" height="630" viewBox="0 0 1200 630">
+  <defs>
+    <pattern id="grid" width="48" height="48" patternUnits="userSpaceOnUse">
+      <path d="M48 0H0V48" fill="none" stroke="#24242e" stroke-width="1" opacity=".5"/>
+    </pattern>
+    <radialGradient id="glow" cx="0" cy="0" r="1" gradientTransform="matrix(0 360 -440 0 940 50)" gradientUnits="userSpaceOnUse">
+      <stop stop-color="#7c5cff" stop-opacity=".3"/>
+      <stop offset="1" stop-color="#7c5cff" stop-opacity="0"/>
+    </radialGradient>
+  </defs>
+  <rect width="1200" height="630" fill="#0a0a0f"/>
+  <rect width="1200" height="630" fill="url(#grid)"/>
+  <rect width="1200" height="630" fill="url(#glow)"/>
+  <g transform="translate(88 76)">
+    <path fill="#7c5cff" fill-rule="evenodd" d="M32 7a25 25 0 1 1 0 50 25 25 0 0 1 0-50Zm0 17.9a7.1 7.1 0 1 0 0 14.2 7.1 7.1 0 0 0 0-14.2Z"/>
+    <g stroke="#0a0a0f" stroke-linecap="round" stroke-width="3">
+      <path d="m32 8-6.8 18.5"/><path d="m52.8 20-19.4 3.4"/><path d="m52.8 44-12.6-15.1"/>
+      <path d="m32 56 6.8-18.5"/><path d="m11.2 44 19.4-3.4"/><path d="m11.2 20 12.6 15.1"/>
+    </g>
+  </g>
+  <text x="168" y="118" fill="#f4f4f7" font-family="Geist, -apple-system, BlinkMacSystemFont, Segoe UI, sans-serif" font-size="42" font-weight="650" letter-spacing="-1">eyeball</text>
+  <text x="88" y="310" fill="#f4f4f7" font-family="Geist, -apple-system, BlinkMacSystemFont, Segoe UI, sans-serif" font-size="78" font-weight="650" letter-spacing="-3">One API that</text>
+  <text x="88" y="398" fill="#f4f4f7" font-family="Geist, -apple-system, BlinkMacSystemFont, Segoe UI, sans-serif" font-size="78" font-weight="650" letter-spacing="-3">unblocks agents.</text>
+  <text x="92" y="490" fill="#a7a7b2" font-family="Geist, -apple-system, BlinkMacSystemFont, Segoe UI, sans-serif" font-size="27">Typed tools · end-user auth · one execution path</text>
+  <path d="M88 548h1024" stroke="#24242e"/>
+  <text x="92" y="586" fill="#7c5cff" font-family="Geist Mono, SFMono-Regular, monospace" font-size="20">eyeball.dev</text>
+</svg>

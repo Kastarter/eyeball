@@ -1,0 +1,25 @@
+{
+  "extends": "../../tsconfig.base.json",
+  "compilerOptions": {
+    "allowJs": false,
+    "declaration": false,
+    "declarationMap": false,
+    "incremental": true,
+    "jsx": "preserve",
+    "lib": ["DOM", "DOM.Iterable", "ES2023"],
+    "noEmit": true,
+    "paths": {
+      "@/*": ["./*"]
+    },
+    "plugins": [{ "name": "next" }],
+    "resolveJsonModule": true,
+    "sourceMap": false
+  },
+  "include": [
+    "next-env.d.ts",
+    "**/*.ts",
+    "**/*.tsx",
+    ".next/types/**/*.ts"
+  ],
+  "exclude": ["node_modules"]
+}

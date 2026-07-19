@@ -1,0 +1,9 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64" role="img" aria-labelledby="icon-title">
+  <title id="icon-title">eyeball</title>
+  <rect width="64" height="64" rx="14" fill="#0a0a0f"/>
+  <path fill="#7c5cff" fill-rule="evenodd" d="M32 7a25 25 0 1 1 0 50 25 25 0 0 1 0-50Zm0 17.9a7.1 7.1 0 1 0 0 14.2 7.1 7.1 0 0 0 0-14.2Z"/>
+  <g stroke="#0a0a0f" stroke-linecap="round" stroke-width="3">
+    <path d="m32 8-6.8 18.5"/><path d="m52.8 20-19.4 3.4"/><path d="m52.8 44-12.6-15.1"/>
+    <path d="m32 56 6.8-18.5"/><path d="m11.2 44 19.4-3.4"/><path d="m11.2 20 12.6 15.1"/>
+  </g>
+</svg>
