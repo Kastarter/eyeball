@@ -23,11 +23,17 @@ Open-core tool and integration platform for AI agents: one typed, authenticated 
 - Executor logs and telemetry attributes pass through central redaction; never emit credentials, authorization headers, canonical bodies, webhook secrets, or file bytes.
 - OpenTelemetry exporters are disabled unless `EYEBALL_OTEL=1`; tests use in-memory providers and never require a collector.
 - Trigger events deliver as `trigger.<toolkit>.<name>` through signed webhooks; push ingest secrets appear only in create-time URLs.
+- Unauthenticated push-trigger ingest is capped at 1 MiB before buffering; exposed path credentials rotate through the subscription rotation endpoint.
 - `EYEBALL_DATABASE_URL` enables the executor's five-connection Postgres pool and applies committed Drizzle migrations at boot; absent keeps all zero-config in-memory defaults.
 - Executor HTTP limits share project buckets: standard 120/min with 240 burst, execute 60/min with 120 burst; `EYEBALL_RATE_LIMIT_*` overrides them and daily quota is off by default.
 - The docs shell follows Mintlify-derived geometry: a 56px top bar, 576px prose column, and 256px/264px navigation rails.
 - Dashboard cloud mode is explicit: `NEXT_PUBLIC_EYEBALL_MODE=cloud` selects cloud-backed features and server-only `EYEBALL_CLOUD_URL` supplies the control-plane origin; unset remains demo mode.
 - Dashboard cloud requests use the same-origin `/api/cloud` allowlist proxy; org/project context and manually pasted per-project executor keys live in validated `HttpOnly` cookies.
+- Cloud API-key verification is authenticated `POST /internal/keys/verify` with a pre-buffer 4 KiB body cap and a 1,024-character key schema; never place customer keys in internal URL queries.
+- Authenticated dashboard, provider, webhook, and remote-voice HTTP clients use manual redirect handling; remote voice requires HTTPS outside explicit loopback and supplied control tokens are at least 32 characters.
+- `pnpm check:secrets` scans tracked files without printing candidate values and runs from root lint; production CI should add gitleaks.
+- Dashboard cloud proxying exposes only `/v1/*`; executor proxying exposes only `/health` and `/v1/*`, and both construct upstream URLs from allowlisted inputs.
+- Executor telemetry and cloud audit redaction treat named URL fields as secret-bearing because path/query credentials remain in supported callback protocols.
 - `pnpm test:contract` defaults to built mocks and writes ignored `apps/executor/contract-report.json`.
 - Real certification uses `EYEBALL_CONTRACT_TARGET=real`; missing credentials are explicit skips.
 - `scripts/generate-docs.ts` owns generated toolkit pages and nav; never hand-edit them.
@@ -87,6 +93,7 @@ Open-core tool and integration platform for AI agents: one typed, authenticated 
 - Project request token buckets, optional UTC daily execution quotas, and manifest-declared toolkit concurrency caps are implemented.
 - A separately deployed Python voice worker provides versioned remote sessions, SQLite event durability, stable child execution identity, and account-free fake/chat contract suites; Pipecat/Twilio/LiveKit paths are certification scaffolding, not proven live-call capability.
 - Voice agents expose LiveKit web-session activation plus Twilio buy/list/bind/detach/release inventory flows against account-free mocks; reassignment is detach then attach, and bound numbers cannot be released.
+- The security posture pass added product/cloud threat models, an incident-response runbook, SHA-pinned CI actions, trigger-secret rotation, and query/log/redirect hardening.
 
 ## Known Issues
 
@@ -105,4 +112,9 @@ Open-core tool and integration platform for AI agents: one typed, authenticated 
 - The local vault detects ciphertext tampering but not rollback to an older valid file; restore trusted backups and revoke upstream.
 - Mocks include documented test shims where vendors lack canonical retrieval operations.
 - Package publishing automation is ready, but `@eyeball` npm organization access, final license review, and the first public release remain pending; do not claim npm or hosted Cloud publication.
+- Webhook delivery blocks literal private targets and redirects but does not resolve/pin DNS, so DNS-rebinding SSRF remains a hosted-launch gate.
+- The Activepieces spike contains unpatched `expr-eval` High advisories and incomplete published license metadata; do not expose its formula evaluator to untrusted input or promote it before replacement/provenance work.
+- Internal cloud bearer requests remain replayable without timestamp/nonce signing; trigger and voice URL secrets require upstream access-log suppression, and push triggers still need provider-native signature verification.
+- Staged files are project-scoped bearer capabilities rather than user-owned records; until ownership is added, a leaked same-project file ID can cross a user-pinned boundary during its TTL.
+- Voice Python dependencies are direct-pinned but not transitively hash-locked or covered by `pip-audit`; cloud billing grace still permits existing execution indefinitely.
 - Managed sandboxes may reject loopback and tsx IPC sockets with `EPERM`; use in-process apps.

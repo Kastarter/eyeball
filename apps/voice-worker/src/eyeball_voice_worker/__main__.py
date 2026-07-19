@@ -15,6 +15,7 @@ def main() -> None:
         host=config.host,
         port=config.port,
         lifespan="on",
+        access_log=False,
     )
 
 

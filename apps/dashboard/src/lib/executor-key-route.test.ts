@@ -8,7 +8,10 @@ import {
   EXECUTOR_KEY_SETTINGS_HEADER,
   EXECUTOR_PROJECT_HEADER,
 } from "./executor-key-shared";
-import { proxyExecutorRequest } from "./executor-proxy";
+import {
+  configuredServerExecutorUrl,
+  proxyExecutorRequest,
+} from "./executor-proxy";
 
 const cloudEnvironment = {
   EYEBALL_API_KEY: "server-env-key-must-not-win-in-cloud-mode",
@@ -103,6 +106,41 @@ describe("dashboard executor key settings", () => {
 });
 
 describe("executor proxy cloud credential selection", () => {
+  it("requires HTTPS except for an explicit loopback executor", () => {
+    expect(
+      configuredServerExecutorUrl({
+        EYEBALL_EXECUTOR_URL: "http://executor.example.test",
+      }),
+    ).toBeUndefined();
+    expect(
+      configuredServerExecutorUrl({
+        EYEBALL_EXECUTOR_URL: "http://localhost:8787/",
+      }),
+    ).toBe("http://localhost:8787");
+    expect(
+      configuredServerExecutorUrl({
+        EYEBALL_EXECUTOR_URL: "https://user:secret@executor.example.test",
+      }),
+    ).toBeUndefined();
+  });
+
+  it("does not expose non-public executor routes", async () => {
+    let called = false;
+    const response = await proxyExecutorRequest(
+      new Request(
+        "https://dashboard.example.test/api/executor/internal/health",
+      ),
+      { params: Promise.resolve({ path: ["internal", "health"] }) },
+      cloudEnvironment,
+      async () => {
+        called = true;
+        return Response.json({ ok: true });
+      },
+    );
+    expect(response.status).toBe(400);
+    expect(called).toBe(false);
+  });
+
   it("uses only the route-selected project cookie in cloud mode", async () => {
     const projectKey = "eyb_live_selected_project_key";
     const cookie =
@@ -131,10 +169,43 @@ describe("executor proxy cloud credential selection", () => {
     expect(response.status).toBe(200);
     expect(observedHeaders.get("Authorization")).toBe(`Bearer ${projectKey}`);
     expect(observedHeaders.get(EXECUTOR_PROJECT_HEADER)).toBeNull();
+    expect(observedHeaders.get("Cookie")).toBeNull();
     expect(JSON.stringify([...observedHeaders.entries()])).not.toContain(
       cloudEnvironment.EYEBALL_API_KEY,
     );
     expect(await response.json()).toEqual({ executions: [] });
+  });
+
+  it("does not follow executor redirects with the selected bearer token", async () => {
+    const projectKey = "eyb_live_redirect_fixture";
+    const cookie =
+      executorKeySetCookie({
+        key: projectKey,
+        projectId: "proj_selected",
+        secure: true,
+      }).split(";", 1)[0] ?? "";
+    let redirect: RequestRedirect | undefined;
+    const fetchImpl: typeof globalThis.fetch = async (_input, init) => {
+      redirect = init?.redirect;
+      return new Response(null, {
+        status: 302,
+        headers: { Location: "https://attacker.example.test/collect" },
+      });
+    };
+    const response = await proxyExecutorRequest(
+      new Request("https://dashboard.example.test/api/executor/v1/executions", {
+        headers: {
+          Cookie: cookie,
+          [EXECUTOR_PROJECT_HEADER]: "proj_selected",
+        },
+      }),
+      { params: Promise.resolve({ path: ["v1", "executions"] }) },
+      cloudEnvironment,
+      fetchImpl,
+    );
+    expect(redirect).toBe("manual");
+    expect(response.status).toBe(302);
+    expect(response.headers.get("Location")).toBeNull();
   });
 
   it("keeps the existing server environment key behavior in demo mode", async () => {

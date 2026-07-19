@@ -35,6 +35,15 @@ const SESSION_STATES = new Set<VoiceAgentSessionState>([
 ]);
 const TOOL_ERROR_CODE_VALUES = new Set<string>(Object.values(TOOL_ERROR_CODES));
 
+function isLoopbackHostname(hostname: string): boolean {
+  return (
+    hostname === "localhost" ||
+    hostname.endsWith(".localhost") ||
+    /^127(?:\.\d{1,3}){3}$/u.test(hostname) ||
+    hostname === "[::1]"
+  );
+}
+
 export interface RemoteVoiceSessionDriverOptions {
   baseUrl: string;
   fetch?: typeof globalThis.fetch;
@@ -81,14 +90,19 @@ function normalizedBaseUrl(value: string): string {
       "The voice-worker base URL must be an absolute HTTP(S) URL.",
     );
   }
-  if (url.protocol !== "http:" && url.protocol !== "https:") {
+  if (
+    (url.protocol !== "http:" && url.protocol !== "https:") ||
+    (url.protocol === "http:" && !isLoopbackHostname(url.hostname)) ||
+    url.username.length > 0 ||
+    url.password.length > 0 ||
+    url.search.length > 0 ||
+    url.hash.length > 0
+  ) {
     throw new VoiceWorkerProtocolError(
-      "The voice-worker base URL must use HTTP or HTTPS.",
+      "The voice-worker base URL must use HTTPS (or loopback HTTP) without credentials, a query, or a fragment.",
     );
   }
   url.pathname = url.pathname.endsWith("/") ? url.pathname : `${url.pathname}/`;
-  url.search = "";
-  url.hash = "";
   return url.toString();
 }
 
@@ -443,6 +457,11 @@ export class RemoteVoiceSessionDriver implements VoiceSessionDriver {
     this.baseUrl = normalizedBaseUrl(options.baseUrl);
     this.#fetchImpl = options.fetch ?? globalThis.fetch;
     const token = options.token?.trim();
+    if (token !== undefined && token.length > 0 && token.length < 32) {
+      throw new VoiceWorkerProtocolError(
+        "The voice-worker control token must be at least 32 characters.",
+      );
+    }
     this.#token = token === undefined || token.length === 0 ? undefined : token;
     this.#onEvent = options.onEvent;
     this.#onTranscript = options.onTranscript;
@@ -686,7 +705,11 @@ export class RemoteVoiceSessionDriver implements VoiceSessionDriver {
     if (this.#token !== undefined) {
       headers.set("Authorization", `Bearer ${this.#token}`);
     }
-    const response = await this.#fetchImpl(input, { ...init, headers });
+    const response = await this.#fetchImpl(input, {
+      ...init,
+      headers,
+      redirect: "manual",
+    });
     const actualVersion = response.headers.get(VOICE_WORKER_VERSION_HEADER);
     if (actualVersion !== this.expectedWireVersion) {
       throw new VoiceWorkerProtocolError(
@@ -788,5 +811,11 @@ export function voiceWorkerTokenFromEnv(
   env: Readonly<Record<string, string | undefined>>,
 ): string | undefined {
   const value = env.EYEBALL_VOICE_WORKER_TOKEN?.trim();
-  return value === undefined || value.length === 0 ? undefined : value;
+  if (value === undefined || value.length === 0) return undefined;
+  if (value.length < 32) {
+    throw new VoiceWorkerProtocolError(
+      "EYEBALL_VOICE_WORKER_TOKEN must be at least 32 characters.",
+    );
+  }
+  return value;
 }

@@ -136,6 +136,14 @@ def create_app(
     async def invalid_runtime(_request: Request, error: Exception) -> JSONResponse:
         return _error_response(422, "invalid_runtime", str(error))
 
+    @app.exception_handler(Exception)
+    async def unexpected_failure(_request: Request, _error: Exception) -> JSONResponse:
+        return _error_response(
+            500,
+            "internal_error",
+            "The voice worker could not complete the request.",
+        )
+
     @app.get("/health", response_model=WorkerHealth)
     async def health() -> WorkerHealth:
         repository.check()
@@ -270,14 +278,17 @@ def create_app(
             await manager.wait_runtime(session_id)
         except Exception:
             manager.fail(session_id, "The Twilio media runtime failed to start.")
-            raise
+            try:
+                await websocket.close(code=1011, reason="media runtime failed")
+            except Exception:
+                return
 
     return app
 
 
 def _authorized(header: str | None, expected: str | None) -> bool:
     if expected is None or expected == "":
-        return True
+        return False
     if header is None or not header.startswith("Bearer "):
         return False
     return hmac.compare_digest(header.removeprefix("Bearer "), expected)

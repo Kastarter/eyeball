@@ -311,7 +311,51 @@ describe("trigger subscriptions", () => {
       throw new Error("Slack push subscription omitted ingestUrl.");
     }
 
-    const challenge = await harness.app.request(subscription.ingestUrl, {
+    const crossUserRotate = await harness.app.request(
+      `/v1/subscriptions/${subscription.subscriptionId}/rotate-secret`,
+      { method: "POST", headers: auth(OTHER_USER_API_KEY) },
+    );
+    expect(crossUserRotate.status).toBe(403);
+
+    const rotate = await harness.app.request(
+      `/v1/subscriptions/${subscription.subscriptionId}/rotate-secret`,
+      { method: "POST", headers: auth(PINNED_API_KEY) },
+    );
+    expect(rotate.status).toBe(200);
+    const rotated = (await rotate.json()) as {
+      subscriptionId: string;
+      ingestUrl: string;
+      rotatedAt: string;
+    };
+    expect(rotated).toMatchObject({
+      subscriptionId: subscription.subscriptionId,
+      rotatedAt: START,
+    });
+    expect(rotated.ingestUrl).not.toBe(subscription.ingestUrl);
+    const retired = await harness.app.request(subscription.ingestUrl, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        type: "url_verification",
+        challenge: "retired-secret",
+      }),
+    });
+    expect(retired.status).toBe(404);
+
+    const oversized = await harness.app.request(rotated.ingestUrl, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: "x".repeat(1024 * 1024 + 1),
+    });
+    expect(oversized.status).toBe(413);
+    await expect(oversized.json()).resolves.toMatchObject({
+      error: {
+        code: "invalid_input",
+        message: "Trigger ingest payload exceeds the 1 MiB limit.",
+      },
+    });
+
+    const challenge = await harness.app.request(rotated.ingestUrl, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({
@@ -338,7 +382,7 @@ describe("trigger subscriptions", () => {
         client_msg_id: "msg_trigger_1",
       },
     };
-    const first = await harness.app.request(subscription.ingestUrl, {
+    const first = await harness.app.request(rotated.ingestUrl, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify(event),
@@ -351,7 +395,7 @@ describe("trigger subscriptions", () => {
     });
     await harness.webhookDeliverer.onIdle();
 
-    const duplicate = await harness.app.request(subscription.ingestUrl, {
+    const duplicate = await harness.app.request(rotated.ingestUrl, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify(event),
@@ -415,6 +459,11 @@ describe("trigger subscriptions", () => {
       endpointId: endpoint.endpointId,
     });
     expect(subscription.ingestUrl).toBeUndefined();
+    const rotate = await harness.app.request(
+      `/v1/subscriptions/${subscription.subscriptionId}/rotate-secret`,
+      { method: "POST", headers: auth() },
+    );
+    expect(rotate.status).toBe(422);
 
     harness.clock.advance(60_000);
     await expect(harness.engine.triggerService.runDue()).resolves.toEqual({

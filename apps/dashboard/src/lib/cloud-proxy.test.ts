@@ -3,14 +3,13 @@ import { CLOUD_CSRF_HEADER } from "./cloud-api";
 import { configuredCloudControlUrl, proxyCloudRequest } from "./cloud-proxy";
 
 const environment = {
-  EYEBALL_CLOUD_URL:
-    "https://control.example.test/control/?secret=hidden#fragment",
+  EYEBALL_CLOUD_URL: "https://control.example.test/control/",
   EYEBALL_INTERNAL_API_SECRET: "internal-secret-never-forward",
   NEXT_PUBLIC_EYEBALL_MODE: "cloud",
 };
 
 describe("dashboard cloud proxy", () => {
-  it("requires explicit cloud mode and normalizes an HTTP(S) control-plane URL", () => {
+  it("requires explicit cloud mode and an HTTPS or loopback control-plane URL", () => {
     expect(
       configuredCloudControlUrl({
         EYEBALL_CLOUD_URL: "https://control.example.test/",
@@ -19,6 +18,13 @@ describe("dashboard cloud proxy", () => {
     expect(configuredCloudControlUrl(environment)).toBe(
       "https://control.example.test/control",
     );
+    expect(
+      configuredCloudControlUrl({
+        EYEBALL_CLOUD_URL:
+          "https://control.example.test/control/?secret=hidden#fragment",
+        NEXT_PUBLIC_EYEBALL_MODE: "cloud",
+      }),
+    ).toBeUndefined();
     expect(
       configuredCloudControlUrl({
         EYEBALL_CLOUD_URL: "https://user:password@control.example.test",
@@ -31,9 +37,21 @@ describe("dashboard cloud proxy", () => {
         NEXT_PUBLIC_EYEBALL_MODE: "cloud",
       }),
     ).toBeUndefined();
+    expect(
+      configuredCloudControlUrl({
+        EYEBALL_CLOUD_URL: "http://control.example.test",
+        NEXT_PUBLIC_EYEBALL_MODE: "cloud",
+      }),
+    ).toBeUndefined();
+    expect(
+      configuredCloudControlUrl({
+        EYEBALL_CLOUD_URL: "http://127.0.0.1:8790/",
+        NEXT_PUBLIC_EYEBALL_MODE: "cloud",
+      }),
+    ).toBe("http://127.0.0.1:8790");
   });
 
-  it("forwards only cloud session cookies, JSON content type, and the CSRF header", async () => {
+  it("forwards only cloud session cookies, content type, and the CSRF header", async () => {
     let observedUrl = "";
     let observedInit: RequestInit | undefined;
     const fetchImpl: typeof globalThis.fetch = async (input, init) => {
@@ -43,6 +61,10 @@ describe("dashboard cloud proxy", () => {
       headers.append(
         "Set-Cookie",
         "eyeball_cloud_session=fresh; Path=/; HttpOnly; SameSite=Lax",
+      );
+      headers.append(
+        "Set-Cookie",
+        "eyeball_executor_key_deadbeef=attacker; Path=/; HttpOnly",
       );
       return new Response(JSON.stringify({ ok: true }), {
         status: 201,
@@ -90,6 +112,9 @@ describe("dashboard cloud proxy", () => {
     expect(response.headers.get("Cache-Control")).toBe("no-store");
     expect(response.headers.get("Set-Cookie")).toContain(
       "eyeball_cloud_session=fresh",
+    );
+    expect(response.headers.get("Set-Cookie")).not.toContain(
+      "eyeball_executor_key_deadbeef",
     );
     expect(await response.json()).toEqual({ ok: true });
     expect(JSON.stringify([...response.headers.entries()])).not.toContain(

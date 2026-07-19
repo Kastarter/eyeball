@@ -15,6 +15,7 @@
     "build": "turbo run build --concurrency=1",
     "changeset": "changeset",
     "changeset:status": "changeset status",
+    "check:secrets": "node --import tsx scripts/check-secrets.ts",
     "demo:anthropic": "node --import tsx apps/mcp-gateway/demo/anthropic.ts",
     "demo:mcp": "node --import tsx apps/mcp-gateway/demo/mcp.ts",
     "demo:restaurant": "node --import tsx apps/mcp-gateway/demo/restaurant.ts",
@@ -36,7 +37,7 @@
     "test:dev-stack": "vitest run scripts/dev-stack.test.ts",
     "test:release": "vitest run scripts/release-manifests.test.ts",
     "typecheck": "turbo run typecheck --concurrency=1",
-    "lint": "biome check scripts package.json && turbo run lint --concurrency=1",
+    "lint": "pnpm check:secrets && biome check scripts package.json && turbo run lint --concurrency=1",
     "version-packages": "changeset version",
     "format": "biome format --write ."
   },

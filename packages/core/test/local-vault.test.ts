@@ -1,4 +1,4 @@
-import { mkdtemp, readFile, rm } from "node:fs/promises";
+import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
@@ -63,14 +63,14 @@ describe("LocalVaultCredentialProvider", () => {
       env: fixture.env,
     });
     const secrets = {
-      apiKey: "api_very_private_6af89573",
-      username: "vault-user-private",
-      password: "password_very_private_e8794ea7",
-      parameter: "database_private_06389a9a",
-      accessToken: "access_very_private_0d4ac921",
-      refreshToken: "refresh_very_private_81df78e2",
-      clientId: "client_private_a0c03451",
-      clientSecret: "client_secret_private_c39db1ce",
+      apiKey: "fixture:api-key-6af89573",
+      username: "fixture:vault-user",
+      password: "fixture:password-e8794ea7",
+      parameter: "fixture:database-06389a9a",
+      accessToken: "fixture:access-token-0d4ac921",
+      refreshToken: "fixture:refresh-token-81df78e2",
+      clientId: "fixture:client-a0c03451",
+      clientSecret: "fixture:client-secret-c39db1ce",
     };
 
     await provider.put({
@@ -148,6 +148,44 @@ describe("LocalVaultCredentialProvider", () => {
       expect(source).not.toContain(secret);
     }
     expect(JSON.parse(source)).toMatchObject({ version: 1 });
+  });
+
+  it("rejects authenticated ciphertext tampering", async () => {
+    const fixture = await vaultFixture();
+    const provider = new LocalVaultCredentialProvider({
+      filePath: fixture.filePath,
+      allowedProjectId: baseContext.projectId,
+      env: fixture.env,
+    });
+    await provider.put({
+      userId: baseContext.userId,
+      toolkitSlug: "stripe",
+      credential: {
+        type: "api_key",
+        values: { apiKey: "fixture:tamper-check" },
+      },
+    });
+
+    const vault = JSON.parse(await readFile(fixture.filePath, "utf8")) as {
+      records: Array<{ ciphertext: string }>;
+    };
+    const record = vault.records[0];
+    const ciphertext = record?.ciphertext;
+    expect(ciphertext).toBeTruthy();
+    if (!record || !ciphertext) {
+      throw new Error("Expected an encrypted vault record");
+    }
+    record.ciphertext = `${ciphertext[0] === "A" ? "B" : "A"}${ciphertext.slice(1)}`;
+    await writeFile(fixture.filePath, JSON.stringify(vault), "utf8");
+
+    const reopened = new LocalVaultCredentialProvider({
+      filePath: fixture.filePath,
+      allowedProjectId: baseContext.projectId,
+      env: fixture.env,
+    });
+    await expect(
+      reopened.resolve({ ...baseContext, toolkitSlug: "stripe" }),
+    ).rejects.toThrow(/Unable to decrypt.*vault file integrity/u);
   });
 
   it("derives a fresh authenticated nonce after remove and recreate", async () => {

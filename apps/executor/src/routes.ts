@@ -20,6 +20,7 @@ import {
   type WebhookSubscriptionEventType,
 } from "@eyeball/core";
 import { type Context, Hono } from "hono";
+import { bodyLimit } from "hono/body-limit";
 import { createConfiguredCredentialProvider } from "./credential-provider.js";
 import type { DevVaultCredentialProvider } from "./dev-vault.js";
 import type { DevVoiceSessionAdvancer } from "./dev-voice-sessions.js";
@@ -50,6 +51,8 @@ const EXECUTION_STATUSES = new Set<ExecutionStatus>([
   "succeeded",
   "failed",
 ]);
+
+const MAX_TRIGGER_INGEST_BODY_BYTES = 1024 * 1024;
 
 export { parseApiKeyring } from "@eyeball/core";
 
@@ -1010,21 +1013,60 @@ export function createExecutorApp(options: ExecutorAppOptions = {}): Hono<{
     }
   });
 
-  app.post("/v1/ingest/:subscriptionId/:secret", async (context) => {
+  app.post("/v1/subscriptions/:id/rotate-secret", async (context) => {
     try {
-      const result = await engine.triggerService.ingest(
-        context.req.param("subscriptionId"),
-        context.req.param("secret"),
-        await context.req.text(),
-        context.req.raw.headers,
+      const subscription = await engine.triggerService.get(
+        context.get("projectId"),
+        context.req.param("id"),
       );
-      return result.kind === "challenge"
-        ? context.json({ challenge: result.challenge })
-        : context.json(result, 202);
+      if (subscription === undefined) return subscriptionNotFound(context);
+      if (rejectsPinnedUser(context, subscription.userId)) {
+        return pinnedUserFailure(context);
+      }
+      const rotated = await engine.triggerService.rotateIngestSecret(
+        context.get("projectId"),
+        subscription.subscriptionId,
+        new URL(context.req.url).origin,
+      );
+      return rotated === undefined
+        ? subscriptionNotFound(context)
+        : context.json(rotated);
     } catch (error) {
       return handleRouteError(context, error);
     }
   });
+
+  app.post(
+    "/v1/ingest/:subscriptionId/:secret",
+    bodyLimit({
+      maxSize: MAX_TRIGGER_INGEST_BODY_BYTES,
+      onError: (context) =>
+        requestFailure(
+          context as ExecutorContext,
+          new EyeballError({
+            code: TOOL_ERROR_CODES.INVALID_INPUT,
+            message: "Trigger ingest payload exceeds the 1 MiB limit.",
+            retryable: false,
+          }),
+          413,
+        ),
+    }),
+    async (context) => {
+      try {
+        const result = await engine.triggerService.ingest(
+          context.req.param("subscriptionId"),
+          context.req.param("secret"),
+          await context.req.text(),
+          context.req.raw.headers,
+        );
+        return result.kind === "challenge"
+          ? context.json({ challenge: result.challenge })
+          : context.json(result, 202);
+      } catch (error) {
+        return handleRouteError(context, error);
+      }
+    },
+  );
 
   app.post("/v1/files", async (context) => {
     let request: unknown;

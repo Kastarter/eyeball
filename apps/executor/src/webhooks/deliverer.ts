@@ -499,6 +499,7 @@ export class WebhookDeliverer {
           },
           body: rawBody,
           signal: controller.signal,
+          redirect: "manual",
         }),
         timedOut,
       ]);

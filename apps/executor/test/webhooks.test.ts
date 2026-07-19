@@ -371,6 +371,7 @@ describe("signed webhook delivery", () => {
     let secret = "";
     const received: Array<{
       body: string;
+      redirect: RequestRedirect;
       valid: boolean;
       webhookId: string | null;
     }> = [];
@@ -379,6 +380,7 @@ describe("signed webhook delivery", () => {
       const body = await context.req.text();
       received.push({
         body,
+        redirect: context.req.raw.redirect,
         valid: verifyWebhookSignature({
           payload: body,
           headers: context.req.raw.headers,
@@ -399,6 +401,7 @@ describe("signed webhook delivery", () => {
 
     expect(received).toHaveLength(1);
     expect(received[0]?.valid).toBe(true);
+    expect(received[0]?.redirect).toBe("manual");
     const event = JSON.parse(received[0]?.body ?? "{}") as {
       id: string;
       type: string;
