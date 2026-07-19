@@ -19,6 +19,7 @@ import {
   isWebhookSubscriptionEventType,
   type JsonValue,
   type QualifiedToolName,
+  type RotatedTriggerIngestSecret,
   type RotatedWebhookSecret,
   type StagedFileMetadata,
   type StagedFileReference,
@@ -840,6 +841,20 @@ export class SubscriptionsClient {
   get(value: string): Promise<TriggerSubscription> {
     return this.#context.http.request(
       `/v1/subscriptions/${subscriptionId(value)}`,
+    );
+  }
+
+  /**
+   * Invalidates a push subscription's current ingest URL and returns its replacement once.
+   *
+   * @param value Valid `trgsub_*` subscription identifier.
+   * @returns The replacement ingest URL and rotation timestamp.
+   * @throws EyeballError for polling subscriptions or unavailable identifiers.
+   */
+  rotateSecret(value: string): Promise<RotatedTriggerIngestSecret> {
+    return this.#context.http.request(
+      `/v1/subscriptions/${subscriptionId(value)}/rotate-secret`,
+      { method: "POST" },
     );
   }
 

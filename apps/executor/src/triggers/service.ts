@@ -12,6 +12,7 @@ import {
   type JsonValue,
   type ProviderManifest,
   type ResolvedCredential,
+  type RotatedTriggerIngestSecret,
   TOOL_ERROR_CODES,
   type TriggerDefinition,
   type TriggerEventData,
@@ -515,6 +516,40 @@ export class TriggerService {
     subscriptionId: string,
   ): Promise<TriggerSubscription | undefined> {
     return this.subscriptionStore.get(projectId, subscriptionId);
+  }
+
+  async rotateIngestSecret(
+    projectId: string,
+    subscriptionId: string,
+    ingestBaseUrl: string,
+  ): Promise<RotatedTriggerIngestSecret | undefined> {
+    if (!isTriggerSubscriptionId(subscriptionId)) return undefined;
+    const current = await this.subscriptionStore.getInternal(subscriptionId);
+    if (current === undefined || current.projectId !== projectId)
+      return undefined;
+    if (current.ingestSecretHash === undefined) {
+      return invalidRequest(
+        "Ingest-secret rotation is available only for push subscriptions.",
+      );
+    }
+    const secret = this.#ingestSecretFactory();
+    if (secret.length < 32) {
+      throw new Error("Trigger ingest secret factory returned a short secret.");
+    }
+    const rotatedAt = this.#now().toISOString();
+    const rotated = await this.subscriptionStore.rotateIngestSecret(
+      projectId,
+      subscriptionId,
+      secretHash(secret),
+      rotatedAt,
+    );
+    return rotated === undefined
+      ? undefined
+      : {
+          subscriptionId: rotated.subscriptionId,
+          ingestUrl: ingestUrl(ingestBaseUrl, rotated.subscriptionId, secret),
+          rotatedAt,
+        };
   }
 
   async delete(projectId: string, subscriptionId: string): Promise<boolean> {

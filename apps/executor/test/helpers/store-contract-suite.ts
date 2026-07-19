@@ -520,6 +520,32 @@ export function registerStoreContractSuite(
             first.subscriptionId,
           ),
         ).toBeUndefined();
+        const rotatedAt = "2026-07-18T08:01:00.000Z";
+        const rotatedHash = `rotated:${first.subscriptionId}`;
+        await expect(
+          stores.triggerSubscriptionStore.rotateIngestSecret(
+            `other_${projectId}`,
+            first.subscriptionId,
+            rotatedHash,
+            rotatedAt,
+          ),
+        ).resolves.toBeUndefined();
+        await expect(
+          stores.triggerSubscriptionStore.rotateIngestSecret(
+            projectId,
+            first.subscriptionId,
+            rotatedHash,
+            rotatedAt,
+          ),
+        ).resolves.toMatchObject({
+          subscriptionId: first.subscriptionId,
+          updatedAt: rotatedAt,
+        });
+        expect(
+          await stores.triggerSubscriptionStore.getInternal(
+            first.subscriptionId,
+          ),
+        ).toMatchObject({ ingestSecretHash: rotatedHash });
         await expect(
           stores.triggerSubscriptionStore.list(projectId, {
             userId: "user_a",

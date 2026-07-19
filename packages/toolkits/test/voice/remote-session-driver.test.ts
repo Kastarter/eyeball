@@ -18,6 +18,7 @@ const PROJECT_ID = "proj_remote_driver";
 const USER_ID = "user_remote_driver";
 const AGENT_ID = "va_remote_driver";
 const SESSION_ID = "session_remote_driver";
+const WORKER_TOKEN = "worker-token-fixture-at-least-32-bytes";
 
 const request = {
   contractVersion: VOICE_WORKER_WIRE_VERSION,
@@ -208,8 +209,8 @@ describe("remote voice-session driver", () => {
     const onEvent = vi.fn();
     let transcript: TranscriptArtifact | undefined;
     const driver = new RemoteVoiceSessionDriver({
-      baseUrl: "http://voice-worker.test",
-      token: "worker-token",
+      baseUrl: "https://voice-worker.test",
+      token: WORKER_TOKEN,
       fetch: workerFetch(requests),
       pollIntervalMs: 1,
       onEvent,
@@ -239,7 +240,8 @@ describe("remote voice-session driver", () => {
         (item) =>
           item.headers.get(VOICE_WORKER_VERSION_HEADER) ===
             VOICE_WORKER_WIRE_VERSION &&
-          item.headers.get("Authorization") === "Bearer worker-token",
+          item.headers.get("Authorization") === `Bearer ${WORKER_TOKEN}` &&
+          item.redirect === "manual",
       ),
     ).toBe(true);
     await driver.close();
@@ -263,7 +265,7 @@ describe("remote voice-session driver", () => {
   it("sends the complete versioned chat-turn contract", async () => {
     const requests: Request[] = [];
     const driver = new RemoteVoiceSessionDriver({
-      baseUrl: "http://voice-worker.test",
+      baseUrl: "https://voice-worker.test",
       fetch: workerFetch(requests),
     });
     const turnRequest = {
@@ -290,7 +292,7 @@ describe("remote voice-session driver", () => {
     let failedOnce = false;
     let transcript: TranscriptArtifact | undefined;
     const driver = new RemoteVoiceSessionDriver({
-      baseUrl: "http://voice-worker.test",
+      baseUrl: "https://voice-worker.test",
       fetch: workerFetch([]),
       pollIntervalMs: 1,
       onEvent: ({ event }) => {
@@ -349,9 +351,9 @@ describe("remote voice-session driver", () => {
     await expect(driver.getSession(SESSION_ID)).rejects.toThrow(
       "The voice worker returned a different session than requested.",
     );
-    await expect(
-      driver.getEvents(SESSION_ID, { limit: 201 }),
-    ).rejects.toThrow("limit must not exceed 200.");
+    await expect(driver.getEvents(SESSION_ID, { limit: 201 })).rejects.toThrow(
+      "limit must not exceed 200.",
+    );
   });
 
   it("bounds worker requests with an explicit protocol timeout", async () => {
@@ -375,7 +377,7 @@ describe("remote voice-session driver", () => {
     );
   });
 
-  it("resolves only non-empty environment overrides", () => {
+  it("requires secure worker URLs and strong non-empty tokens", () => {
     expect(voiceWorkerUrlFromEnv({})).toBeUndefined();
     expect(
       voiceWorkerUrlFromEnv({ EYEBALL_VOICE_WORKER_URL: "  " }),
@@ -386,8 +388,27 @@ describe("remote voice-session driver", () => {
       }),
     ).toBe("https://worker.example.test/api/");
     expect(voiceWorkerTokenFromEnv({})).toBeUndefined();
-    expect(
+    expect(() =>
       voiceWorkerTokenFromEnv({ EYEBALL_VOICE_WORKER_TOKEN: " secret " }),
-    ).toBe("secret");
+    ).toThrow("at least 32 characters");
+    expect(
+      voiceWorkerTokenFromEnv({ EYEBALL_VOICE_WORKER_TOKEN: WORKER_TOKEN }),
+    ).toBe(WORKER_TOKEN);
+    expect(() =>
+      voiceWorkerUrlFromEnv({
+        EYEBALL_VOICE_WORKER_URL: "http://voice-worker.example.test",
+      }),
+    ).toThrow("HTTPS (or loopback HTTP)");
+    expect(
+      voiceWorkerUrlFromEnv({
+        EYEBALL_VOICE_WORKER_URL: "http://127.0.0.1:8080",
+      }),
+    ).toBe("http://127.0.0.1:8080/");
+    expect(() =>
+      voiceWorkerUrlFromEnv({
+        EYEBALL_VOICE_WORKER_URL:
+          "https://worker.example.test/?token=must-not-be-in-a-url",
+      }),
+    ).toThrow("without credentials, a query, or a fragment");
   });
 });

@@ -1,8 +1,22 @@
-import { CLOUD_CSRF_HEADER, cloudControlCookieHeader } from "./cloud-api";
+import {
+  CLOUD_CSRF_COOKIE,
+  CLOUD_CSRF_HEADER,
+  CLOUD_SESSION_COOKIE,
+  cloudControlCookieHeader,
+} from "./cloud-api";
 import { isCloudMode, type RuntimeEnvironment } from "./runtime-config";
 
 export interface CloudProxyRouteContext {
   params: Promise<{ path: string[] }>;
+}
+
+function isLoopbackHostname(hostname: string): boolean {
+  return (
+    hostname === "localhost" ||
+    hostname.endsWith(".localhost") ||
+    /^127(?:\.\d{1,3}){3}$/u.test(hostname) ||
+    hostname === "[::1]"
+  );
 }
 
 export function configuredCloudControlUrl(
@@ -19,15 +33,26 @@ export function configuredCloudControlUrl(
   }
   if (
     (url.protocol !== "https:" && url.protocol !== "http:") ||
+    (url.protocol === "http:" && !isLoopbackHostname(url.hostname)) ||
     url.username.length > 0 ||
-    url.password.length > 0
+    url.password.length > 0 ||
+    url.search.length > 0 ||
+    url.hash.length > 0
   ) {
     return undefined;
   }
   url.pathname = url.pathname.replace(/\/$/u, "");
-  url.search = "";
-  url.hash = "";
   return url.toString().replace(/\/$/u, "");
+}
+
+function allowedCloudSetCookie(value: string): boolean {
+  const names = [...value.matchAll(/(?:^|,\s*)([^=;,\s]+)=/gu)].map(
+    (match) => match[1],
+  );
+  return (
+    names.length === 1 &&
+    (names[0] === CLOUD_SESSION_COOKIE || names[0] === CLOUD_CSRF_COOKIE)
+  );
 }
 
 function appendSetCookies(source: Headers, destination: Headers): void {
@@ -36,11 +61,17 @@ function appendSetCookies(source: Headers, destination: Headers): void {
   };
   const values = headersWithCookies.getSetCookie?.() ?? [];
   if (values.length > 0) {
-    for (const value of values) destination.append("Set-Cookie", value);
+    for (const value of values) {
+      if (allowedCloudSetCookie(value)) {
+        destination.append("Set-Cookie", value);
+      }
+    }
     return;
   }
   const fallback = source.get("Set-Cookie");
-  if (fallback !== null) destination.append("Set-Cookie", fallback);
+  if (fallback !== null && allowedCloudSetCookie(fallback)) {
+    destination.append("Set-Cookie", fallback);
+  }
 }
 
 function proxyError(status: number, code: string, message: string): Response {

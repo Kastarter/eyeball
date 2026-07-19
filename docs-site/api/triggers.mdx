@@ -67,7 +67,7 @@ A `201` push response includes the public subscription plus `ingestUrl`:
 }
 ```
 
-`ingestUrl` appears only in the create response. Polling subscriptions omit it and include the selected `pollIntervalSeconds`.
+`ingestUrl` appears only in the create response. Polling subscriptions omit it and include the selected `pollIntervalSeconds`. Treat the entire URL as a credential: provider callback products often cannot send a custom authentication header, so the secret must live in the path and may otherwise appear in proxy access logs.
 
 The SDK equivalent is `eyeball.subscriptions.create(options)`.
 
@@ -89,6 +89,14 @@ Returns the project-owned public subscription or `404`. A pinned key may read on
 
 The SDK equivalent is `eyeball.subscriptions.get(subscriptionId)`.
 
+## Rotate a push ingest secret
+
+`POST /v1/subscriptions/:subscriptionId/rotate-secret`
+
+The response contains `{ subscriptionId, ingestUrl, rotatedAt }`. The old URL stops authenticating immediately, and the replacement URL appears only in this response. Update the provider callback before discarding it. Polling subscriptions return `422` because they have no ingest secret. A pinned key may rotate only its pinned user's subscription.
+
+The SDK equivalent is `eyeball.subscriptions.rotateSecret(subscriptionId)`.
+
 ## Delete a subscription
 
 `DELETE /v1/subscriptions/:subscriptionId`
@@ -102,6 +110,8 @@ The SDK equivalent is `eyeball.subscriptions.delete(subscriptionId)`.
 `POST /v1/ingest/:subscriptionId/:secret`
 
 This route does not accept an Eyeball API key. The secret embedded in the create-time ingest URL authenticates the provider callback. A missing subscription, inactive subscription, wrong secret, or non-push subscription returns the same `404` response.
+
+Disable or redact request-target logging for `/v1/ingest/*` at the load balancer, reverse proxy, APM agent, and executor host. Rotate the secret after any suspected log or URL disclosure. The path credential is an explicit compatibility tradeoff for provider callback systems that do not support custom authentication headers.
 
 Slack URL verification:
 

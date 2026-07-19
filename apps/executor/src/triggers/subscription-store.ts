@@ -29,6 +29,12 @@ export interface TriggerSubscriptionStore {
     input: ListTriggerSubscriptionsInput,
   ): Promise<TriggerSubscriptionPage>;
   listActive(): Promise<readonly StoredTriggerSubscription[]>;
+  rotateIngestSecret(
+    projectId: string,
+    subscriptionId: string,
+    ingestSecretHash: string,
+    updatedAt: string,
+  ): Promise<TriggerSubscription | undefined>;
   delete(projectId: string, subscriptionId: string): Promise<boolean>;
 }
 
@@ -186,6 +192,28 @@ export class InMemoryTriggerSubscriptionStore
     return [...this.#byId.values()]
       .filter((subscription) => subscription.status === "active")
       .map(copy);
+  }
+
+  async rotateIngestSecret(
+    projectId: string,
+    subscriptionId: string,
+    ingestSecretHash: string,
+    updatedAt: string,
+  ): Promise<TriggerSubscription | undefined> {
+    const project = this.#projects.get(projectId);
+    const typedId = subscriptionId as TriggerSubscriptionId;
+    const current = project?.get(typedId);
+    if (current === undefined || current.ingestSecretHash === undefined) {
+      return undefined;
+    }
+    const rotated: StoredTriggerSubscription = {
+      ...current,
+      ingestSecretHash,
+      updatedAt,
+    };
+    project?.set(typedId, rotated);
+    this.#byId.set(typedId, rotated);
+    return copy(publicSubscription(rotated));
   }
 
   async delete(projectId: string, subscriptionId: string): Promise<boolean> {

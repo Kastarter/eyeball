@@ -237,6 +237,7 @@ describe("executor observability", () => {
       output: longBody,
       nested: {
         signingSecret: WEBHOOK_SECRET,
+        ingestUrl: "https://executor.example.test/ingest/url-top-secret",
         ordinaryLongValue: longBody,
         file: {
           name: "safe.txt",
@@ -257,6 +258,7 @@ describe("executor observability", () => {
     expect(redacted.output).toBe("[REDACTED:body:2000 bytes]");
     expect(redacted.nested).toEqual({
       signingSecret: "[REDACTED:whse…]",
+      ingestUrl: REDACTED,
       ordinaryLongValue: "[REDACTED:long-string:2000 bytes]",
       file: {
         name: "safe.txt",
@@ -273,6 +275,7 @@ describe("executor observability", () => {
       "refresh-top-secret",
       "cookie-top-secret",
       "idempotency-top-secret",
+      "url-top-secret",
     ]) {
       expect(serialized).not.toContain(secret);
     }

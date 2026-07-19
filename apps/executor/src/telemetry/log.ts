@@ -55,7 +55,8 @@ function sensitiveKey(key: string): boolean {
     normalized.endsWith("privatekey") ||
     normalized.endsWith("secret") ||
     normalized.endsWith("signature") ||
-    normalized.endsWith("token")
+    normalized.endsWith("token") ||
+    normalized.endsWith("url")
   );
 }
 

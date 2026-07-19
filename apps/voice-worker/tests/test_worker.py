@@ -149,6 +149,40 @@ def test_config_normalizes_blank_optional_compose_values() -> None:
                 "EYEBALL_VOICE_WORKER_TOKEN": "too-short",
             }
         )
+    with pytest.raises(ValueError, match="at least 32 bytes"):
+        WorkerConfig.from_env(
+            {
+                "EYEBALL_VOICE_DATABASE_PATH": ":memory:",
+                "EYEBALL_VOICE_MEDIA_MODE": "fake",
+            }
+        )
+    with pytest.raises(ValueError, match="HTTPS URL"):
+        WorkerConfig.from_env(
+            {
+                "EYEBALL_VOICE_DATABASE_PATH": ":memory:",
+                "EYEBALL_VOICE_MEDIA_MODE": "fake",
+                "EYEBALL_VOICE_WORKER_TOKEN": CONTROL_TOKEN,
+                "EYEBALL_EXECUTOR_URL": "http://executor.example.test",
+            }
+        )
+    with pytest.raises(ValueError, match="HTTPS URL"):
+        WorkerConfig.from_env(
+            {
+                "EYEBALL_VOICE_DATABASE_PATH": ":memory:",
+                "EYEBALL_VOICE_MEDIA_MODE": "fake",
+                "EYEBALL_VOICE_WORKER_TOKEN": CONTROL_TOKEN,
+                "EYEBALL_EXECUTOR_URL": "http://127.attacker.example",
+            }
+        )
+    docker_config = WorkerConfig.from_env(
+        {
+            "EYEBALL_VOICE_DATABASE_PATH": ":memory:",
+            "EYEBALL_VOICE_MEDIA_MODE": "fake",
+            "EYEBALL_VOICE_WORKER_TOKEN": CONTROL_TOKEN,
+            "EYEBALL_EXECUTOR_URL": "http://host.docker.internal:8787",
+        }
+    )
+    assert docker_config.executor_url == "http://host.docker.internal:8787"
 
 
 def test_start_contract_rejects_noncanonical_fake_tool_names() -> None:

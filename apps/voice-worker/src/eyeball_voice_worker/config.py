@@ -5,6 +5,7 @@ from __future__ import annotations
 import os
 from collections.abc import Mapping
 from dataclasses import dataclass
+from ipaddress import ip_address
 from pathlib import Path
 from typing import Literal, cast
 from urllib.parse import urlsplit
@@ -42,6 +43,38 @@ def _optional(env: Mapping[str, str], name: str) -> str | None:
     return value or None
 
 
+def _plaintext_development_host(hostname: str | None) -> bool:
+    if hostname is None:
+        return False
+    if hostname == "host.docker.internal":
+        return True
+    if hostname == "localhost" or hostname.endswith(".localhost"):
+        return True
+    try:
+        return ip_address(hostname).is_loopback
+    except ValueError:
+        return False
+
+
+def _secure_service_url(value: str, name: str) -> None:
+    parsed = urlsplit(value)
+    if (
+        parsed.scheme not in {"http", "https"}
+        or not parsed.netloc
+        or parsed.username is not None
+        or parsed.password is not None
+        or parsed.query
+        or parsed.fragment
+        or (
+            parsed.scheme == "http" and not _plaintext_development_host(parsed.hostname)
+        )
+    ):
+        raise ValueError(
+            f"{name} must be an HTTPS URL without credentials, query, or fragment "
+            "(HTTP is allowed only for loopback development)."
+        )
+
+
 @dataclass(frozen=True, slots=True)
 class WorkerConfig:
     database_path: Path
@@ -71,28 +104,14 @@ class WorkerConfig:
             raise ValueError("PORT must be an integer from 1 through 65535.")
         if self.drain_timeout_seconds <= 0:
             raise ValueError("EYEBALL_VOICE_DRAIN_SECONDS must be positive.")
-        parsed_executor = urlsplit(self.executor_url)
-        if (
-            parsed_executor.scheme not in {"http", "https"}
-            or not parsed_executor.netloc
-        ):
-            raise ValueError("EYEBALL_EXECUTOR_URL must be an absolute HTTP(S) URL.")
-        if self.media_mode == "pipecat":
-            control_token = (self.control_token or "").strip()
-            if len(control_token.encode()) < 32:
-                raise ValueError(
-                    "EYEBALL_VOICE_WORKER_TOKEN must contain at least 32 bytes "
-                    "in pipecat media mode."
-                )
+        _secure_service_url(self.executor_url, "EYEBALL_EXECUTOR_URL")
+        control_token = (self.control_token or "").strip()
+        if len(control_token.encode()) < 32:
+            raise ValueError(
+                "EYEBALL_VOICE_WORKER_TOKEN must contain at least 32 bytes."
+            )
         if self.public_url is not None:
-            parsed_public = urlsplit(self.public_url)
-            if (
-                parsed_public.scheme not in {"http", "https"}
-                or not parsed_public.netloc
-            ):
-                raise ValueError(
-                    "EYEBALL_VOICE_PUBLIC_URL must be an absolute HTTP(S) URL."
-                )
+            _secure_service_url(self.public_url, "EYEBALL_VOICE_PUBLIC_URL")
 
     @classmethod
     def from_env(cls, env: Mapping[str, str] | None = None) -> WorkerConfig:

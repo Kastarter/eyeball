@@ -116,13 +116,14 @@ interface TriggerSubscription {
 
 `POST /v1/subscriptions` validates the trigger, connection, effective provider scopes, filters, cadence, and every referenced endpoint. An endpoint must subscribe to either the exact `trigger.<qualified-trigger>` event or `trigger.*`. A pinned API key may act only for its pinned user. An unpinned project key may create and manage subscriptions for any user in its project. Cross-project reads and deletes are indistinguishable from missing resources.
 
-Push creation additionally returns an `ingestUrl`. Its secret appears only in that response; list responses and stored public records omit it. Polling subscriptions expose their selected cadence but no provider cursor.
+Push creation additionally returns an `ingestUrl`. Its secret appears only in that response; list responses and stored public records omit it. `POST /v1/subscriptions/:subscriptionId/rotate-secret` immediately invalidates the old path credential and returns its replacement once. Polling subscriptions expose their selected cadence but no provider cursor.
 
 The MVP routes are:
 
 - `POST /v1/subscriptions`
 - `GET /v1/subscriptions?userId=&cursor=&limit=`
 - `GET /v1/subscriptions/:subscriptionId`
+- `POST /v1/subscriptions/:subscriptionId/rotate-secret`
 - `DELETE /v1/subscriptions/:subscriptionId`
 - `POST /v1/ingest/:subscriptionId/:secret`
 
@@ -139,6 +140,8 @@ The MVP routes are:
 5. applies portable filters and normalizes the payload;
 6. claims the Slack `event_id` in the dedup store; and
 7. enqueues a signed `trigger.slack.message_received` webhook event.
+
+The credential-in-path design supports providers that cannot set a custom callback header, but request targets are commonly logged. Deployments must suppress or redact `/v1/ingest/*` request targets at every proxy and APM boundary and rotate the secret after suspected disclosure.
 
 For Slack `url_verification`, the route returns `{ "challenge": "..." }` immediately. A challenge neither creates a dedup claim nor emits a trigger event.
 
@@ -193,13 +196,13 @@ The exact raw body is signed as `<unix-seconds>.<raw-body>` with the endpoint's 
 - Connection existence, auth class, expiry, and effective trigger scopes are validated at creation and again at ingestion or polling time.
 - Provider endpoint overrides remain restricted to trusted manifest `baseUrlOverrideEnv` values.
 - Normalized payloads are schema validated before entering the outbound webhook engine.
-- Slack URL verification is supported, but Slack request-signature verification is deferred for MVP. Deployments should keep ingest URLs secret, rate-limit the route, and rotate a subscription by deleting and recreating it if exposed.
+- Slack URL verification is supported, but Slack request-signature verification is deferred for MVP. Deployments should keep ingest URLs secret, rate-limit the route, and use `POST /v1/subscriptions/:subscriptionId/rotate-secret` immediately if a path credential is exposed. Ingest bodies are capped at 1 MiB before adapter parsing.
 
 ## Deferred work
 
 - Replay and provider history backfill, including explicit start cursors.
 - Slack request-signature verification and equivalent verification for future push providers.
-- Automatic provider webhook lifecycle management and secret rotation without recreating subscriptions.
+- Automatic provider webhook lifecycle management and provider-signing-secret rotation.
 - Pause/resume and subscription update routes.
 - Durable stores, distributed polling leases, atomic claim-and-outbox delivery, metrics, and dead-letter operations.
 - Additional trigger contracts and provider mappings after mock and real-provider certification.

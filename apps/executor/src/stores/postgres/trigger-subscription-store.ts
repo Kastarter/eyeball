@@ -6,7 +6,7 @@ import type {
   TriggerSubscriptionId,
   TriggerSubscriptionPage,
 } from "@eyeball/core";
-import { and, desc, eq, lt, or, type SQL } from "drizzle-orm";
+import { and, desc, eq, isNotNull, lt, or, type SQL } from "drizzle-orm";
 import type { PgQueryResultHKT } from "drizzle-orm/pg-core";
 import {
   InvalidTriggerSubscriptionCursorError,
@@ -203,6 +203,28 @@ export class PostgresTriggerSubscriptionStore<
       .where(eq(triggerSubscriptions.status, "active"))
       .orderBy(triggerSubscriptions.sequence);
     return rows.map(storedSubscription);
+  }
+
+  async rotateIngestSecret(
+    projectId: string,
+    subscriptionId: string,
+    ingestSecretHash: string,
+    updatedAt: string,
+  ): Promise<TriggerSubscription | undefined> {
+    const [row] = await this.#database
+      .update(triggerSubscriptions)
+      .set({ ingestSecretHash, updatedAt })
+      .where(
+        and(
+          eq(triggerSubscriptions.projectId, projectId),
+          eq(triggerSubscriptions.subscriptionId, subscriptionId),
+          isNotNull(triggerSubscriptions.ingestSecretHash),
+        ),
+      )
+      .returning();
+    return row === undefined
+      ? undefined
+      : publicSubscription(storedSubscription(row));
   }
 
   async delete(projectId: string, subscriptionId: string): Promise<boolean> {

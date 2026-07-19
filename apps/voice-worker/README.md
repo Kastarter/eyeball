@@ -76,7 +76,7 @@ running because a SQLite volume cannot be mounted by multiple replicas.
 
 | Variable | Purpose |
 | --- | --- |
-| `EYEBALL_VOICE_WORKER_TOKEN` | Shared executor-to-worker control token; required in `pipecat` mode. |
+| `EYEBALL_VOICE_WORKER_TOKEN` | Shared executor-to-worker control token; always required and at least 32 bytes. |
 | `EYEBALL_VOICE_WORKER_KEY` | User-pinned executor API key used only for child tool execution. |
 | `EYEBALL_EXECUTOR_URL` | Trusted executor origin; defaults to `http://127.0.0.1:8787`. |
 | `EYEBALL_VOICE_DATABASE_PATH` | SQLite state path; defaults to `.eyeball/voice-worker.sqlite3`. |

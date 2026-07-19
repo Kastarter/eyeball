@@ -141,6 +141,13 @@ Only a user-pinned key may submit the reserved `X-Eyeball-Execution-Id` header, 
 that identity and `voice-session:<sessionId>:event:<sequence>`, so executor-level replay prevents a duplicate provider side
 effect.
 
+A future hosted executor that resolves project keys dynamically must call the
+cloud control plane with `POST /internal/keys/verify`, an internal bearer
+credential, and `{ "key": "..." }` in the JSON body. API keys must never be
+placed in a query parameter or request target; request-body logging must remain
+disabled on both sides of that internal boundary. The cloud endpoint limits the
+raw body to 4 KiB before buffering and the candidate key to 1,024 characters.
+
 Do not reuse the project-wide administrative key as the worker key, expose either service credential to a browser, or place
 the control token in a Twilio URL directly. Twilio media URLs contain only an HMAC-derived, session-bound token. One static
 worker key represents one user; a multi-user hosted worker requires short-lived per-session executor authorization that this

@@ -57,6 +57,13 @@ export interface CreatedTriggerSubscription extends TriggerSubscription {
   ingestUrl?: string;
 }
 
+/** Push ingest URL returned only when its secret is rotated. */
+export interface RotatedTriggerIngestSecret {
+  subscriptionId: TriggerSubscriptionId;
+  ingestUrl: string;
+  rotatedAt: string;
+}
+
 export interface TriggerSubscriptionPage {
   subscriptions: readonly TriggerSubscription[];
   nextCursor?: string;

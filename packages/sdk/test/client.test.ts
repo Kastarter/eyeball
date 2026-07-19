@@ -622,7 +622,7 @@ describe("Eyeball SDK", () => {
     ]);
   });
 
-  it("creates, lists, and deletes trigger subscriptions", async () => {
+  it("creates, lists, rotates, and deletes trigger subscriptions", async () => {
     const requests: Request[] = [];
     const subscription = {
       subscriptionId: "trgsub_sdk",
@@ -637,6 +637,14 @@ describe("Eyeball SDK", () => {
     } as const;
     const eb = client(
       testFetch((request) => {
+        if (request.url.endsWith("/rotate-secret")) {
+          return jsonResponse({
+            subscriptionId: subscription.subscriptionId,
+            ingestUrl:
+              "https://executor.example.test/v1/ingest/trgsub_sdk/trgsec_rotated",
+            rotatedAt: "2026-07-17T12:05:00.000Z",
+          });
+        }
         if (request.method === "POST") {
           return jsonResponse(
             {
@@ -673,6 +681,12 @@ describe("Eyeball SDK", () => {
       nextCursor: "cursor_sdk",
     });
     await expect(
+      eb.subscriptions.rotateSecret("trgsub_sdk"),
+    ).resolves.toMatchObject({
+      subscriptionId: "trgsub_sdk",
+      rotatedAt: "2026-07-17T12:05:00.000Z",
+    });
+    await expect(
       eb.subscriptions.delete("trgsub_sdk"),
     ).resolves.toBeUndefined();
 
@@ -687,6 +701,10 @@ describe("Eyeball SDK", () => {
       "?userId=user_sdk&cursor=previous&limit=10",
     );
     expect(new URL(requests[2]?.url ?? "").pathname).toBe(
+      "/v1/subscriptions/trgsub_sdk/rotate-secret",
+    );
+    expect(requests[2]?.method).toBe("POST");
+    expect(new URL(requests[3]?.url ?? "").pathname).toBe(
       "/v1/subscriptions/trgsub_sdk",
     );
   });
