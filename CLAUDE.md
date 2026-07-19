@@ -62,6 +62,7 @@ Open-core tool and integration platform for AI agents: one typed, authenticated 
 - Public execution GET/list return `ExecutionRecord`; internal canonical input and connection context stay private.
 - The auth boundary is `CredentialProvider`: local env/vault/mock implementations are OSS; hosted multi-user OAuth is cloud.
 - Voice agents keep immutable revisions; child calls re-enter the normal executor under pinned scope.
+- Dev-stack voice sessions use a deployment-scoped Pipecat service identity and share one agent store with the request-driven session driver; voice-agent management auth remains `none`.
 - Web voice sessions compose LiveKit room/token tools and return only a short-lived end-user join grant; provider API secrets never enter session output.
 - Outbound voice transport resolves deterministically: one bound number selects telephony, no binding selects only the development fake, and remote workers require configuration.
 - The stock executor injects the native number-binding view into Twilio inventory/release operations so low-level calls cannot bypass detach-before-release safety.

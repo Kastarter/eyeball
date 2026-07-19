@@ -1,9 +1,12 @@
 #!/usr/bin/env node
 
+import { randomUUID } from "node:crypto";
 import { resolve } from "node:path";
 import { pathToFileURL } from "node:url";
 import { serve } from "@hono/node-server";
+import { AdapterRegistry } from "../apps/executor/src/adapters/index.js";
 import { InMemoryDevVault } from "../apps/executor/src/dev-vault.js";
+import { DevVoiceSessionRuntime } from "../apps/executor/src/dev-voice-sessions.js";
 import {
   ExecutionEngine,
   type ExecutionEngineOptions,
@@ -12,10 +15,17 @@ import { createExecutorApp } from "../apps/executor/src/routes.js";
 import { createMcpGatewayApp } from "../apps/mcp-gateway/src/index.js";
 import { createMockhouse } from "../mocks/apps/mockhouse/src/index.js";
 import { defaultCatalog } from "../packages/catalog/src/index.js";
-import type {
-  ProviderManifest,
-  ResolvedCredential,
+import {
+  EyeballError,
+  type ProviderManifest,
+  type ResolvedCredential,
 } from "../packages/core/src/index.js";
+import {
+  defaultToolkitAdapters,
+  InMemoryAgentStore,
+  TwilioAdapter,
+  VoiceAgentsAdapter,
+} from "../packages/toolkits/src/index.js";
 
 const HOST = "127.0.0.1";
 const DEFAULT_MOCKHOUSE_PORT = 4_010;
@@ -24,6 +34,9 @@ const DEFAULT_MCP_GATEWAY_PORT = 3_001;
 const DEFAULT_API_KEY = "eyeball_dev_project";
 const DEFAULT_PROJECT_ID = "proj_dev";
 const DEFAULT_USER_ID = "demo_user";
+// Deployment-scoped service identity for the mock Pipecat runtime. This is
+// intentionally separate from the auth-free voice-agent management manifest.
+const MOCKHOUSE_PIPECAT_RUNTIME_TOKEN = "fixture:valid";
 
 type HonoServer = ReturnType<typeof serve>;
 type FetchHandler = (request: Request) => Response | Promise<Response>;
@@ -243,6 +256,33 @@ function inProcessFetch(origin: string, app: RequestApp): typeof fetch {
   }) as typeof fetch;
 }
 
+function serviceAuthenticatedFetch(
+  fetchImpl: typeof fetch,
+  baseUrl: string,
+  token: string,
+): typeof fetch {
+  const base = new URL(baseUrl);
+  const basePath = base.pathname.replace(/\/$/u, "");
+  return (async (
+    input: Parameters<typeof fetch>[0],
+    init?: Parameters<typeof fetch>[1],
+  ) => {
+    const request = new Request(input, init);
+    const url = new URL(request.url);
+    if (
+      url.origin !== base.origin ||
+      (url.pathname !== basePath && !url.pathname.startsWith(`${basePath}/`))
+    ) {
+      throw new Error(
+        `Unexpected Pipecat session-runtime request URL: ${request.url}`,
+      );
+    }
+    const headers = new Headers(request.headers);
+    headers.set("Authorization", `Bearer ${token}`);
+    return fetchImpl(new Request(request, { headers }));
+  }) as typeof fetch;
+}
+
 async function createMockBackedExecutor(
   mockhouse: ReturnType<typeof createMockhouse>,
   mockhouseUrl: string,
@@ -280,18 +320,96 @@ async function createMockBackedExecutor(
       }),
     ),
   );
+  const providerFetch = fetchImpl ?? globalThis.fetch;
+  const pipecatBaseUrl = `${mockhouseUrl}/pipecat`;
+  const sessionRuntimeFetch = serviceAuthenticatedFetch(
+    providerFetch,
+    pipecatBaseUrl,
+    MOCKHOUSE_PIPECAT_RUNTIME_TOKEN,
+  );
+  const agentStore = new InMemoryAgentStore();
+  let boundEngine: ExecutionEngine | undefined;
+  const voiceAgents = new VoiceAgentsAdapter({
+    store: agentStore,
+    sessionRuntimeFetch,
+    resolveTool: (name) => defaultCatalog.getTool(name),
+    executeProviderTool: async (request) => {
+      if (boundEngine === undefined) {
+        throw new Error(
+          "Voice provider executor was used before dev-stack runtime binding.",
+        );
+      }
+      const outcome = await boundEngine.execute({
+        projectId: request.projectId,
+        idempotencyKey: `voice-provider-${randomUUID()}`,
+        request: {
+          tool: request.tool,
+          userId: request.userId,
+          connectionId: request.connectionId,
+          input: request.input,
+          mode: "sync",
+        },
+      });
+      const response = outcome.response;
+      if (response.status === "succeeded") return response.output;
+      if (response.status === "failed") {
+        throw new EyeballError({
+          code: response.error.code,
+          message: response.error.message,
+          retryable: response.error.retryable,
+          ...(response.error.retryAfter === undefined
+            ? {}
+            : { retryAfter: response.error.retryAfter }),
+          ...(response.error.provider === undefined
+            ? {}
+            : { providerDetail: response.error.provider }),
+        });
+      }
+      throw new Error(
+        `Nested synchronous provider execution returned ${response.status}.`,
+      );
+    },
+  });
+  const twilio = new TwilioAdapter({ bindingLookup: agentStore });
   const engine = new ExecutionEngine({
     catalog: defaultCatalog,
+    adapters: new AdapterRegistry(
+      defaultToolkitAdapters.map((adapter) => {
+        if (adapter.toolkitSlug === "voice-agents") return voiceAgents;
+        if (adapter.toolkitSlug === "twilio") return twilio;
+        return adapter;
+      }),
+    ),
     credentialProvider: devVault,
     env: executorEnv,
     ...(fetchImpl === undefined ? {} : { fetchImpl }),
     ...engineOptions,
+  });
+  boundEngine = engine;
+  const pipecat = mockhouse.providers.find(
+    (provider) => provider.slug === "pipecat",
+  );
+  if (pipecat === undefined) {
+    throw new Error("Mockhouse does not mount the Pipecat session runtime.");
+  }
+  const devVoiceSessions = new DevVoiceSessionRuntime({
+    engine,
+    agentStore,
+    pipecatBaseUrl,
+    fetch: sessionRuntimeFetch,
+    clock: {
+      now: () => pipecat.clock.now(),
+      advance: (milliseconds) => {
+        pipecat.advanceClock(milliseconds);
+      },
+    },
   });
   return {
     engine,
     app: createExecutorApp({
       engine,
       devVault,
+      devVoiceSessions,
       apiKeys: { [identity.apiKey]: identity.projectId },
       env: executorEnv,
     }),

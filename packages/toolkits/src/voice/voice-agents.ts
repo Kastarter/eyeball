@@ -775,6 +775,8 @@ function page<T>(values: readonly T[], offset: number, limit: number) {
 export interface VoiceAgentsAdapterOptions {
   store?: AgentStore;
   sessionDriver?: VoiceSessionDriver;
+  /** Dedicated service-authenticated transport for the local Pipecat runtime. */
+  sessionRuntimeFetch?: typeof globalThis.fetch;
   resolveTool?: (name: QualifiedToolName) => ToolDefinition | undefined;
   executeProviderTool?: VoiceProviderToolExecutor;
 }
@@ -784,6 +786,7 @@ export class VoiceAgentsAdapter implements ToolkitAdapter {
   readonly toolkitSlug = "voice-agents";
   readonly store: AgentStore;
   readonly #sessionDriver: VoiceSessionDriver | undefined;
+  readonly #sessionRuntimeFetch: typeof globalThis.fetch | undefined;
   readonly #resolveTool:
     | ((name: QualifiedToolName) => ToolDefinition | undefined)
     | undefined;
@@ -793,8 +796,15 @@ export class VoiceAgentsAdapter implements ToolkitAdapter {
   constructor(options: VoiceAgentsAdapterOptions = {}) {
     this.store = options.store ?? new InMemoryAgentStore();
     this.#sessionDriver = options.sessionDriver;
+    this.#sessionRuntimeFetch = options.sessionRuntimeFetch;
     this.#resolveTool = options.resolveTool;
     this.#executeProviderTool = options.executeProviderTool;
+  }
+
+  private sessionRuntimeContext(context: AdapterContext): AdapterContext {
+    return this.#sessionRuntimeFetch === undefined
+      ? context
+      : { ...context, fetchImpl: this.#sessionRuntimeFetch };
   }
 
   async execute(context: AdapterContext): Promise<JsonValue> {
@@ -1133,7 +1143,12 @@ export class VoiceAgentsAdapter implements ToolkitAdapter {
     hasMore: boolean;
   }> {
     if (this.#sessionDriver === undefined) {
-      return eventPage(context, sessionId, afterSequence, limit);
+      return eventPage(
+        this.sessionRuntimeContext(context),
+        sessionId,
+        afterSequence,
+        limit,
+      );
     }
     return this.#sessionDriver.getEvents(sessionId, { afterSequence, limit });
   }
@@ -1142,7 +1157,9 @@ export class VoiceAgentsAdapter implements ToolkitAdapter {
     context: AdapterContext,
     sessionId: string,
   ): Promise<readonly VoiceAgentSessionEvent[]> {
-    if (this.#sessionDriver === undefined) return allEvents(context, sessionId);
+    if (this.#sessionDriver === undefined) {
+      return allEvents(this.sessionRuntimeContext(context), sessionId);
+    }
     const events: VoiceAgentSessionEvent[] = [];
     let cursor = 0;
     for (;;) {
@@ -1237,7 +1254,7 @@ export class VoiceAgentsAdapter implements ToolkitAdapter {
       this.rememberRemoteSession(context, agent, session);
     } else {
       const body = await pipecatObject(
-        context,
+        this.sessionRuntimeContext(context),
         "sessions",
         jsonRequest({
           agentConfig: {
@@ -1342,7 +1359,7 @@ export class VoiceAgentsAdapter implements ToolkitAdapter {
       });
     }
     const body = await pipecatObject(
-      context,
+      this.sessionRuntimeContext(context),
       "sessions",
       jsonRequest({
         agentConfig: {
@@ -1404,7 +1421,7 @@ export class VoiceAgentsAdapter implements ToolkitAdapter {
         ? sessionFromProvider(
             context,
             await pipecatObject(
-              context,
+              this.sessionRuntimeContext(context),
               `sessions/${encodeURIComponent(sessionId)}`,
             ),
           )
@@ -1448,7 +1465,7 @@ export class VoiceAgentsAdapter implements ToolkitAdapter {
         ? sessionFromProvider(
             context,
             await pipecatObject(
-              context,
+              this.sessionRuntimeContext(context),
               `sessions/${encodeURIComponent(sessionId)}/end`,
               jsonRequest(reason === undefined ? {} : { reason }),
             ),
@@ -1602,7 +1619,7 @@ export class VoiceAgentsAdapter implements ToolkitAdapter {
         });
       }
       const body = await pipecatObject(
-        context,
+        this.sessionRuntimeContext(context),
         "sessions",
         jsonRequest({
           agentConfig: {
@@ -1694,7 +1711,7 @@ export class VoiceAgentsAdapter implements ToolkitAdapter {
     const turn =
       remoteTurn ??
       (await pipecatObject(
-        context,
+        this.sessionRuntimeContext(context),
         `sessions/${encodeURIComponent(suppliedSessionId)}/turns`,
         jsonRequest({ text: message }),
       ));
