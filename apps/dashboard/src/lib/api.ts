@@ -201,7 +201,10 @@ export class ExecutorClient {
     }
     this.#apiKey = apiKey;
     this.#baseUrl = baseUrl.replace(/\/$/, "");
-    this.#fetch = fetchImpl;
+    // Browsers require fetch to be invoked with the global as `this`;
+    // storing it on a class field otherwise throws "Illegal invocation".
+    this.#fetch =
+      fetchImpl === globalThis.fetch ? fetchImpl.bind(globalThis) : fetchImpl;
     this.#projectId = projectId;
   }
 
