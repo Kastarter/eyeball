@@ -22,7 +22,10 @@ import {
   type VoiceSessionEvent,
 } from "@/src/lib/voice-transcript";
 
-const DASHBOARD_USER_ID = "dashboard_voice_tester";
+// Must match the dev-stack's seeded connection identity (EYEBALL_DEV_USER_ID
+// default); a user without seeded connections fails credential resolution.
+const DASHBOARD_USER_ID =
+  process.env.NEXT_PUBLIC_EYEBALL_DEMO_USER ?? "demo_user";
 const SESSION_POLL_MS = 1_700;
 
 const CALENDAR_INPUT = {
