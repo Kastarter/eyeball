@@ -137,4 +137,64 @@ describe("dashboard cloud proxy", () => {
     expect(response.status).toBe(400);
     expect(calls).toBe(0);
   });
+
+  it("forwards member PATCH mutations through the explicit allowlist", async () => {
+    let observedInit: RequestInit | undefined;
+    const fetchImpl: typeof globalThis.fetch = async (_input, init) => {
+      observedInit = init;
+      return Response.json({ membership: { role: "admin" } });
+    };
+    const response = await proxyCloudRequest(
+      new Request(
+        "https://dashboard.example.test/api/cloud/v1/orgs/org_fixture/members/usr_member",
+        {
+          body: JSON.stringify({ role: "admin" }),
+          headers: {
+            "Content-Type": "application/json",
+            [CLOUD_CSRF_HEADER]: "csrf",
+          },
+          method: "PATCH",
+        },
+      ),
+      {
+        params: Promise.resolve({
+          path: ["v1", "orgs", "org_fixture", "members", "usr_member"],
+        }),
+      },
+      environment,
+      fetchImpl,
+    );
+
+    expect(observedInit?.method).toBe("PATCH");
+    expect(
+      JSON.parse(new TextDecoder().decode(observedInit?.body as ArrayBuffer)),
+    ).toEqual({ role: "admin" });
+    expect(response.status).toBe(200);
+  });
+
+  it("blocks unrelated versioned routes without contacting the control plane", async () => {
+    let calls = 0;
+    const fetchImpl: typeof globalThis.fetch = async () => {
+      calls += 1;
+      return new Response();
+    };
+    const response = await proxyCloudRequest(
+      new Request(
+        "https://dashboard.example.test/api/cloud/v1/orgs/org_fixture/tools/export",
+      ),
+      {
+        params: Promise.resolve({
+          path: ["v1", "orgs", "org_fixture", "tools", "export"],
+        }),
+      },
+      environment,
+      fetchImpl,
+    );
+
+    expect(response.status).toBe(404);
+    expect(await response.json()).toMatchObject({
+      error: { code: "cloud_route_not_allowed" },
+    });
+    expect(calls).toBe(0);
+  });
 });

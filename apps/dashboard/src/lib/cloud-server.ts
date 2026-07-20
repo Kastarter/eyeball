@@ -1,15 +1,20 @@
 import { cookies } from "next/headers";
+import { cache } from "react";
 import {
   CLOUD_CSRF_COOKIE,
   CloudApiError,
   type CloudApiKey,
   type CloudAuditEvent,
+  type CloudBillingPlan,
   type CloudBillingView,
   CloudClient,
   type CloudConnection,
+  type CloudOAuthApp,
   type CloudOrganization,
+  type CloudOrganizationMember,
   type CloudProject,
   type CloudSession,
+  type CloudUsageView,
   cloudControlCookieHeader,
   DASHBOARD_ORGANIZATION_COOKIE,
   DASHBOARD_PROJECT_COOKIE,
@@ -94,33 +99,36 @@ export async function loadCloudSession(): Promise<CloudSession | undefined> {
   }
 }
 
-export async function loadCloudOrganizations(): Promise<{
-  session: CloudSession;
-  organizations: readonly CloudOrganizationContext[];
-}> {
-  const client = await serverCloudClient();
-  const [session, organizationPage] = await Promise.all([
-    client.session(),
-    client.listOrganizations(),
-  ]);
-  const projectPages = await Promise.all(
-    organizationPage.organizations.map((organization) =>
-      client.listProjects(organization.id),
-    ),
-  );
-  return {
-    session,
-    organizations: organizationPage.organizations.map(
-      (organization, index) => ({
-        organization,
-        projects: projectPages[index]?.projects ?? [],
-      }),
-    ),
-  };
-}
+export const loadCloudOrganizations = cache(
+  async function loadOrganizations(): Promise<{
+    session: CloudSession;
+    organizations: readonly CloudOrganizationContext[];
+  }> {
+    const client = await serverCloudClient();
+    const [session, organizationPage] = await Promise.all([
+      client.session(),
+      client.listOrganizations(),
+    ]);
+    const projectPages = await Promise.all(
+      organizationPage.organizations.map((organization) =>
+        client.listProjects(organization.id),
+      ),
+    );
+    return {
+      session,
+      organizations: organizationPage.organizations.map(
+        (organization, index) => ({
+          organization,
+          projects: projectPages[index]?.projects ?? [],
+        }),
+      ),
+    };
+  },
+);
 
-export async function loadCloudShellContext(
+async function selectCloudShellContext(
   requestedProjectId?: string,
+  requestedOrganizationId?: string,
 ): Promise<CloudShellContext | undefined> {
   const context = await loadCloudOrganizations();
   const available = context.organizations.flatMap(
@@ -136,11 +144,27 @@ export async function loadCloudShellContext(
   )?.value;
   const selected =
     available.find(({ project }) => project.id === requestedProjectId) ??
-    available.find(({ project }) => project.id === persistedProjectId) ??
-    available.find(
-      ({ organization }) => organization.id === persistedOrganizationId,
-    ) ??
-    available[0];
+    (requestedOrganizationId === undefined
+      ? undefined
+      : available.find(
+          ({ organization, project }) =>
+            organization.id === requestedOrganizationId &&
+            project.id === persistedProjectId,
+        )) ??
+    (requestedOrganizationId === undefined
+      ? undefined
+      : available.find(
+          ({ organization }) => organization.id === requestedOrganizationId,
+        )) ??
+    (requestedOrganizationId === undefined
+      ? available.find(({ project }) => project.id === persistedProjectId)
+      : undefined) ??
+    (requestedOrganizationId === undefined
+      ? available.find(
+          ({ organization }) => organization.id === persistedOrganizationId,
+        )
+      : undefined) ??
+    (requestedOrganizationId === undefined ? available[0] : undefined);
   if (selected === undefined) return undefined;
 
   return {
@@ -150,6 +174,20 @@ export async function loadCloudShellContext(
     session: context.session,
   };
 }
+
+export const loadCloudShellContext = cache(async function loadShellContext(
+  requestedProjectId?: string,
+): Promise<CloudShellContext | undefined> {
+  return selectCloudShellContext(requestedProjectId);
+});
+
+export const loadCloudShellContextForOrganization = cache(
+  async function loadShellContextForOrganization(
+    requestedOrganizationId?: string,
+  ): Promise<CloudShellContext | undefined> {
+    return selectCloudShellContext(undefined, requestedOrganizationId);
+  },
+);
 
 export async function loadCloudConnections(
   projectId: string,
@@ -180,4 +218,31 @@ export async function loadCloudBilling(
   organizationId: string,
 ): Promise<CloudBillingView> {
   return (await (await serverCloudClient()).billing(organizationId)).billing;
+}
+
+export async function loadCloudUsage(
+  organizationId: string,
+): Promise<CloudUsageView> {
+  return (await (await serverCloudClient()).usage(organizationId)).usage;
+}
+
+export async function loadCloudBillingPlans(
+  organizationId: string,
+): Promise<readonly CloudBillingPlan[]> {
+  return (await (await serverCloudClient()).billingPlans(organizationId)).plans;
+}
+
+export async function loadCloudOrganizationMembers(
+  organizationId: string,
+): Promise<readonly CloudOrganizationMember[]> {
+  return (
+    await (await serverCloudClient()).listOrganizationMembers(organizationId)
+  ).members;
+}
+
+export async function loadCloudOAuthApps(
+  organizationId: string,
+): Promise<readonly CloudOAuthApp[]> {
+  return (await (await serverCloudClient()).listOAuthApps(organizationId))
+    .oauthApps;
 }

@@ -52,6 +52,8 @@ type ExecutorState = "loading" | "offline" | "online" | "unconfigured";
 export interface ConnectionsScreenProps {
   dataSource?: "cloud-control" | "executor";
   initialCloudConnections?: CloudConnectionsScreenProps["initialConnections"];
+  initialCloudOAuthApps?: CloudConnectionsScreenProps["oauthApps"];
+  initialCloudOAuthRedirectOrigins?: CloudConnectionsScreenProps["oauthRedirectOrigins"];
   initialConnections?: readonly ConnectionRecord[];
   initialNewConnectionOpen?: boolean;
   project: string;
@@ -748,6 +750,8 @@ function ExecutorConnectionsScreen({
 export function ConnectionsScreen({
   dataSource = "executor",
   initialCloudConnections = [],
+  initialCloudOAuthApps = [],
+  initialCloudOAuthRedirectOrigins = [],
   initialConnections = [],
   initialNewConnectionOpen = false,
   project,
@@ -758,6 +762,8 @@ export function ConnectionsScreen({
       <CloudConnectionsScreen
         initialConnections={initialCloudConnections}
         initialNewConnectionOpen={initialNewConnectionOpen}
+        oauthApps={initialCloudOAuthApps}
+        oauthRedirectOrigins={initialCloudOAuthRedirectOrigins}
         project={project}
         toolkits={toolkits}
       />

@@ -34,12 +34,12 @@ Open-core tool and integration platform for AI agents: one typed, authenticated 
 - The docs shell follows Mintlify-derived geometry: a 56px top bar, 576px prose column, and 256px/264px navigation rails.
 - Dashboard cloud mode is explicit: `NEXT_PUBLIC_EYEBALL_MODE=cloud` selects cloud-backed features and server-only `EYEBALL_CLOUD_URL` supplies the control-plane origin; unset remains demo mode.
 - Dashboard cloud requests use the same-origin `/api/cloud` allowlist proxy; org/project context and manually pasted per-project executor keys live in validated `HttpOnly` cookies.
-- Cloud Stripe returns land on session-gated `/billing/checkout/success` and `/billing/checkout/cancel`; `/billing?org=...` is the minimal organization-billing landing route until the full billing screen is built.
+- Cloud Stripe returns land on session-gated `/billing/checkout/success` and `/billing/checkout/cancel`; `/billing?org=...` renders organization billing, current-month usage, plan comparison, checkout, and portal controls.
 - Cloud API-key verification is authenticated `POST /internal/keys/verify` with a pre-buffer 4 KiB body cap and a 1,024-character key schema; never place customer keys in internal URL queries.
 - Hosted executor auth checks static `EYEBALL_API_KEYS` before Cloud verification; remote caches use SHA-256 key digests with 60s positive/5s negative defaults, and `EYEBALL_CREDENTIALS=cloud` uses the executor-owned HTTP credential client.
 - Authenticated dashboard, provider, webhook, and remote-voice HTTP clients use manual redirect handling; remote voice requires HTTPS outside explicit loopback and supplied control tokens are at least 32 characters.
 - `pnpm check:secrets` scans tracked files without printing candidate values and runs from root lint; production CI should add gitleaks.
-- Dashboard cloud proxying exposes only `/v1/*`; executor proxying exposes only `/health` and `/v1/*`, and both construct upstream URLs from allowlisted inputs.
+- Dashboard cloud proxying uses an explicit method-and-path allowlist within `/v1`; executor proxying exposes only `/health` and `/v1/*`, and both construct upstream URLs from allowlisted inputs.
 - Executor telemetry and cloud audit redaction treat named URL fields as secret-bearing because path/query credentials remain in supported callback protocols.
 - `pnpm test:contract` defaults to built mocks and writes ignored `apps/executor/contract-report.json`.
 - The tracked-file secret scanner skips index entries deleted by an in-progress release/version change; it must still scan every existing tracked text file.
@@ -94,7 +94,7 @@ Open-core tool and integration platform for AI agents: one typed, authenticated 
 - The dashboard, SDK, MCP gateway, local encrypted vault, auth CLI, and public docs source are built.
 - The self-hosted docs renderer builds all 112 authored/generated pages with local navigation, search, syntax highlighting, and dark/light themes.
 - The dashboard has demo-default and cloud modes; cloud mode adds session auth, first-run org/project/key bootstrap, real connection/key/audit screens, project switchers, and per-project executor-key settings.
-- Cloud mode has session-gated Stripe checkout success/cancel returns plus a minimal organization-billing landing route; the dashboard suite has 52 serial tests.
+- Cloud mode has full Billing and Organization surfaces for usage, plan changes, members, BYO OAuth apps, redirect origins, organization rename, and audit navigation; OAuth connection setup can select an app and validated return URL, and the dashboard suite has 68 serial tests.
 - Search-mode MCP exposes both discovery and a generic executor-backed dispatch tool.
 - MCP Streamable HTTP supports JSON and SSE POST responses, authenticated GET event streams, DELETE teardown, one-way credential-bound sessions, and opt-in 2025-11-25 Tasks with execution-backed polling and progress notifications.
 - `pnpm dev:stack` boots 30-provider Mockhouse, executor, and MCP gateway with dev connections.

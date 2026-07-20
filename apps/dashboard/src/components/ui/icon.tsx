@@ -3,6 +3,7 @@ import type { SVGProps } from "react";
 export type IconName =
   | "activity"
   | "arrowRight"
+  | "billing"
   | "catalog"
   | "check"
   | "chevronDown"
@@ -13,6 +14,7 @@ export type IconName =
   | "executions"
   | "key"
   | "moon"
+  | "organization"
   | "overview"
   | "plus"
   | "search"
@@ -24,6 +26,12 @@ export type IconName =
 const iconPaths: Record<IconName, React.ReactNode> = {
   activity: <path d="M2 8h2.4l1.4-4.2 3 8.4 1.5-4.2H14" />,
   arrowRight: <path d="m6 3 5 5-5 5M2 8h9" />,
+  billing: (
+    <>
+      <rect x="1.5" y="3" width="13" height="10" rx="2" />
+      <path d="M1.5 6.5h13M4 10h3" />
+    </>
+  ),
   catalog: (
     <>
       <rect x="2.5" y="2.5" width="4" height="4" rx="1" />
@@ -65,6 +73,12 @@ const iconPaths: Record<IconName, React.ReactNode> = {
     </>
   ),
   moon: <path d="M13 10.2A5.5 5.5 0 0 1 5.8 3 5.5 5.5 0 1 0 13 10.2Z" />,
+  organization: (
+    <>
+      <path d="M2 13.5h12M3.5 13.5V6h9v7.5M5.5 6V3h5v3" />
+      <path d="M6 9h1m2 0h1m-4 2h1m2 0h1" />
+    </>
+  ),
   overview: (
     <>
       <path d="M2.5 7.2 8 2.5l5.5 4.7v6.3H9.8V9.8H6.2v3.7H2.5Z" />

@@ -1,10 +1,22 @@
 import { renderToStaticMarkup } from "react-dom/server";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { CloudApiError, type CloudBillingView } from "./cloud-api";
+import {
+  CloudApiError,
+  type CloudBillingView,
+  type CloudOrganization,
+  type CloudProject,
+  type CloudUsageView,
+} from "./cloud-api";
 
 const cloudServer = vi.hoisted(() => ({
   loadCloudBilling: vi.fn(),
+  loadCloudBillingPlans: vi.fn(),
+  loadCloudOAuthApps: vi.fn(),
+  loadCloudOrganizationMembers: vi.fn(),
   loadCloudSession: vi.fn(),
+  loadCloudShellContext: vi.fn(),
+  loadCloudShellContextForOrganization: vi.fn(),
+  loadCloudUsage: vi.fn(),
 }));
 
 class RedirectSignal extends Error {
@@ -21,8 +33,11 @@ vi.mock("next/navigation", () => ({
   redirect(destination: string): never {
     throw new RedirectSignal(destination);
   },
+  usePathname: () => "/billing",
+  useRouter: () => ({ push: () => undefined, refresh: () => undefined }),
 }));
 
+import OrganizationPage from "../../app/[project]/organization/page";
 import CheckoutCancelPage from "../../app/billing/checkout/cancel/page";
 import CheckoutSuccessPage from "../../app/billing/checkout/success/page";
 import BillingPage from "../../app/billing/page";
@@ -59,10 +74,53 @@ function billingView(
     usage: {
       month: "2026-07",
       percentage: { executions: 1.2, connections: 0, projects: 100 },
-      projected: {},
+      projected: {
+        connectionsPeak: 0,
+        executions: 12,
+        overage: {
+          connections: { cents: 0, quantity: 0, units: 0 },
+          executions: { cents: 0, quantity: 0, units: 0 },
+          totalCents: 0,
+        },
+      },
       totals: { executions: 12, connectionsPeak: 0, projects: 1 },
     },
     ...overrides,
+  };
+}
+
+function organization(): CloudOrganization {
+  return {
+    createdAt: "2026-07-01T00:00:00.000Z",
+    id: "org_fixture",
+    name: "Fixture Organization",
+    oauthRedirectOrigins: [],
+    role: "owner",
+    slug: "fixture",
+    updatedAt: "2026-07-01T00:00:00.000Z",
+  };
+}
+
+function project(): CloudProject {
+  return {
+    createdAt: "2026-07-01T00:00:00.000Z",
+    environment: "prod",
+    id: "proj_fixture",
+    name: "Production",
+    organizationId: "org_fixture",
+    slug: "production",
+    updatedAt: "2026-07-01T00:00:00.000Z",
+  };
+}
+
+function usage(view = billingView()): CloudUsageView {
+  return {
+    limits: view.limits,
+    month: view.usage.month,
+    percentage: view.usage.percentage,
+    plan: view.plan,
+    projected: view.usage.projected,
+    totals: view.usage.totals,
   };
 }
 
@@ -72,6 +130,25 @@ beforeEach(() => {
   cloudServer.loadCloudSession.mockResolvedValue({
     expiresAt: "2026-07-21T00:00:00.000Z",
     user: { id: "usr_fixture", email: "operator@example.test" },
+  });
+  const billing = billingView();
+  const selectedOrganization = organization();
+  const selectedProject = project();
+  cloudServer.loadCloudBilling.mockResolvedValue(billing);
+  cloudServer.loadCloudBillingPlans.mockResolvedValue([billing.plan]);
+  cloudServer.loadCloudUsage.mockResolvedValue(usage(billing));
+  cloudServer.loadCloudShellContextForOrganization.mockResolvedValue({
+    organizations: [
+      { organization: selectedOrganization, projects: [selectedProject] },
+    ],
+    selectedOrganization,
+    selectedProject,
+    session: {
+      csrfCookie: "eyeball_cloud_csrf",
+      csrfHeader: "X-CSRF-Token",
+      expiresAt: "2026-07-21T00:00:00.000Z",
+      user: { id: "usr_fixture", email: "operator@example.test" },
+    },
   });
 });
 
@@ -143,18 +220,25 @@ describe("billing return routes", () => {
     expect(cloudServer.loadCloudBilling).toHaveBeenCalledWith("org_fixture");
   });
 
-  it("renders the minimal organization billing landing route", async () => {
-    cloudServer.loadCloudBilling.mockResolvedValue(billingView());
-
+  it("renders the organization billing and current-month usage route", async () => {
     const markup = renderToStaticMarkup(
       await BillingPage({
         searchParams: Promise.resolve({ org: "org_fixture" }),
       }),
     );
 
-    expect(markup).toContain("Free plan");
-    expect(markup).toContain("Current usage month");
-    expect(markup).toContain("2026-07");
+    expect(markup).toContain("Billing &amp; usage");
+    expect(markup).toContain("Current plan");
+    expect(markup).toContain("Free");
+    expect(markup).toContain("Dimension breakdown");
+    expect(markup).toContain("July 2026");
+    expect(
+      cloudServer.loadCloudShellContextForOrganization,
+    ).toHaveBeenCalledWith("org_fixture");
+    expect(cloudServer.loadCloudUsage).toHaveBeenCalledWith("org_fixture");
+    expect(cloudServer.loadCloudBillingPlans).toHaveBeenCalledWith(
+      "org_fixture",
+    );
   });
 
   it("requires a cloud session before rendering a Stripe return", async () => {
@@ -197,7 +281,7 @@ describe("billing return routes", () => {
     expect(markup).not.toContain("/billing?org=org_untrusted");
   });
 
-  it("redirects every billing route to overview in demo mode", async () => {
+  it("keeps billing and organization administration out of demo mode", async () => {
     vi.stubEnv("NEXT_PUBLIC_EYEBALL_MODE", "demo");
 
     await expect(
@@ -216,6 +300,10 @@ describe("billing return routes", () => {
         }),
       }),
     ).rejects.toMatchObject({ destination: "/demo/overview" });
+    await expect(
+      OrganizationPage({ params: Promise.resolve({ project: "demo" }) }),
+    ).rejects.toMatchObject({ destination: "/demo/settings" });
     expect(cloudServer.loadCloudBilling).not.toHaveBeenCalled();
+    expect(cloudServer.loadCloudOrganizationMembers).not.toHaveBeenCalled();
   });
 });

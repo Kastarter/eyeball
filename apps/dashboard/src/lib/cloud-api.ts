@@ -87,6 +87,28 @@ export interface CloudAuditEvent {
   targetType: string;
 }
 
+export interface CloudOrganizationMember {
+  createdAt: string;
+  email: string;
+  organizationId: string;
+  role: CloudMembershipRole;
+  updatedAt: string;
+  userId: string;
+}
+
+export interface CloudOAuthApp {
+  clientId: string;
+  createdAt: string;
+  hasClientSecret: boolean;
+  id: string;
+  kind: "byo" | "shared";
+  organizationId: string | null;
+  redirectBase: string;
+  scopes: readonly string[];
+  toolkit: string;
+  updatedAt: string;
+}
+
 export type CloudBillingStatus = "active" | "canceled" | "free" | "past_due";
 
 export interface CloudBillingPlan {
@@ -105,6 +127,37 @@ export interface CloudBillingPlan {
   };
   selfServe: boolean;
   version: number;
+}
+
+export interface CloudUsageOverage {
+  connections: { cents: number; quantity: number; units: number };
+  executions: { cents: number; quantity: number; units: number };
+  totalCents: number;
+}
+
+export interface CloudUsageView {
+  limits: {
+    connections: number | null;
+    executions: number | null;
+    projects: number | null;
+  };
+  month: string;
+  percentage: {
+    connections: number | null;
+    executions: number | null;
+    projects: number | null;
+  };
+  plan: CloudBillingPlan;
+  projected: {
+    connectionsPeak: number;
+    executions: number;
+    overage: CloudUsageOverage;
+  };
+  totals: {
+    connectionsPeak: number;
+    executions: number;
+    projects: number;
+  };
 }
 
 export interface CloudBillingView {
@@ -127,18 +180,18 @@ export interface CloudBillingView {
   status: CloudBillingStatus;
   usage: {
     month: string;
-    percentage: {
-      connections: number | null;
-      executions: number | null;
-      projects: number | null;
-    };
-    projected: Readonly<Record<string, unknown>>;
-    totals: {
-      connectionsPeak: number;
-      executions: number;
-      projects: number;
-    };
+    percentage: CloudUsageView["percentage"];
+    projected: CloudUsageView["projected"];
+    totals: CloudUsageView["totals"];
   };
+}
+
+export interface PutCloudOAuthAppRequest {
+  clientId: string;
+  clientSecret?: string;
+  redirectBase: string;
+  scopes: readonly string[];
+  toolkit: string;
 }
 
 export type CreateCloudConnectionRequest =
@@ -305,10 +358,118 @@ export class CloudClient {
     );
   }
 
+  organization(organizationId: string, signal?: AbortSignal) {
+    return this.#request<{
+      membership: Omit<CloudOrganizationMember, "email">;
+      organization: Omit<CloudOrganization, "role">;
+    }>(
+      `/v1/orgs/${encodeURIComponent(organizationId)}`,
+      signal === undefined ? {} : { signal },
+    );
+  }
+
+  updateOrganization(
+    organizationId: string,
+    input: {
+      name?: string;
+      oauthRedirectOrigins?: readonly string[];
+      slug?: string;
+    },
+  ) {
+    return this.#request<{
+      organization: Omit<CloudOrganization, "role">;
+    }>(`/v1/orgs/${encodeURIComponent(organizationId)}`, {
+      method: "PATCH",
+      body: JSON.stringify(input),
+    });
+  }
+
   billing(organizationId: string, signal?: AbortSignal) {
     return this.#request<{ billing: CloudBillingView }>(
       `/v1/orgs/${encodeURIComponent(organizationId)}/billing`,
       signal === undefined ? {} : { signal },
+    );
+  }
+
+  usage(organizationId: string, signal?: AbortSignal) {
+    return this.#request<{ usage: CloudUsageView }>(
+      `/v1/orgs/${encodeURIComponent(organizationId)}/usage`,
+      signal === undefined ? {} : { signal },
+    );
+  }
+
+  billingPlans(organizationId: string, signal?: AbortSignal) {
+    return this.#request<{ plans: readonly CloudBillingPlan[] }>(
+      `/v1/orgs/${encodeURIComponent(organizationId)}/billing/plans`,
+      signal === undefined ? {} : { signal },
+    );
+  }
+
+  createBillingCheckout(organizationId: string, plan: "pro" | "scale") {
+    return this.#request<{ checkout: { id: string; url: string } }>(
+      `/v1/orgs/${encodeURIComponent(organizationId)}/billing/checkout`,
+      { method: "POST", body: JSON.stringify({ plan }) },
+    );
+  }
+
+  createBillingPortal(organizationId: string) {
+    return this.#request<{ url: string }>(
+      `/v1/orgs/${encodeURIComponent(organizationId)}/billing/portal`,
+      { method: "POST", body: JSON.stringify({}) },
+    );
+  }
+
+  listOrganizationMembers(organizationId: string, signal?: AbortSignal) {
+    return this.#request<{ members: readonly CloudOrganizationMember[] }>(
+      `/v1/orgs/${encodeURIComponent(organizationId)}/members`,
+      signal === undefined ? {} : { signal },
+    );
+  }
+
+  addOrganizationMember(
+    organizationId: string,
+    input: { email: string; role: Exclude<CloudMembershipRole, "owner"> },
+  ) {
+    return this.#request<{
+      membership: Omit<CloudOrganizationMember, "email">;
+      user: CloudUser;
+    }>(`/v1/orgs/${encodeURIComponent(organizationId)}/members`, {
+      method: "POST",
+      body: JSON.stringify(input),
+    });
+  }
+
+  updateOrganizationMember(
+    organizationId: string,
+    userId: string,
+    role: Exclude<CloudMembershipRole, "owner">,
+  ) {
+    return this.#request<{
+      membership: Omit<CloudOrganizationMember, "email">;
+    }>(
+      `/v1/orgs/${encodeURIComponent(organizationId)}/members/${encodeURIComponent(userId)}`,
+      { method: "PATCH", body: JSON.stringify({ role }) },
+    );
+  }
+
+  removeOrganizationMember(organizationId: string, userId: string) {
+    return this.#request<void>(
+      `/v1/orgs/${encodeURIComponent(organizationId)}/members/${encodeURIComponent(userId)}`,
+      { method: "DELETE" },
+    );
+  }
+
+  listOAuthApps(organizationId: string, signal?: AbortSignal) {
+    return this.#request<{ oauthApps: readonly CloudOAuthApp[] }>(
+      `/v1/orgs/${encodeURIComponent(organizationId)}/oauth-apps`,
+      signal === undefined ? {} : { signal },
+    );
+  }
+
+  putOAuthApp(organizationId: string, input: PutCloudOAuthAppRequest) {
+    return this.#request<{ oauthApp: CloudOAuthApp }>(
+      `/v1/orgs/${encodeURIComponent(organizationId)}/oauth-apps`,
+      { method: "POST", body: JSON.stringify(input) },
     );
   }
 

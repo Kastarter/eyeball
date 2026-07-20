@@ -103,7 +103,7 @@ export function AuditScreen({
           </Button>
         }
         description={`Review organization-scoped control-plane activity for ${organizationName}. Events contain identifiers and safe metadata, never stored credentials.`}
-        eyebrow="Organization history"
+        eyebrow="Organization / Audit log"
         title="Audit log"
       />
 

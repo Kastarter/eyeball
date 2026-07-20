@@ -22,6 +22,7 @@ import {
   CloudApiError,
   type CloudConnection,
   type CloudConnectionStatus,
+  type CloudOAuthApp,
   type CreateCloudConnectionRequest,
   dashboardCloudClient,
 } from "@/src/lib/cloud-api";
@@ -36,6 +37,8 @@ interface HostedConnectLink {
 export interface CloudConnectionsScreenProps {
   initialConnections: readonly CloudConnection[];
   initialNewConnectionOpen?: boolean;
+  oauthApps: readonly CloudOAuthApp[];
+  oauthRedirectOrigins: readonly string[];
   project: string;
   toolkits: readonly CatalogToolkitSummary[];
 }
@@ -87,12 +90,16 @@ function mergeConnection(
 export function cloudConnectionRequest({
   externalUserId,
   fields,
+  oauthAppId = "",
   providerAccountLabel,
+  returnUrl = "",
   toolkit,
 }: {
   externalUserId: string;
   fields: Readonly<Record<string, string>>;
+  oauthAppId?: string;
   providerAccountLabel: string;
+  returnUrl?: string;
   toolkit: CatalogToolkitSummary;
 }): CreateCloudConnectionRequest {
   const common = {
@@ -103,7 +110,14 @@ export function cloudConnectionRequest({
     toolkit: toolkit.slug,
   };
   if (toolkit.authClass === "oauth2") {
-    return { authType: "oauth2", ...common };
+    return {
+      authType: "oauth2",
+      ...common,
+      ...(oauthAppId.trim().length === 0
+        ? {}
+        : { oauthAppId: oauthAppId.trim() }),
+      ...(returnUrl.trim().length === 0 ? {} : { returnUrl: returnUrl.trim() }),
+    };
   }
   return {
     authType: "api_key",
@@ -112,6 +126,36 @@ export function cloudConnectionRequest({
       Object.entries(fields).map(([name, value]) => [name, value.trim()]),
     ),
   };
+}
+
+export function validateCloudReturnUrl(
+  value: string,
+  registeredOrigins: readonly string[],
+): string | undefined {
+  const candidate = value.trim();
+  if (candidate.length === 0) return undefined;
+  let url: URL;
+  try {
+    url = new URL(candidate);
+  } catch {
+    return "Return URL must be a valid URL.";
+  }
+  const loopback =
+    url.hostname === "localhost" ||
+    url.hostname === "::1" ||
+    url.hostname === "[::1]" ||
+    /^127(?:\.\d{1,3}){3}$/u.test(url.hostname);
+  if (
+    url.username.length > 0 ||
+    url.password.length > 0 ||
+    (url.protocol !== "https:" && !(url.protocol === "http:" && loopback))
+  ) {
+    return "Return URL must use HTTPS (HTTP is allowed only for loopback development).";
+  }
+  if (!registeredOrigins.includes(url.origin)) {
+    return "Return URL origin is not registered in Organization settings.";
+  }
+  return undefined;
 }
 
 export function confirmCloudConnectionRevocation(
@@ -185,12 +229,16 @@ function CloudNewConnectionPanel({
   onClose,
   onCreated,
   onHostedLink,
+  oauthApps,
+  oauthRedirectOrigins,
   project,
   toolkits,
 }: {
   onClose: () => void;
   onCreated: (connection: CloudConnection) => void;
   onHostedLink: (link: HostedConnectLink) => void;
+  oauthApps: readonly CloudOAuthApp[];
+  oauthRedirectOrigins: readonly string[];
   project: string;
   toolkits: readonly CatalogToolkitSummary[];
 }) {
@@ -205,10 +253,15 @@ function CloudNewConnectionPanel({
   const [externalUserId, setExternalUserId] = useState("user_123");
   const [providerAccountLabel, setProviderAccountLabel] = useState("");
   const [fields, setFields] = useState<Readonly<Record<string, string>>>({});
+  const [oauthAppId, setOAuthAppId] = useState("");
+  const [returnUrl, setReturnUrl] = useState("");
   const [submitting, setSubmitting] = useState(false);
   const [error, setError] = useState<{ code: string; message: string }>();
   const selectedToolkit = connectableToolkits.find(
     (toolkit) => toolkit.slug === toolkitSlug,
+  );
+  const selectedOAuthApps = oauthApps.filter(
+    (app) => app.toolkit === toolkitSlug,
   );
 
   useEffect(() => {
@@ -249,6 +302,14 @@ function CloudNewConnectionPanel({
       });
       return;
     }
+    const returnUrlError =
+      selectedToolkit.authClass === "oauth2"
+        ? validateCloudReturnUrl(returnUrl, oauthRedirectOrigins)
+        : undefined;
+    if (returnUrlError !== undefined) {
+      setError({ code: "invalid_return_url", message: returnUrlError });
+      return;
+    }
     setSubmitting(true);
     setError(undefined);
     try {
@@ -257,7 +318,9 @@ function CloudNewConnectionPanel({
         cloudConnectionRequest({
           externalUserId,
           fields,
+          oauthAppId,
           providerAccountLabel,
+          returnUrl,
           toolkit: selectedToolkit,
         }),
       );
@@ -314,6 +377,7 @@ function CloudNewConnectionPanel({
             onChange={(event) => {
               setToolkitSlug(event.currentTarget.value);
               setFields({});
+              setOAuthAppId("");
             }}
             options={connectableToolkits.map((toolkit) => ({
               label: `${toolkit.displayName} · ${toolkit.authClass}`,
@@ -338,13 +402,48 @@ function CloudNewConnectionPanel({
             value={providerAccountLabel}
           />
           {selectedToolkit?.authClass === "oauth2" ? (
-            <div className="connect-auth-note">
-              <Icon name="connections" />
-              <p>
-                Creating this connection returns a short-lived hosted OAuth
-                link. The provider never redirects through the dashboard.
-              </p>
-            </div>
+            <>
+              <Select
+                hint="Choose an organization app, or use Eyeball's configured shared default."
+                label="OAuth app"
+                onChange={(event) => setOAuthAppId(event.currentTarget.value)}
+                options={[
+                  {
+                    label: "Automatic (organization app, then shared)",
+                    value: "",
+                  },
+                  ...selectedOAuthApps.map((app) => ({
+                    label:
+                      app.kind === "shared"
+                        ? "Eyeball shared default"
+                        : `${app.clientId} · organization app`,
+                    value: app.id,
+                  })),
+                ]}
+                value={oauthAppId}
+              />
+              <Input
+                hint={
+                  oauthRedirectOrigins.length === 0
+                    ? "Optional. Register its origin in Organization settings first."
+                    : `Optional. Registered origins: ${oauthRedirectOrigins.join(", ")}`
+                }
+                label="Return URL"
+                mono
+                onChange={(event) => setReturnUrl(event.currentTarget.value)}
+                placeholder="https://app.example.com/settings/connections"
+                type="url"
+                value={returnUrl}
+              />
+              <div className="connect-auth-note">
+                <Icon name="connections" />
+                <p>
+                  Creating this connection returns a short-lived hosted OAuth
+                  link. After authorization, a registered return URL can send
+                  the user back to your application.
+                </p>
+              </div>
+            </>
           ) : (
             selectedToolkit?.authFields.map((field) => (
               <Input
@@ -394,6 +493,8 @@ function CloudNewConnectionPanel({
 export function CloudConnectionsScreen({
   initialConnections,
   initialNewConnectionOpen = false,
+  oauthApps,
+  oauthRedirectOrigins,
   project,
   toolkits,
 }: CloudConnectionsScreenProps) {
@@ -550,7 +651,7 @@ export function CloudConnectionsScreen({
           </Button>
         }
         description="Manage project-scoped credentials in the cloud vault, issue hosted OAuth links, and reauthorize accounts without exposing provider tokens."
-        eyebrow="Cloud credential vault"
+        eyebrow="Project / Connections"
         title="Connections"
       />
 
@@ -743,6 +844,8 @@ export function CloudConnectionsScreen({
             setConnections((current) => mergeConnection(current, connection))
           }
           onHostedLink={setHostedLink}
+          oauthApps={oauthApps}
+          oauthRedirectOrigins={oauthRedirectOrigins}
           project={project}
           toolkits={toolkits}
         />

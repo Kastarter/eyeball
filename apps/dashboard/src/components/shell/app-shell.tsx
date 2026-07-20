@@ -55,7 +55,13 @@ export function AppShell({ children, cloudContext, project }: AppShellProps) {
           </span>
           {cloud ? null : <Icon name="chevronDown" />}
         </div>
-        <SidebarNav cloud={cloud} project={project} />
+        <SidebarNav
+          cloud={cloud}
+          {...(cloudContext
+            ? { organizationId: cloudContext.selectedOrganization.id }
+            : {})}
+          project={project}
+        />
         <div className="sidebar__footer">
           <Link className="sidebar__utility" href="/design">
             <Icon name="catalog" />
@@ -73,7 +79,14 @@ export function AppShell({ children, cloudContext, project }: AppShellProps) {
               <span>{label}</span>
               <Icon name="chevronDown" />
             </summary>
-            <SidebarNav cloud={cloud} compact project={project} />
+            <SidebarNav
+              cloud={cloud}
+              compact
+              {...(cloudContext
+                ? { organizationId: cloudContext.selectedOrganization.id }
+                : {})}
+              project={project}
+            />
           </details>
           <div className="topbar__context">
             {cloudContext ? (

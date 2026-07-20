@@ -4,15 +4,18 @@ import { safeDashboardNextPath } from "../components/auth/auth-screen";
 import { confirmApiKeyRevocation } from "../components/cloud/api-keys-screen";
 import { SecretRevealDialog } from "../components/cloud/secret-reveal-dialog";
 import {
+  CloudConnectionsScreen,
   cloudConnectionRequest,
   confirmCloudConnectionRevocation,
   HostedConnectLinkDialog,
+  validateCloudReturnUrl,
 } from "../components/connections/cloud-connections-screen";
 import type { CatalogToolkitSummary } from "./catalog";
 import {
   type CloudApiKey,
   CloudClient,
   type CloudConnection,
+  type CloudOAuthApp,
   type CloudOrganization,
   type CloudProject,
 } from "./cloud-api";
@@ -29,16 +32,21 @@ class FakeCloudControlPlane {
   readonly projects: CloudProject[] = [];
   readonly apiKeys: CloudApiKey[] = [];
   readonly connections: CloudConnection[] = [];
-  readonly requests: { headers: Headers; method: string; path: string }[] = [];
+  readonly requests: {
+    body: unknown;
+    headers: Headers;
+    method: string;
+    path: string;
+  }[] = [];
 
   readonly fetch: typeof globalThis.fetch = async (input, init) => {
     const url = new URL(String(input));
     const path = url.pathname.replace(/^\/api\/cloud/u, "");
     const method = init?.method ?? "GET";
     const headers = new Headers(init?.headers);
-    this.requests.push({ headers, method, path });
     const value =
       typeof init?.body === "string" ? JSON.parse(init.body) : undefined;
+    this.requests.push({ body: value, headers, method, path });
     if (method !== "GET") {
       expect(headers.get("X-CSRF-Token")).toBe(CSRF_TOKEN);
     }
@@ -133,7 +141,10 @@ class FakeCloudControlPlane {
         authType: value.authType,
         status: value.authType === "oauth2" ? "pending" : "active",
         providerAccountLabel: value.providerAccountLabel ?? null,
-        oauthAppId: value.authType === "oauth2" ? "oauth_shared" : null,
+        oauthAppId:
+          value.authType === "oauth2"
+            ? (value.oauthAppId ?? "oauth_shared")
+            : null,
         revokedAt: null,
         createdAt: "2026-07-19T00:00:00.000Z",
         updatedAt: "2026-07-19T00:00:00.000Z",
@@ -216,6 +227,27 @@ const oauthToolkit: CatalogToolkitSummary = {
   authFields: [],
   displayName: "GitHub",
   slug: "github",
+};
+
+const organizationOAuthApp: CloudOAuthApp = {
+  clientId: "github-org-client",
+  createdAt: "2026-07-19T00:00:00.000Z",
+  hasClientSecret: true,
+  id: "oauth_org_github",
+  kind: "byo",
+  organizationId: "org_fixture",
+  redirectBase: "https://control.example.test/oauth/callback",
+  scopes: ["read:user"],
+  toolkit: "github",
+  updatedAt: "2026-07-19T00:00:00.000Z",
+};
+
+const sharedOAuthApp: CloudOAuthApp = {
+  ...organizationOAuthApp,
+  clientId: "shared-client-metadata",
+  id: "oauth_shared_github",
+  kind: "shared",
+  organizationId: null,
 };
 
 describe("dashboard cloud mode data flow", () => {
@@ -310,12 +342,38 @@ describe("dashboard cloud mode data flow", () => {
       cloudConnectionRequest({
         externalUserId: "user_oauth",
         fields: {},
+        oauthAppId: "oauth_org_github",
         providerAccountLabel: "Primary GitHub",
+        returnUrl: "https://app.example.test/settings/connections",
         toolkit: oauthToolkit,
       }),
     );
     expect("redirectUrl" in oauthResult).toBe(true);
     if (!("redirectUrl" in oauthResult)) throw new Error("Missing OAuth link");
+    expect(
+      fake.requests.find(
+        ({ body, method, path }) =>
+          method === "POST" &&
+          path === "/v1/projects/proj_fixture/connections" &&
+          typeof body === "object" &&
+          body !== null &&
+          "authType" in body &&
+          body.authType === "oauth2",
+      )?.body,
+    ).toMatchObject({
+      oauthAppId: "oauth_org_github",
+      returnUrl: "https://app.example.test/settings/connections",
+    });
+    expect(
+      validateCloudReturnUrl("https://app.example.test/settings/connections", [
+        "https://app.example.test",
+      ]),
+    ).toBeUndefined();
+    expect(
+      validateCloudReturnUrl("https://other.example.test/return", [
+        "https://app.example.test",
+      ]),
+    ).toContain("not registered");
     const html = renderToStaticMarkup(
       <HostedConnectLinkDialog
         link={{
@@ -351,6 +409,26 @@ describe("dashboard cloud mode data flow", () => {
     expect(
       (await client.listConnections("proj_fixture")).connections,
     ).toHaveLength(2);
+  });
+
+  it("renders shared and organization OAuth app choices with a validated return URL", () => {
+    const html = renderToStaticMarkup(
+      <CloudConnectionsScreen
+        initialConnections={[]}
+        initialNewConnectionOpen
+        oauthApps={[organizationOAuthApp, sharedOAuthApp]}
+        oauthRedirectOrigins={["https://app.example.test"]}
+        project="proj_fixture"
+        toolkits={[oauthToolkit]}
+      />,
+    );
+
+    expect(html).toContain("Automatic (organization app, then shared)");
+    expect(html).toContain("Eyeball shared default");
+    expect(html).toContain("github-org-client · organization app");
+    expect(html).not.toContain("shared-client-metadata");
+    expect(html).toContain("Return URL");
+    expect(html).toContain("https://app.example.test");
   });
 
   it("renders the first project key with a reveal-once storage warning", () => {

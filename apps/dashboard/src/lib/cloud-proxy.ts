@@ -81,6 +81,74 @@ function proxyError(status: number, code: string, message: string): Response {
   );
 }
 
+export function isAllowedCloudProxyRequest(
+  requestMethod: string,
+  path: readonly string[],
+): boolean {
+  const method = requestMethod === "HEAD" ? "GET" : requestMethod;
+  if (path[0] !== "v1") return false;
+
+  if (path[1] === "auth" && path.length === 3) {
+    if (path[2] === "session") return method === "GET";
+    return (
+      method === "POST" &&
+      (path[2] === "login" || path[2] === "logout" || path[2] === "signup")
+    );
+  }
+
+  if (path[1] === "orgs") {
+    if (path.length === 2) return method === "GET" || method === "POST";
+    if (path.length === 3) {
+      return method === "GET" || method === "PATCH" || method === "DELETE";
+    }
+    if (path.length === 4) {
+      if (path[3] === "projects") return method === "GET" || method === "POST";
+      if (path[3] === "usage" || path[3] === "audit-log") {
+        return method === "GET";
+      }
+      if (path[3] === "billing") return method === "GET";
+      if (path[3] === "members" || path[3] === "oauth-apps") {
+        return method === "GET" || method === "POST";
+      }
+    }
+    if (path.length === 5 && path[3] === "billing") {
+      if (path[4] === "plans") return method === "GET";
+      if (path[4] === "checkout" || path[4] === "portal") {
+        return method === "POST";
+      }
+    }
+    if (path.length === 5 && path[3] === "members") {
+      return method === "PATCH" || method === "DELETE";
+    }
+    return false;
+  }
+
+  if (path[1] === "projects") {
+    if (path.length === 3) {
+      return method === "GET" || method === "PATCH" || method === "DELETE";
+    }
+    if (path.length === 4) {
+      if (path[3] === "api-keys" || path[3] === "connections") {
+        return method === "GET" || method === "POST";
+      }
+    }
+    if (path.length === 5 && path[3] === "api-keys") {
+      return method === "DELETE";
+    }
+    if (path.length === 5 && path[3] === "connections") {
+      return method === "GET" || method === "DELETE";
+    }
+    return (
+      path.length === 6 &&
+      path[3] === "connections" &&
+      path[5] === "reauthorize" &&
+      method === "POST"
+    );
+  }
+
+  return false;
+}
+
 export async function proxyCloudRequest(
   request: Request,
   context: CloudProxyRouteContext,
@@ -108,6 +176,13 @@ export async function proxyCloudRequest(
       400,
       "invalid_cloud_path",
       "The cloud proxy accepts only versioned public control-plane paths.",
+    );
+  }
+  if (!isAllowedCloudProxyRequest(request.method, path)) {
+    return proxyError(
+      404,
+      "cloud_route_not_allowed",
+      "The requested control-plane route is not exposed by the dashboard proxy.",
     );
   }
 

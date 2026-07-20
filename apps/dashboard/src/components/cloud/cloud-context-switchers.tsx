@@ -27,6 +27,7 @@ export function CloudContextSwitchers({
   const selectedOrganization = organizations.find(
     ({ organization }) => organization.id === selectedOrganizationId,
   );
+  const organizationBilling = pathname === "/billing";
   const pageSegment = pathname.split("/").filter(Boolean)[1] ?? "overview";
 
   useEffect(() => {
@@ -47,7 +48,11 @@ export function CloudContextSwitchers({
         projectId: project.id,
       });
     } finally {
-      router.push(`/${encodeURIComponent(project.id)}/${pageSegment}`);
+      router.push(
+        organizationBilling
+          ? `/billing?org=${encodeURIComponent(project.organizationId)}`
+          : `/${encodeURIComponent(project.id)}/${pageSegment}`,
+      );
       router.refresh();
     }
   }
@@ -71,7 +76,11 @@ export function CloudContextSwitchers({
         projectId: firstProject.id,
       });
     } finally {
-      router.push(`/${encodeURIComponent(firstProject.id)}/${pageSegment}`);
+      router.push(
+        organizationBilling
+          ? `/billing?org=${encodeURIComponent(organizationId)}`
+          : `/${encodeURIComponent(firstProject.id)}/${pageSegment}`,
+      );
       router.refresh();
     }
   }
