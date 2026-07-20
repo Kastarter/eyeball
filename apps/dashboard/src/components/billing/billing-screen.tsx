@@ -331,8 +331,8 @@ export function BillingScreen({
             </strong>
             <p>
               {restricted
-                ? "New API keys and connections are restricted. Existing keys and credential resolves continue to work while billing is repaired."
-                : `${grace ?? "The 14-day grace period is active"}. Existing access continues, but new API keys and connections will be restricted when grace ends.`}
+                ? "New API keys, connections, executions, and credential resolves are restricted until billing is repaired. Existing keys keep their identity and no data is deleted."
+                : `${grace ?? "The 14-day grace period is active"}. Existing access continues, but new keys, connections, and executions will be restricted when grace ends.`}
             </p>
           </div>
         </section>

@@ -202,8 +202,10 @@ describe("BillingScreen", () => {
     );
 
     expect(html).toContain("Payment grace period expired");
-    expect(html).toContain("New API keys and connections are restricted");
-    expect(html).toContain("Existing keys and credential resolves continue");
+    expect(html).toContain(
+      "New API keys, connections, executions, and credential resolves are restricted",
+    );
+    expect(html).toContain("Existing keys keep their identity");
     expect(html).toContain("billing-status--restricted");
     expect(
       billingGraceLabel("2026-07-19T00:00:00.000Z", "2026-07-20T00:00:00.000Z"),
