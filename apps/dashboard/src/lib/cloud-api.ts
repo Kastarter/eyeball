@@ -87,6 +87,60 @@ export interface CloudAuditEvent {
   targetType: string;
 }
 
+export type CloudBillingStatus = "active" | "canceled" | "free" | "past_due";
+
+export interface CloudBillingPlan {
+  baseMonthlyCents: number | null;
+  hardLimits: boolean;
+  included: {
+    connections: number | null;
+    executions: number | null;
+    projects: number | null;
+  };
+  key: "enterprise" | "free" | "pro" | "scale";
+  name: string;
+  overage: {
+    connections: { unitCents: number; unitSize: number } | null;
+    executions: { unitCents: number; unitSize: number } | null;
+  };
+  selfServe: boolean;
+  version: number;
+}
+
+export interface CloudBillingView {
+  currentPeriod: { end: string; start: string };
+  graceEndsAt: string | null;
+  hasPaymentPortal: boolean;
+  limits: {
+    connections: number | null;
+    executions: number | null;
+    projects: number | null;
+  };
+  pastDueSince: string | null;
+  plan: CloudBillingPlan;
+  restrictions: {
+    credentialResolves: boolean;
+    existingKeys: boolean;
+    newApiKeys: boolean;
+    newConnections: boolean;
+  };
+  status: CloudBillingStatus;
+  usage: {
+    month: string;
+    percentage: {
+      connections: number | null;
+      executions: number | null;
+      projects: number | null;
+    };
+    projected: Readonly<Record<string, unknown>>;
+    totals: {
+      connectionsPeak: number;
+      executions: number;
+      projects: number;
+    };
+  };
+}
+
 export type CreateCloudConnectionRequest =
   | {
       authType: "api_key";
@@ -247,6 +301,13 @@ export class CloudClient {
   listProjects(organizationId: string, signal?: AbortSignal) {
     return this.#request<{ projects: readonly CloudProject[] }>(
       `/v1/orgs/${encodeURIComponent(organizationId)}/projects`,
+      signal === undefined ? {} : { signal },
+    );
+  }
+
+  billing(organizationId: string, signal?: AbortSignal) {
+    return this.#request<{ billing: CloudBillingView }>(
+      `/v1/orgs/${encodeURIComponent(organizationId)}/billing`,
       signal === undefined ? {} : { signal },
     );
   }

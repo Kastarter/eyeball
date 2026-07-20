@@ -4,6 +4,7 @@ import {
   CloudApiError,
   type CloudApiKey,
   type CloudAuditEvent,
+  type CloudBillingView,
   CloudClient,
   type CloudConnection,
   type CloudOrganization,
@@ -173,4 +174,10 @@ export async function loadCloudAuditEvents(
       limit: 200,
     })
   ).events;
+}
+
+export async function loadCloudBilling(
+  organizationId: string,
+): Promise<CloudBillingView> {
+  return (await (await serverCloudClient()).billing(organizationId)).billing;
 }

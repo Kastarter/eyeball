@@ -70,6 +70,15 @@ class FakeCloudControlPlane {
     if (path === "/v1/orgs" && method === "GET") {
       return json({ organizations: this.organizations });
     }
+    if (path === "/v1/orgs/org_fixture/billing" && method === "GET") {
+      return json({
+        billing: {
+          plan: { key: "pro", name: "Pro", version: 1 },
+          status: "active",
+          hasPaymentPortal: true,
+        },
+      });
+    }
     if (path === "/v1/orgs/org_fixture/projects" && method === "POST") {
       const project: CloudProject = {
         id: "proj_fixture",
@@ -210,6 +219,27 @@ const oauthToolkit: CatalogToolkitSummary = {
 };
 
 describe("dashboard cloud mode data flow", () => {
+  it("reads organization billing through the same-origin cloud proxy", async () => {
+    const fake = new FakeCloudControlPlane();
+    const client = new CloudClient({
+      baseUrl: "https://dashboard.example.test/api/cloud",
+      csrfToken: () => CSRF_TOKEN,
+      fetch: fake.fetch,
+    });
+
+    const response = await client.billing("org_fixture");
+
+    expect(response.billing).toMatchObject({
+      plan: { key: "pro", name: "Pro" },
+      status: "active",
+      hasPaymentPortal: true,
+    });
+    expect(fake.requests.at(-1)).toMatchObject({
+      method: "GET",
+      path: "/v1/orgs/org_fixture/billing",
+    });
+  });
+
   it("logs in and creates the first organization, project, and pinned reveal-once key", async () => {
     const fake = new FakeCloudControlPlane();
     const client = new CloudClient({

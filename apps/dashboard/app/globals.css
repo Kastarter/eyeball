@@ -4010,6 +4010,62 @@ select.field__control {
   width: min(100%, 620px);
 }
 
+.billing-return-canvas .badge {
+  margin-top: var(--space-4);
+}
+
+.billing-return-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--space-3);
+}
+
+.billing-return-actions .button {
+  min-height: 42px;
+  justify-content: center;
+}
+
+.billing-return-summary {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: var(--space-3);
+  margin: 0 0 var(--space-6);
+}
+
+.billing-return-summary div {
+  padding: var(--space-4);
+  border: 1px solid var(--border-subtle);
+  border-radius: 10px;
+  background: rgb(7 7 10 / 42%);
+}
+
+.billing-return-summary dt {
+  color: var(--text-tertiary);
+  font-size: 11px;
+  font-weight: 620;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+}
+
+.billing-return-summary dd {
+  margin: var(--space-2) 0 0;
+  color: var(--text-primary);
+  font-size: 14px;
+  font-weight: 590;
+  text-transform: capitalize;
+}
+
+@media (max-width: 520px) {
+  .billing-return-actions,
+  .billing-return-summary {
+    grid-template-columns: 1fr;
+  }
+
+  .billing-return-actions {
+    display: grid;
+  }
+}
+
 .cloud-switchers {
   display: flex;
   min-width: 0;
