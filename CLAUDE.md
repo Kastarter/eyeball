@@ -87,6 +87,7 @@ Open-core tool and integration platform for AI agents: one typed, authenticated 
 - Source version is `0.2.0`; the root and four fixed-group public package manifests have been cut locally, while npm and hosted publication remain unclaimed.
 - Package changelogs, tarball checks, version stamping, and protected manual provenance publishing are automated; the baseline `0.2.0` Changeset has been consumed.
 - The final 0.2.0 review passes fresh serial build, test, typecheck, lint, docs, 493-row contract, ten-test Python worker, cloud, Mockhouse, tarball, and tracked-file secret gates.
+- Hosted release-gate scenarios 1–5 are automated in one conditional in-process Cloud/executor suite covering provisioning, vault refresh, exact-once usage, last-slot admission, bounded key revocation, and executor log-secret absence.
 - Catalog `1.1` contains 37 manifests/toolkits and the implemented capability adapters.
 - The manifest-derived matrix has 493 rows: 227 smoke and 266 explicit `not_supported`.
 - The dashboard, SDK, MCP gateway, local encrypted vault, auth CLI, and public docs source are built.

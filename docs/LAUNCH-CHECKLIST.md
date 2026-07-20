@@ -19,6 +19,7 @@ export VITEST_MAX_THREADS=1
 - [x] Main, cloud, and read-only Mockhouse gates run serially; the 493-row account-free contract matrix and ten-test Python worker suite pass.
 - [x] Root plus @eyeball/core, @eyeball/catalog, @eyeball/toolkits, and @eyeball/sdk cut to 0.2.0; package and root changelogs generated or written.
 - [x] Release tarballs constrained to the four public packages and inspected with the non-publishing dry run; compressed sizes are 26–182 KiB, below the 2 MiB ceiling.
+- [x] Hosted release-gate scenarios 1–5 are automated in `apps/executor/test/hosted-e2e.test.ts`: Cloud API provisioning, immediate hosted execution, OAuth refresh persistence, exactly-once billing, concurrent last-slot admission, bounded key revocation, and executor log redaction.
 
 ## User-blocked launch actions
 
