@@ -295,7 +295,11 @@ describe("stock hosted runtime composition", () => {
       EYEBALL_INTERNAL_API_SECRET: INTERNAL_API_SECRET,
       EYEBALL_GMAIL_BASE_URL: "https://gmail.example.test",
     };
-    const runtime = await createExecutorRuntime({ env, fetchImpl });
+    const runtime = await createExecutorRuntime({
+      env,
+      fetchImpl,
+      clock: { now: () => new Date(fixedNow) },
+    });
 
     try {
       const app = createExecutorApp({
