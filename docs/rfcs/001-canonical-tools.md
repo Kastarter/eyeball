@@ -816,7 +816,7 @@ export declare class LocalVaultCredentialProvider implements CredentialProvider 
   refresh(context: CredentialRefreshContext): Promise<OAuth2Credential>;
 }
 
-/** Public stub only; implementation and Auth Vault client live in eyeball-cloud. */
+/** Public contract; the HTTP client lives in the OSS executor and storage in Cloud. */
 export interface CloudCredentialProvider extends CredentialProvider {
   readonly kind: "cloud";
 }
@@ -832,8 +832,8 @@ export interface CloudCredentialProvider extends CredentialProvider {
   single-process write serialization, expiry checks, refresh-token rotation, and in-flight
   refresh deduplication. It is single-tenant infrastructure, not a substitute for the hosted
   connection vault.
-- `CloudCredentialProvider` calls the private Auth Vault API, selects the connection,
-  refreshes OAuth, and returns only a short-lived provider-ready credential.
+- The executor's hosted credential provider calls the private Auth Vault API. Cloud selects
+  the connection and refreshes OAuth before returning a short-lived provider-ready credential.
 
 The executor MAY refresh proactively. It retries after an auth rejection at most once,
 and only if no side effect occurred or platform/provider idempotency protects the call.

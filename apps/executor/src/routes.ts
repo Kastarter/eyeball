@@ -11,8 +11,6 @@ import {
   isExecutionId,
   isWebhookSubscriptionEventType,
   type JsonValue,
-  materializeApiKeyring,
-  parseApiKeyring,
   type QualifiedToolName,
   TOOL_ERROR_CODES,
   VOICE_WORKER_EXECUTION_ID_HEADER,
@@ -21,6 +19,12 @@ import {
 } from "@eyeball/core";
 import { type Context, Hono } from "hono";
 import { bodyLimit } from "hono/body-limit";
+import {
+  type ApiKeyAuthenticationResult,
+  type ApiKeyAuthenticator,
+  createConfiguredApiKeyAuthenticator,
+  StaticKeyringAuthenticator,
+} from "./api-key-authenticator.js";
 import { createConfiguredCredentialProvider } from "./credential-provider.js";
 import type { DevVaultCredentialProvider } from "./dev-vault.js";
 import type { DevVoiceSessionAdvancer } from "./dev-voice-sessions.js";
@@ -70,7 +74,9 @@ export interface ExecutorAppOptions {
   engine?: ExecutionEngine;
   fileStore?: FileStore;
   apiKeys?: ApiKeyringInput;
+  apiKeyAuthenticator?: ApiKeyAuthenticator;
   env?: Readonly<Record<string, string | undefined>>;
+  fetchImpl?: typeof fetch;
   requestIdFactory?: () => string;
   rateLimiter?: RateLimiter;
   rateLimitPolicies?: ExecutorRateLimitPolicies;
@@ -391,6 +397,14 @@ export function createExecutorApp(options: ExecutorAppOptions = {}): Hono<{
   Variables: ExecutorVariables;
 }> {
   const env = options.env ?? process.env;
+  if (
+    options.apiKeys !== undefined &&
+    options.apiKeyAuthenticator !== undefined
+  ) {
+    throw new Error(
+      "Configure either apiKeys or apiKeyAuthenticator, not both.",
+    );
+  }
   const engine =
     options.engine ??
     new ExecutionEngine({
@@ -399,7 +413,16 @@ export function createExecutorApp(options: ExecutorAppOptions = {}): Hono<{
         ? {}
         : { fileStore: options.fileStore }),
       credentialProvider:
-        options.devVault ?? createConfiguredCredentialProvider({ env }),
+        options.devVault ??
+        createConfiguredCredentialProvider({
+          env,
+          ...(options.fetchImpl === undefined
+            ? {}
+            : { fetchImpl: options.fetchImpl }),
+        }),
+      ...(options.fetchImpl === undefined
+        ? {}
+        : { fetchImpl: options.fetchImpl }),
     });
   if (
     options.fileStore !== undefined &&
@@ -425,10 +448,16 @@ export function createExecutorApp(options: ExecutorAppOptions = {}): Hono<{
       "The development voice-session route requires the development vault.",
     );
   }
-  const keyring =
-    options.apiKeys === undefined
-      ? parseApiKeyring(env.EYEBALL_API_KEYS)
-      : materializeApiKeyring(options.apiKeys);
+  const apiKeyAuthenticator =
+    options.apiKeyAuthenticator ??
+    (options.apiKeys === undefined
+      ? createConfiguredApiKeyAuthenticator({
+          env,
+          ...(options.fetchImpl === undefined
+            ? {}
+            : { fetchImpl: options.fetchImpl }),
+        })
+      : new StaticKeyringAuthenticator(options.apiKeys));
   const requestIdFactory =
     options.requestIdFactory ??
     (() => `req_${randomUUID().replaceAll("-", "")}`);
@@ -464,8 +493,31 @@ export function createExecutorApp(options: ExecutorAppOptions = {}): Hono<{
       return;
     }
     const token = bearerToken(context.req.header("Authorization"));
-    const principal = token === undefined ? undefined : keyring.get(token);
-    if (principal === undefined) {
+    if (token === undefined) {
+      return requestFailure(
+        context,
+        new EyeballError({
+          code: TOOL_ERROR_CODES.AUTH_MISSING,
+          message: "A valid Eyeball API key is required.",
+        }),
+        401,
+      );
+    }
+    let principal: ApiKeyAuthenticationResult;
+    try {
+      principal = await apiKeyAuthenticator.verify(token);
+    } catch {
+      return requestFailure(
+        context,
+        new EyeballError({
+          code: TOOL_ERROR_CODES.AUTH_MISSING,
+          message: "API key verification is temporarily unavailable.",
+          retryable: true,
+        }),
+        401,
+      );
+    }
+    if (!principal.valid) {
       return requestFailure(
         context,
         new EyeballError({

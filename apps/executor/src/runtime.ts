@@ -11,6 +11,10 @@ import {
   voiceWorkerUrlFromEnv,
 } from "@eyeball/toolkits";
 import { AdapterRegistry } from "./adapters/index.js";
+import {
+  type ApiKeyAuthenticator,
+  createConfiguredApiKeyAuthenticator,
+} from "./api-key-authenticator.js";
 import { createConfiguredCredentialProvider } from "./credential-provider.js";
 import { ExecutionEngine, type RuntimeCatalog } from "./engine.js";
 import {
@@ -29,6 +33,9 @@ export interface CreateExecutorRuntimeOptions {
   env?: Readonly<Record<string, string | undefined>>;
   catalog?: RuntimeCatalog;
   credentialProvider?: CredentialProvider;
+  apiKeyAuthenticator?: ApiKeyAuthenticator;
+  /** In-process test/deployment seam shared by remote composition and adapters. */
+  fetchImpl?: typeof fetch;
   telemetry?: ExecutorTelemetry;
   /** Test/deployment seam; the stock factory uses pg with a five-connection pool. */
   persistenceFactory?: (
@@ -42,6 +49,7 @@ export interface ExecutorPersistence extends PostgresStoreSet {
 
 export interface ExecutorRuntime {
   engine: ExecutionEngine;
+  apiKeyAuthenticator: ApiKeyAuthenticator;
   triggerPollingScheduler: TriggerPollingScheduler;
   persistence?: ExecutorPersistence;
   close(): Promise<void>;
@@ -59,6 +67,7 @@ async function drainRuntime(
 function configuredVoiceWorker(
   env: Readonly<Record<string, string | undefined>>,
   catalog: RuntimeCatalog,
+  fetchImpl?: typeof fetch,
 ): {
   adapters: AdapterRegistry;
   driver?: RemoteVoiceSessionDriver;
@@ -72,6 +81,7 @@ function configuredVoiceWorker(
       ? undefined
       : new RemoteVoiceSessionDriver({
           baseUrl: workerUrl,
+          ...(fetchImpl === undefined ? {} : { fetch: fetchImpl }),
           ...(token === undefined ? {} : { token }),
           onEvent: ({ request, event }) => {
             if (!request.agent.webhooks.events.includes(event.data.type))
@@ -159,8 +169,22 @@ export async function createExecutorRuntime(
   const env = options.env ?? process.env;
   const catalog = options.catalog ?? defaultCatalog;
   const credentialProvider =
-    options.credentialProvider ?? createConfiguredCredentialProvider({ env });
-  const voiceWorker = configuredVoiceWorker(env, catalog);
+    options.credentialProvider ??
+    createConfiguredCredentialProvider({
+      env,
+      ...(options.fetchImpl === undefined
+        ? {}
+        : { fetchImpl: options.fetchImpl }),
+    });
+  const apiKeyAuthenticator =
+    options.apiKeyAuthenticator ??
+    createConfiguredApiKeyAuthenticator({
+      env,
+      ...(options.fetchImpl === undefined
+        ? {}
+        : { fetchImpl: options.fetchImpl }),
+    });
+  const voiceWorker = configuredVoiceWorker(env, catalog, options.fetchImpl);
   const otel = await initializeOpenTelemetry(env);
   const configuredTracer = options.telemetry?.tracer ?? otel.tracer;
   const configuredMeter = options.telemetry?.meter ?? otel.meter;
@@ -183,6 +207,9 @@ export async function createExecutorRuntime(
           : { adapters: voiceWorker.adapters }),
         credentialProvider,
         telemetryRuntime: telemetry,
+        ...(options.fetchImpl === undefined
+          ? {}
+          : { fetchImpl: options.fetchImpl }),
       });
       voiceWorker.bind(engine);
       const triggerPollingScheduler = new TriggerPollingScheduler({
@@ -191,6 +218,7 @@ export async function createExecutorRuntime(
       });
       return {
         engine,
+        apiKeyAuthenticator,
         triggerPollingScheduler,
         close: async () => {
           triggerPollingScheduler.stop();
@@ -242,6 +270,9 @@ export async function createExecutorRuntime(
       webhookDeliverer,
       triggerService,
       telemetryRuntime: telemetry,
+      ...(options.fetchImpl === undefined
+        ? {}
+        : { fetchImpl: options.fetchImpl }),
     });
     voiceWorker.bind(engine);
     const triggerPollingScheduler = new TriggerPollingScheduler({
@@ -250,6 +281,7 @@ export async function createExecutorRuntime(
     });
     return {
       engine,
+      apiKeyAuthenticator,
       triggerPollingScheduler,
       persistence: initializedPersistence,
       close: async () => {

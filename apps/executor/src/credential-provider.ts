@@ -8,8 +8,9 @@ import {
   LocalVaultCredentialProvider,
   MockCredentialProvider,
 } from "@eyeball/core";
+import { RemoteCredentialProvider } from "./remote-credential-provider.js";
 
-export type CredentialProviderMode = "mock" | "env" | "local-vault";
+export type CredentialProviderMode = "mock" | "env" | "local-vault" | "cloud";
 
 export interface ConfiguredCredentialProviderOptions {
   env?: Readonly<Record<string, string | undefined>>;
@@ -33,8 +34,15 @@ export function credentialProviderMode(
   env: Readonly<Record<string, string | undefined>> = process.env,
 ): CredentialProviderMode {
   const value = env.EYEBALL_CREDENTIALS?.trim() ?? "mock";
-  if (value !== "mock" && value !== "env" && value !== "local-vault") {
-    throw new Error("EYEBALL_CREDENTIALS must be mock, env, or local-vault.");
+  if (
+    value !== "mock" &&
+    value !== "env" &&
+    value !== "local-vault" &&
+    value !== "cloud"
+  ) {
+    throw new Error(
+      "EYEBALL_CREDENTIALS must be mock, env, local-vault, or cloud.",
+    );
   }
   return value;
 }
@@ -64,6 +72,18 @@ export function createConfiguredCredentialProvider(
           ? {}
           : { fetchImpl: options.fetchImpl }),
         ...(options.now === undefined ? {} : { now: options.now }),
+      });
+    case "cloud":
+      return new RemoteCredentialProvider({
+        endpoint: requiredEnvironment(env, "EYEBALL_CREDENTIALS_URL", mode),
+        internalApiSecret: requiredEnvironment(
+          env,
+          "EYEBALL_INTERNAL_API_SECRET",
+          mode,
+        ),
+        ...(options.fetchImpl === undefined
+          ? {}
+          : { fetchImpl: options.fetchImpl }),
       });
   }
 }

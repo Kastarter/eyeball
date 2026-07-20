@@ -477,18 +477,18 @@ export class MockCredentialProvider implements CredentialProvider {
   }
 }
 
-/** Public contract only; the real implementation lives in eyeball-cloud. */
+/** Public contract implemented by the executor's hosted HTTP client. */
 export interface CloudCredentialProvider extends CredentialProvider {
   readonly kind: "cloud";
 }
 
-/** OSS placeholder that fails fast instead of pretending to access the private Auth Vault. */
+/** Compatibility placeholder; stock hosted composition lives in `@eyeball/executor`. */
 export class CloudCredentialProviderStub implements CloudCredentialProvider {
   readonly kind = "cloud" as const;
 
   async resolve(_context: CredentialContext): Promise<ResolvedCredential> {
     throw new Error(
-      "not_implemented: CloudCredentialProvider is implemented in the private eyeball-cloud repository.",
+      "not_implemented: configure the executor RemoteCredentialProvider with EYEBALL_CREDENTIALS=cloud.",
     );
   }
 }

@@ -32,6 +32,7 @@ Open-core tool and integration platform for AI agents: one typed, authenticated 
 - Dashboard cloud mode is explicit: `NEXT_PUBLIC_EYEBALL_MODE=cloud` selects cloud-backed features and server-only `EYEBALL_CLOUD_URL` supplies the control-plane origin; unset remains demo mode.
 - Dashboard cloud requests use the same-origin `/api/cloud` allowlist proxy; org/project context and manually pasted per-project executor keys live in validated `HttpOnly` cookies.
 - Cloud API-key verification is authenticated `POST /internal/keys/verify` with a pre-buffer 4 KiB body cap and a 1,024-character key schema; never place customer keys in internal URL queries.
+- Hosted executor auth checks static `EYEBALL_API_KEYS` before Cloud verification; remote caches use SHA-256 key digests with 60s positive/5s negative defaults, and `EYEBALL_CREDENTIALS=cloud` uses the executor-owned HTTP credential client.
 - Authenticated dashboard, provider, webhook, and remote-voice HTTP clients use manual redirect handling; remote voice requires HTTPS outside explicit loopback and supplied control tokens are at least 32 characters.
 - `pnpm check:secrets` scans tracked files without printing candidate values and runs from root lint; production CI should add gitleaks.
 - Dashboard cloud proxying exposes only `/v1/*`; executor proxying exposes only `/health` and `/v1/*`, and both construct upstream URLs from allowlisted inputs.
@@ -64,7 +65,7 @@ Open-core tool and integration platform for AI agents: one typed, authenticated 
 - MCP inbound key policy and its downstream executor key are separate trust boundaries.
 - Conversion bundles contain native tools, an emitted dispatch map, and immutable canonical definitions.
 - Public execution GET/list return `ExecutionRecord`; internal canonical input and connection context stay private.
-- The auth boundary is `CredentialProvider`: local env/vault/mock implementations are OSS; hosted multi-user OAuth is cloud.
+- The auth boundary is `CredentialProvider`: local env/vault/mock implementations and the hosted HTTP client are OSS; multi-user credential ownership and refresh policy remain in Cloud.
 - Voice agents keep immutable revisions; child calls re-enter the normal executor under pinned scope.
 - Dev-stack voice sessions use a deployment-scoped Pipecat service identity and share one agent store with the request-driven session driver; voice-agent management auth remains `none`.
 - Web voice sessions compose LiveKit room/token tools and return only a short-lived end-user join grant; provider API secrets never enter session output.
@@ -103,6 +104,7 @@ Open-core tool and integration platform for AI agents: one typed, authenticated 
 - Voice agents expose LiveKit web-session activation plus Twilio buy/list/bind/detach/release inventory flows against account-free mocks; reassignment is detach then attach, and bound numbers cannot be released.
 - The security posture pass added product/cloud threat models, an incident-response runbook, SHA-pinned CI actions, trigger-secret rotation, and query/log/redirect hardening.
 - The 2026-07-19 Apple M4 in-process executor baseline is 0.247 ms p95 and 4,922 req/s for sync Gmail execution; adapter dispatch is the largest named traced stage.
+- The stock executor composes Cloud-issued key verification and hosted credential resolution independently through bearer-authenticated, no-store, in-process-testable HTTP seams.
 
 ## Known Issues
 

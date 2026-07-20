@@ -1,8 +1,8 @@
 # Real authentication and provider certification
 
-- Status: OSS single-tenant implementation and launch-certification runbook
-- Scope: local/self-hosted Eyeball plus the manual real-target contract workflow
-- Out of scope: hosted multi-user connection ownership, which belongs to the private Eyeball Cloud vault
+- Status: OSS local and hosted executor composition plus launch-certification runbook
+- Scope: local/self-hosted Eyeball, the hosted Cloud bridge, and the manual real-target contract workflow
+- Hosted boundary: multi-user connection ownership and refresh stay in the private Eyeball Cloud vault; the executor owns only the HTTP credential client
 
 Real authentication is the final provider step. Keep canonical requests, adapters, fixtures, and assertions unchanged;
 select the real target for one provider batch, supply a dedicated tenant and credentials, and record the result in
@@ -15,7 +15,7 @@ The executor chooses credentials in this order:
 
 1. An `ExecutionEngine` explicitly injected by the caller owns its credential provider.
 2. The development fixture vault supplied to `createExecutorApp` takes precedence for the development-only routes.
-3. Otherwise, `EYEBALL_CREDENTIALS` selects `mock`, `env`, or `local-vault`. Omitted means `mock`; there is no fallback
+3. Otherwise, `EYEBALL_CREDENTIALS` selects `mock`, `env`, `local-vault`, or `cloud`. Omitted means `mock`; there is no fallback
    from a selected provider when its configuration is incomplete.
 
 | `EYEBALL_CREDENTIALS` | Required environment | Intended use |
@@ -23,6 +23,7 @@ The executor chooses credentials in this order:
 | `mock` or omitted | none | deterministic tests and local fixture development |
 | `env` | `EYEBALL_PROJECT_ID`, `EYEBALL_USER_ID`, and `EYEBALL_CRED_<TOOLKIT>_*` | one process-wide project/user; static certification credentials |
 | `local-vault` | `EYEBALL_PROJECT_ID`, `EYEBALL_VAULT_PATH`, `EYEBALL_VAULT_KEY` | durable OSS/self-host credentials; users and connections are records |
+| `cloud` | `EYEBALL_CREDENTIALS_URL`, `EYEBALL_INTERNAL_API_SECRET` | hosted multi-user credentials resolved and refreshed by Eyeball Cloud |
 
 Example self-host configuration:
 
@@ -36,6 +37,15 @@ pnpm --filter @eyeball/executor dev
 
 `EYEBALL_VAULT_KEY` must decode to exactly 32 bytes. Store it separately in the process secret manager. Losing it makes
 the vault unrecoverable; exposing it exposes every record. Do not commit the key or vault.
+
+Hosted executors set `EYEBALL_CREDENTIALS_URL` to the full HTTPS
+`/internal/credentials/resolve` URL. `RemoteCredentialProvider` lives in
+`apps/executor`: it uses a 10-second timeout, manual redirect handling, no-store
+requests, strict `ResolvedCredential` parsing, and generic errors that do not
+include credential material. The Cloud vault refreshes near-expiry OAuth tokens
+before returning the resolved credential. See the complete key-auth and credential
+environment table in
+[Run the executor](../docs-site/self-hosting/executor.mdx#hosted-mode-against-eyeball-cloud).
 
 ## 2. Local vault design and operations
 
@@ -141,12 +151,16 @@ Only a user-pinned key may submit the reserved `X-Eyeball-Execution-Id` header, 
 that identity and `voice-session:<sessionId>:event:<sequence>`, so executor-level replay prevents a duplicate provider side
 effect.
 
-A future hosted executor that resolves project keys dynamically must call the
-cloud control plane with `POST /internal/keys/verify`, an internal bearer
-credential, and `{ "key": "..." }` in the JSON body. API keys must never be
-placed in a query parameter or request target; request-body logging must remain
-disabled on both sides of that internal boundary. The cloud endpoint limits the
-raw body to 4 KiB before buffering and the candidate key to 1,024 characters.
+The hosted executor resolves project keys dynamically through
+`POST /internal/keys/verify`, using `EYEBALL_INTERNAL_API_SECRET` and
+`{ "key": "..." }` in the JSON body. Static `EYEBALL_API_KEYS` entries are
+checked first and remain available as an operator-controlled break-glass path.
+Remote cache entries use SHA-256 key digests; valid results default to 60 seconds
+and invalid results to 5 seconds. Verification transport failures are not cached
+and fail closed as retryable `401` responses. API keys must never be placed in a
+query parameter or request target; request-body logging must remain disabled on
+both sides of that internal boundary. The Cloud endpoint limits the raw body to
+4 KiB before buffering and the candidate key to 1,024 characters.
 
 Do not reuse the project-wide administrative key as the worker key, expose either service credential to a browser, or place
 the control token in a Twilio URL directly. Twilio media URLs contain only an HMAC-derived, session-bound token. One static

@@ -201,10 +201,10 @@ describe("MockCredentialProvider", () => {
 });
 
 describe("CloudCredentialProviderStub", () => {
-  it("clearly points callers to the private implementation", async () => {
+  it("clearly points callers to the executor implementation", async () => {
     await expect(
       new CloudCredentialProviderStub().resolve(baseContext),
-    ).rejects.toThrow("not_implemented");
+    ).rejects.toThrow("executor RemoteCredentialProvider");
   });
 });
 
