@@ -14,6 +14,7 @@ import type {
   StoredTriggerSubscription,
   TriggerStateStore,
   TriggerSubscriptionStore,
+  UsageOutboxStore,
   WebhookDeliveryStore,
   WebhookEndpointStore,
 } from "../../src/index.js";
@@ -24,6 +25,7 @@ export interface StoreContractStores {
   webhookDeliveryStore: WebhookDeliveryStore;
   triggerSubscriptionStore: TriggerSubscriptionStore;
   triggerStateStore: TriggerStateStore;
+  usageOutboxStore: UsageOutboxStore;
 }
 
 export interface StoreContractImplementation {
@@ -227,6 +229,12 @@ export function registerStoreContractSuite(
           { key: `idem_${scope}`, requestHash: "same", expiresInMs: 1_000 },
         );
         await expect(
+          stores.executionStore.inspectAllocation(replay),
+        ).resolves.toMatchObject({
+          kind: "replay",
+          record: { executionId: first.record.executionId },
+        });
+        await expect(
           stores.executionStore.allocate(replay),
         ).resolves.toMatchObject({
           kind: "replay",
@@ -242,6 +250,9 @@ export function registerStoreContractSuite(
             expiresInMs: 1_000,
           },
         );
+        await expect(
+          stores.executionStore.inspectAllocation(conflict),
+        ).resolves.toEqual({ kind: "conflict" });
         await expect(stores.executionStore.allocate(conflict)).resolves.toEqual(
           { kind: "conflict" },
         );
@@ -336,6 +347,51 @@ export function registerStoreContractSuite(
         expect(
           await stores.executionStore.list(`other_${projectId}`, { limit: 10 }),
         ).toEqual({ executions: [] });
+      });
+    });
+
+    describe("usage outbox", () => {
+      it("retains retryable reports until they are marked sent", async () => {
+        const scope = namespace(implementation.name);
+        const executionId = createExecutionId(`${scope}_usage`);
+        const enqueuedAt = "2026-07-18T03:30:00.000Z";
+        const payload = {
+          projectId: `project_${scope}`,
+          executionId,
+          idempotencyKey: `usage_${scope}`,
+          dimension: "execution" as const,
+          quantity: 1 as const,
+          occurredAt: enqueuedAt,
+        };
+        await stores.usageOutboxStore.enqueue(payload, enqueuedAt);
+        await stores.usageOutboxStore.enqueue(payload, enqueuedAt);
+        expect(await stores.usageOutboxStore.depth()).toBe(1);
+        await expect(
+          stores.usageOutboxStore.enqueue(
+            { ...payload, idempotencyKey: `different_${scope}` },
+            enqueuedAt,
+          ),
+        ).rejects.toThrow(/conflict/iu);
+
+        const ready = await stores.usageOutboxStore.listReady(enqueuedAt, 50);
+        expect(ready).toHaveLength(1);
+        expect(ready[0]).toMatchObject({ state: "pending", attempts: 0 });
+        const retryAt = "2026-07-18T03:30:01.000Z";
+        await stores.usageOutboxStore.markFailed(
+          [{ executionId, nextRetryAt: retryAt }],
+          enqueuedAt,
+        );
+        await expect(
+          stores.usageOutboxStore.listReady(enqueuedAt, 50),
+        ).resolves.toEqual([]);
+        await expect(
+          stores.usageOutboxStore.listReady(enqueuedAt, 50, true),
+        ).resolves.toMatchObject([{ state: "failed", attempts: 1 }]);
+        await stores.usageOutboxStore.markSent([executionId], retryAt);
+        expect(await stores.usageOutboxStore.depth()).toBe(0);
+        await expect(
+          stores.usageOutboxStore.listReady(retryAt, 50),
+        ).resolves.toEqual([]);
       });
     });
 

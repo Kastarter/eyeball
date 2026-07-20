@@ -32,7 +32,7 @@ To add credentials, create your own server entry point and pass a configured `Ex
 
 ## Hosted mode against eyeball Cloud
 
-The stock runtime can verify Cloud-issued API keys dynamically and resolve hosted OAuth connections without a custom server entry point. The two bridges are independent: configure either one alone, or configure both for a complete hosted data plane.
+The stock runtime can verify Cloud-issued API keys dynamically, resolve hosted OAuth connections, and enforce Cloud execution usage without a custom server entry point. The three bridges are independent: configure only the ones the deployment needs, or configure all three for a complete hosted data plane.
 
 | Executor variable | Required | Purpose |
 |---|---:|---|
@@ -42,26 +42,41 @@ The stock runtime can verify Cloud-issued API keys dynamically and resolve hoste
 | `EYEBALL_KEY_VERIFY_NEGATIVE_TTL_MS` | no | Unknown/revoked-key cache TTL in milliseconds, default `5000`; it must remain shorter than the positive TTL |
 | `EYEBALL_CREDENTIALS` | hosted credentials | Set to `cloud` |
 | `EYEBALL_CREDENTIALS_URL` | hosted credentials | Full HTTPS URL of the Cloud `/internal/credentials/resolve` endpoint |
-| `EYEBALL_INTERNAL_API_SECRET` | either bridge | The same 32+ character value configured as `INTERNAL_API_SECRET` on the Cloud control plane |
+| `EYEBALL_USAGE_URL` | usage enforcement | Cloud control-plane origin or base URL; the executor calls `/internal/usage/reserve`, `/report`, and `/release` beneath it |
+| `EYEBALL_USAGE_STRICT` | no | `0` (default) fails open when the usage service is unavailable; `1` fails closed with a retryable `rate_limited` response |
+| `EYEBALL_USAGE_TIMEOUT_MS` | no | Timeout for each usage request, default `10000` |
+| `EYEBALL_USAGE_FLUSH_INTERVAL_MS` | no | Terminal-report outbox polling interval, default `5000` |
+| `EYEBALL_USAGE_DRAIN_TIMEOUT_MS` | no | Maximum graceful-shutdown outbox drain time, default `12000` |
+| `EYEBALL_USAGE_ALERT_AFTER_ATTEMPTS` | no | Failed report attempts before an alert-level log, default `8`; reports remain queued |
+| `EYEBALL_INTERNAL_API_SECRET` | any Cloud bridge | The same 32+ character value configured as `INTERNAL_API_SECRET` on the Cloud control plane |
 
 ```bash
 export EYEBALL_API_KEYS="ey_break_glass:proj_operations"
 export EYEBALL_KEY_VERIFY_URL="https://cloud.example.com/internal/keys/verify"
 export EYEBALL_CREDENTIALS=cloud
 export EYEBALL_CREDENTIALS_URL="https://cloud.example.com/internal/credentials/resolve"
+export EYEBALL_USAGE_URL="https://cloud.example.com"
 export EYEBALL_INTERNAL_API_SECRET='<shared-32+-character-internal-secret>'
 pnpm --filter @eyeball/executor start
 ```
 
-Both endpoint variables must be absolute HTTPS URLs without embedded credentials, queries, or fragments. HTTP is accepted only for explicit loopback development. The executor sends bearer-authenticated, no-store JSON `POST` requests and never places an API key in a URL. Credential resolution times out after 10 seconds and exposes only generic, redacted failures.
+Cloud endpoint variables must be absolute HTTPS URLs without embedded credentials, queries, or fragments. HTTP is accepted only for explicit loopback development. The executor sends bearer-authenticated, no-store JSON `POST` requests and never places an API key in a URL. Credential resolution and usage requests time out after 10 seconds by default and expose only generic, redacted failures.
 
 Successful key checks are cached for 60 seconds by default, so revocation reaches an already warm executor within that documented window. Invalid or revoked results are cached for only 5 seconds. Cache entries use the key's SHA-256 digest, not the plaintext key. Verifier transport and protocol failures are never cached: the executor fails closed with a retryable `401`, then tries the control plane again on the next request.
 
 Cloud performs OAuth refresh before `/internal/credentials/resolve` returns. The executor validates the returned `ResolvedCredential` union and passes the fresh credential through the normal adapter path; it never owns refresh tokens. Keep request-body logging disabled across both services and every proxy between them.
 
+When usage enforcement is configured, the executor reserves one execution after project rate-limit admission and before it allocates an execution record or dispatches an adapter. A quota denial returns HTTP `429` with the closed-taxonomy code `rate_limited`, a quota message, and no `Retry-After` header: a plan change can unblock the project immediately, so the executor does not invent a period-end delay. The denied request allocates no execution record and emits no terminal report.
+
+Usage-service transport and protocol failures fail open by default. The execution continues, while the executor emits a structured warning and increments `usage_reservations_total{outcome="fail_open"}`. This availability-first default preserves self-hosted operation during a Cloud outage. Set `EYEBALL_USAGE_STRICT=1` when enforcement must take precedence; the same failure then returns a retryable `rate_limited` response before allocation. An explicit Cloud quota denial is always enforced in either mode.
+
+Every execution that reaches adapter dispatch is placed in a local outbox when it becomes terminal and reported at least once in batches of up to 50; Cloud deduplicates the stable usage identity exactly once. Failed deliveries use exponential backoff and are never silently dropped, including after the alert threshold. With `EYEBALL_DATABASE_URL`, the `usage_outbox` table survives executor restarts. Without Postgres, the outbox is process-local, matching the other zero-config defaults. Shutdown performs a bounded best-effort drain using `EYEBALL_USAGE_DRAIN_TIMEOUT_MS`.
+
+If an admitted execution cannot reach adapter dispatch—for example, credential resolution fails—the executor releases the reservation instead of reporting billable usage. Release is best-effort; Cloud's reservation TTL remains the fallback when the release request cannot be delivered.
+
 ## Postgres persistence
 
-Set `EYEBALL_DATABASE_URL` to persist execution records and idempotency reservations, webhook endpoints and delivery attempts, and trigger subscriptions, cursors, and dedup claims. The stock runtime uses a `pg` pool capped at five connections and applies the committed Drizzle migrations before accepting traffic.
+Set `EYEBALL_DATABASE_URL` to persist execution records and idempotency reservations, webhook endpoints and delivery attempts, trigger subscriptions, cursors and dedup claims, and terminal usage reports awaiting delivery. The stock runtime uses a `pg` pool capped at five connections and applies the committed Drizzle migrations before accepting traffic.
 
 ```bash
 EYEBALL_DATABASE_URL="postgresql://eyeball:eyeball_dev@127.0.0.1:5432/eyeball" \

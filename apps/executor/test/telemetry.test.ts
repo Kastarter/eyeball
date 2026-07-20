@@ -447,7 +447,7 @@ describe("executor observability", () => {
     await provider.shutdown();
   });
 
-  it("increments execution, latency, webhook, trigger, and rate-limit metrics in memory", async () => {
+  it("increments execution, delivery, admission, and outbox metrics in memory", async () => {
     const reader = new InMemoryMetricReader();
     const provider = new MeterProvider({ readers: [reader] });
     const telemetry = createExecutorTelemetryRuntime(
@@ -463,6 +463,12 @@ describe("executor observability", () => {
     await webhookDeliverer.onIdle();
     telemetry.recordTriggerEvent("gmail.email_received", true);
     telemetry.recordRateLimitRejection("daily_execution_quota");
+    telemetry.recordUsageReservation("allowed");
+    telemetry.recordUsageReservation("fail_open");
+    telemetry.recordUsageReport("accepted", 2);
+    telemetry.recordUsageReport("duplicate");
+    telemetry.recordUsageReport("failed");
+    telemetry.setUsageOutboxDepth(3);
 
     const { resourceMetrics, errors } = await reader.snapshot();
     expect(errors).toEqual([]);
@@ -494,6 +500,43 @@ describe("executor observability", () => {
         expect.objectContaining({ attributes, value: 1 }),
       );
     }
+    expect(
+      findMetric(resourceMetrics, "usage_reservations_total").dataPoints,
+    ).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          attributes: { outcome: "allowed" },
+          value: 1,
+        }),
+        expect.objectContaining({
+          attributes: { outcome: "fail_open" },
+          value: 1,
+        }),
+      ]),
+    );
+    expect(
+      findMetric(resourceMetrics, "usage_reports_total").dataPoints,
+    ).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          attributes: { outcome: "accepted" },
+          value: 2,
+        }),
+        expect.objectContaining({
+          attributes: { outcome: "duplicate" },
+          value: 1,
+        }),
+        expect.objectContaining({
+          attributes: { outcome: "failed" },
+          value: 1,
+        }),
+      ]),
+    );
+    const outboxDepth = findMetric(resourceMetrics, "usage_outbox_depth");
+    expect(outboxDepth.dataPointType).toBe(DataPointType.GAUGE);
+    expect(outboxDepth.dataPoints).toContainEqual(
+      expect.objectContaining({ attributes: {}, value: 3 }),
+    );
     await provider.shutdown();
   });
 

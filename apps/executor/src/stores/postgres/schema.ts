@@ -19,6 +19,10 @@ import {
   text,
   timestamp,
 } from "drizzle-orm/pg-core";
+import type {
+  UsageOutboxState,
+  UsageReportPayload,
+} from "../../usage/outbox.js";
 
 const timestampColumn = (name: string) =>
   timestamp(name, { mode: "string", withTimezone: true });
@@ -97,6 +101,27 @@ export const executionIdempotency = pgTable(
       name: "execution_idempotency_execution_fk",
     }).onDelete("cascade"),
     index("execution_idempotency_expiry_idx").on(table.expiresAt),
+  ],
+);
+
+export const usageOutbox = pgTable(
+  "usage_outbox",
+  {
+    executionId: text("execution_id").primaryKey(),
+    payload: jsonb("payload").$type<UsageReportPayload>().notNull(),
+    state: text("state").$type<UsageOutboxState>().notNull(),
+    attempts: integer("attempts").notNull(),
+    nextRetryAt: timestampColumn("next_retry_at").notNull(),
+    createdAt: timestampColumn("created_at").notNull(),
+    updatedAt: timestampColumn("updated_at").notNull(),
+    sentAt: timestampColumn("sent_at"),
+  },
+  (table) => [
+    index("usage_outbox_state_retry_idx").on(
+      table.state,
+      table.nextRetryAt,
+      table.createdAt,
+    ),
   ],
 );
 
@@ -243,6 +268,7 @@ export const triggerDedupClaims = pgTable(
 export const postgresSchema = {
   executions,
   executionIdempotency,
+  usageOutbox,
   webhookEndpoints,
   webhookDeliveries,
   webhookDeliveryAttempts,

@@ -1,9 +1,10 @@
 import type { ConnectionId, ExecutionId, ExecutionRecord } from "@eyeball/core";
-import { and, desc, eq, lt, lte, or, type SQL } from "drizzle-orm";
+import { and, desc, eq, gt, lt, lte, or, type SQL } from "drizzle-orm";
 import type { PgQueryResultHKT } from "drizzle-orm/pg-core";
 import {
   assertExecutionTransition,
   type ExecutionAllocation,
+  type ExecutionAllocationInspection,
   type ExecutionAllocationResult,
   type ExecutionDetailRecord,
   type ExecutionListFilters,
@@ -92,6 +93,46 @@ export class PostgresExecutionStore<
     this.#terminalPollIntervalMs = validPollInterval(
       options.terminalPollIntervalMs,
     );
+  }
+
+  async inspectAllocation(
+    allocation: ExecutionAllocation,
+  ): Promise<ExecutionAllocationInspection> {
+    const reservation = allocation.idempotency;
+    if (reservation === undefined) return { kind: "available" };
+    const [existing] = await this.#database
+      .select({
+        executionId: executionIdempotency.executionId,
+        requestHash: executionIdempotency.requestHash,
+      })
+      .from(executionIdempotency)
+      .where(
+        and(
+          scopeWhere(allocation),
+          gt(executionIdempotency.expiresAt, allocation.record.createdAt),
+        ),
+      )
+      .limit(1);
+    if (existing === undefined) return { kind: "available" };
+    if (existing.requestHash !== reservation.requestHash) {
+      return { kind: "conflict" };
+    }
+    const [stored] = await this.#database
+      .select({ record: executions.record })
+      .from(executions)
+      .where(
+        executionWhere(
+          allocation.projectId,
+          existing.executionId as ExecutionId,
+        ),
+      )
+      .limit(1);
+    if (stored === undefined) {
+      throw new Error(
+        "Execution idempotency record references an unknown execution.",
+      );
+    }
+    return { kind: "replay", record: copy(stored.record) };
   }
 
   async allocate(

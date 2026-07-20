@@ -6,6 +6,7 @@ import {
   InMemoryExecutionStore,
   InMemoryTriggerStateStore,
   InMemoryTriggerSubscriptionStore,
+  InMemoryUsageOutboxStore,
   InMemoryWebhookDeliveryStore,
   InMemoryWebhookEndpointStore,
   type PgliteStoreBundle,
@@ -37,6 +38,7 @@ registerStoreContractSuite([
       webhookDeliveryStore: new InMemoryWebhookDeliveryStore(),
       triggerSubscriptionStore: new InMemoryTriggerSubscriptionStore(),
       triggerStateStore: new InMemoryTriggerStateStore(),
+      usageOutboxStore: new InMemoryUsageOutboxStore(),
     }),
   },
   {

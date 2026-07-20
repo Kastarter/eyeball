@@ -40,6 +40,11 @@ export type ExecutionAllocationResult =
   | { kind: "replay"; record: ExecutionRecord }
   | { kind: "conflict" };
 
+export type ExecutionAllocationInspection =
+  | { kind: "available" }
+  | { kind: "replay"; record: ExecutionRecord }
+  | { kind: "conflict" };
+
 export interface ExecutionListFilters {
   status?: ExecutionStatus;
   tool?: QualifiedToolName;
@@ -70,6 +75,10 @@ export class InvalidExecutionCursorError extends Error {
 }
 
 export interface ExecutionStore {
+  /** Read-only idempotency preflight used before external usage admission. */
+  inspectAllocation(
+    allocation: ExecutionAllocation,
+  ): Promise<ExecutionAllocationInspection>;
   allocate(allocation: ExecutionAllocation): Promise<ExecutionAllocationResult>;
   get(
     projectId: string,
@@ -193,6 +202,34 @@ export class InMemoryExecutionStore implements ExecutionStore {
     string,
     Set<(record: ExecutionRecord & { status: "succeeded" | "failed" }) => void>
   >();
+
+  async inspectAllocation(
+    allocation: ExecutionAllocation,
+  ): Promise<ExecutionAllocationInspection> {
+    const reservation = allocation.idempotency;
+    if (reservation === undefined) return { kind: "available" };
+    const existing = this.#idempotency.get(
+      idempotencyStorageKey(allocation.projectId, reservation.scope),
+    );
+    if (
+      existing === undefined ||
+      Date.parse(existing.expiresAt) <= Date.parse(allocation.record.createdAt)
+    ) {
+      return { kind: "available" };
+    }
+    if (existing.requestHash !== reservation.requestHash) {
+      return { kind: "conflict" };
+    }
+    const stored = this.#executions
+      .get(allocation.projectId)
+      ?.get(existing.executionId);
+    if (stored === undefined) {
+      throw new Error(
+        "Execution idempotency record references an unknown execution.",
+      );
+    }
+    return { kind: "replay", record: clone(stored.record) };
+  }
 
   async allocate(
     allocation: ExecutionAllocation,

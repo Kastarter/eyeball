@@ -7,6 +7,7 @@ import {
   type Histogram,
   type Meter,
   metrics,
+  type ObservableGauge,
   type Span,
   SpanKind,
   type SpanOptions,
@@ -38,6 +39,9 @@ interface ExecutorInstruments {
   webhookDeliveryAttempts: Counter;
   triggerEvents: Counter;
   rateLimitRejections: Counter;
+  usageReservations: Counter;
+  usageReports: Counter;
+  usageOutboxDepth: ObservableGauge;
 }
 
 export type ExecutionTelemetryStatus = "succeeded" | "failed";
@@ -51,6 +55,12 @@ export type RateLimitTelemetryBucket =
   | "request_execute"
   | "daily_execution_quota"
   | "toolkit_concurrency";
+export type UsageReservationTelemetryOutcome =
+  | "allowed"
+  | "denied"
+  | "fail_open"
+  | "error";
+export type UsageReportTelemetryOutcome = "accepted" | "duplicate" | "failed";
 export type HttpRequestClass = "health" | "execute" | "ingest" | "standard";
 export type HttpRequestMethod =
   | "GET"
@@ -86,6 +96,9 @@ export interface ExecutorTelemetryRuntime {
   recordWebhookDeliveryAttempt(status: WebhookTelemetryStatus): void;
   recordTriggerEvent(trigger: string, deduped: boolean): void;
   recordRateLimitRejection(bucket: RateLimitTelemetryBucket): void;
+  recordUsageReservation(outcome: UsageReservationTelemetryOutcome): void;
+  recordUsageReport(outcome: UsageReportTelemetryOutcome, count?: number): void;
+  setUsageOutboxDepth(depth: number): void;
 }
 
 function telemetryAttributes(
@@ -138,6 +151,15 @@ function createInstruments(meter: Meter): ExecutorInstruments {
     rateLimitRejections: meter.createCounter("rate_limit_rejections_total", {
       description: "Rejected executor rate-limit checks.",
     }),
+    usageReservations: meter.createCounter("usage_reservations_total", {
+      description: "Cloud execution usage reservation outcomes.",
+    }),
+    usageReports: meter.createCounter("usage_reports_total", {
+      description: "Terminal execution usage report outcomes.",
+    }),
+    usageOutboxDepth: meter.createObservableGauge("usage_outbox_depth", {
+      description: "Terminal usage reports awaiting successful Cloud delivery.",
+    }),
   };
 }
 
@@ -150,6 +172,10 @@ export function createExecutorTelemetryRuntime(
     telemetry.meter === undefined
       ? undefined
       : createInstruments(telemetry.meter);
+  let usageOutboxDepth = 0;
+  instruments?.usageOutboxDepth.addCallback((result) => {
+    result.observe(usageOutboxDepth);
+  });
 
   return {
     logger,
@@ -192,6 +218,21 @@ export function createExecutorTelemetryRuntime(
     },
     recordRateLimitRejection(bucket) {
       instruments?.rateLimitRejections.add(1, { bucket });
+    },
+    recordUsageReservation(outcome) {
+      instruments?.usageReservations.add(1, { outcome });
+    },
+    recordUsageReport(outcome, count = 1) {
+      if (!Number.isSafeInteger(count) || count < 0) {
+        throw new RangeError("Usage report metric count must be non-negative.");
+      }
+      if (count > 0) instruments?.usageReports.add(count, { outcome });
+    },
+    setUsageOutboxDepth(depth) {
+      if (!Number.isSafeInteger(depth) || depth < 0) {
+        throw new RangeError("Usage outbox depth must be non-negative.");
+      }
+      usageOutboxDepth = depth;
     },
   };
 }

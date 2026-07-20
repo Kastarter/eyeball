@@ -8,6 +8,13 @@
       "when": 1784330319390,
       "tag": "0000_durable_stores",
       "breakpoints": true
+    },
+    {
+      "idx": 1,
+      "version": "7",
+      "when": 1784514561953,
+      "tag": "0001_usage_outbox",
+      "breakpoints": true
     }
   ]
 }

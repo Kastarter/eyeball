@@ -54,6 +54,8 @@ import {
   InMemoryFileStore,
 } from "./staged-files.js";
 import {
+  type ExecutionAllocation,
+  type ExecutionAllocationResult,
   type ExecutionDetailRecord,
   type ExecutionListFilters,
   type ExecutionPage,
@@ -74,6 +76,13 @@ import {
   type RuntimeTriggerCatalog,
   TriggerService,
 } from "./triggers/service.js";
+import {
+  NoopUsageGate,
+  type UsageAdmission,
+  type UsageGate,
+  UsageGateUnavailableError,
+  type UsageReportContext,
+} from "./usage/index.js";
 import { WebhookDeliverer } from "./webhooks/deliverer.js";
 
 const DAY_MS = 24 * 60 * 60 * 1_000;
@@ -154,6 +163,7 @@ export interface ExecutionEngineOptions {
   webhookDeliverer?: WebhookDeliverer;
   triggerService?: TriggerService;
   toolkitConcurrencyLimiter?: ToolkitConcurrencyLimiter;
+  usageGate?: UsageGate;
 }
 
 export interface ExecutionRateLimitMetadata {
@@ -324,6 +334,37 @@ function hashRequest(request: ExecuteRequest): string {
   return createHash("sha256")
     .update(JSON.stringify(canonicalize(request)))
     .digest("hex");
+}
+
+export interface UsageIdempotencyIdentity {
+  readonly projectId: string;
+  readonly executionId: ExecutionId;
+  readonly request: ExecuteRequest;
+  readonly catalogVersion: string;
+  readonly idempotencyKey?: string;
+}
+
+/** Opaque, deterministic Cloud identity; raw client idempotency keys never leave the executor. */
+export function deriveUsageIdempotencyKey(
+  identity: UsageIdempotencyIdentity,
+): string {
+  const catalogMajor = identity.catalogVersion.split(".", 1)[0] ?? "0";
+  const material =
+    identity.idempotencyKey === undefined
+      ? ["usage-v1", identity.projectId, identity.executionId]
+      : [
+          "usage-v1",
+          identity.projectId,
+          identity.request.tool,
+          identity.request.userId,
+          identity.request.connectionId ?? "default",
+          catalogMajor,
+          identity.idempotencyKey,
+          hashRequest(identity.request),
+        ];
+  return `usage_${createHash("sha256")
+    .update(JSON.stringify(material))
+    .digest("base64url")}`;
 }
 
 function executeResponse(record: ExecutionRecord): ExecuteHttpResponse {
@@ -502,6 +543,7 @@ export class ExecutionEngine {
   readonly triggerService: TriggerService;
   readonly toolkitConcurrencyLimiter: ToolkitConcurrencyLimiter;
   readonly telemetry: ExecutorTelemetryRuntime;
+  readonly usageGate: UsageGate;
   readonly #fetchImpl: FetchImplementation;
   readonly #clock: Clock;
   readonly #logger: ExecutorLogger;
@@ -551,6 +593,7 @@ export class ExecutionEngine {
         this.#env,
       );
     this.#logger = this.telemetry.logger;
+    this.usageGate = options.usageGate ?? new NoopUsageGate();
     this.webhookDeliverer =
       options.webhookDeliverer ??
       new WebhookDeliverer({
@@ -807,44 +850,142 @@ export class ExecutionEngine {
     }
 
     try {
-      const allocation = await inTelemetrySpan(
-        this.telemetry,
-        "eyeball.execute.idempotency",
-        {
-          "eyeball.tool": tool.name,
-          "eyeball.idempotency.present": command.idempotencyKey !== undefined,
-        },
-        async (_spanContext, span) => {
-          const createdAt = this.#now();
-          const idempotency =
-            command.idempotencyKey === undefined
-              ? undefined
-              : this.#idempotencyReservation(
-                  canonicalRequest,
-                  command.idempotencyKey,
-                  createdAt,
-                );
-          const pending: ExecutionRecord & { status: "pending" } = {
-            executionId: command.executionId ?? this.#executionIdFactory(),
-            tool: tool.name,
-            toolVersion: tool.version,
-            catalogVersion: this.catalog.catalogVersion,
-            status: "pending",
-            userId: canonicalRequest.userId,
-            createdAt: createdAt.toISOString(),
-          };
-          const result = await this.store.allocate({
-            projectId: command.projectId,
-            record: pending,
-            request: canonicalRequest,
-            ...(idempotency === undefined ? {} : { idempotency }),
-          });
-          span?.setAttribute("eyeball.idempotency.result", result.kind);
-          return result;
-        },
-        executionTrace.context,
-      );
+      const createdAt = this.#now();
+      const idempotency =
+        command.idempotencyKey === undefined
+          ? undefined
+          : this.#idempotencyReservation(
+              canonicalRequest,
+              command.idempotencyKey,
+              createdAt,
+            );
+      const pending: ExecutionRecord & { status: "pending" } = {
+        executionId: command.executionId ?? this.#executionIdFactory(),
+        tool: tool.name,
+        toolVersion: tool.version,
+        catalogVersion: this.catalog.catalogVersion,
+        status: "pending",
+        userId: canonicalRequest.userId,
+        createdAt: createdAt.toISOString(),
+      };
+      const allocationRequest: ExecutionAllocation = {
+        projectId: command.projectId,
+        record: pending,
+        request: canonicalRequest,
+        ...(idempotency === undefined ? {} : { idempotency }),
+      };
+
+      let allocation: ExecutionAllocationResult | undefined;
+      if (this.usageGate.enabled && idempotency !== undefined) {
+        const inspection = await inTelemetrySpan(
+          this.telemetry,
+          "eyeball.execute.idempotency_preflight",
+          { "eyeball.tool": tool.name },
+          async () => this.store.inspectAllocation(allocationRequest),
+          executionTrace.context,
+        );
+        if (inspection.kind !== "available") {
+          allocation = inspection;
+        }
+      }
+
+      let usageReport: UsageReportContext | undefined;
+      let usageReservationId: string | undefined;
+      if (allocation === undefined && this.usageGate.enabled) {
+        const cloudExecutionId =
+          command.idempotencyKey === undefined ||
+          command.executionId !== undefined
+            ? pending.executionId
+            : undefined;
+        const usageIdempotencyKey = deriveUsageIdempotencyKey({
+          projectId: command.projectId,
+          executionId: pending.executionId,
+          request: canonicalRequest,
+          catalogVersion: this.catalog.catalogVersion,
+          ...(command.idempotencyKey === undefined
+            ? {}
+            : { idempotencyKey: command.idempotencyKey }),
+        });
+        let admission: UsageAdmission;
+        try {
+          admission = await inTelemetrySpan(
+            this.telemetry,
+            "eyeball.execute.usage_reserve",
+            { "eyeball.tool": tool.name },
+            async () =>
+              this.usageGate.reserve({
+                projectId: command.projectId,
+                executionId: pending.executionId,
+                idempotencyKey: usageIdempotencyKey,
+                requestedAt: pending.createdAt,
+                ...(cloudExecutionId === undefined ? {} : { cloudExecutionId }),
+              }),
+            executionTrace.context,
+          );
+        } catch (error) {
+          if (error instanceof UsageGateUnavailableError) {
+            throw new ExecutionRequestError(429, {
+              code: TOOL_ERROR_CODES.RATE_LIMITED,
+              message: error.message,
+              retryable: true,
+            });
+          }
+          throw error;
+        }
+        if (!admission.allowed) {
+          if (idempotency !== undefined) {
+            const lateInspection = await inTelemetrySpan(
+              this.telemetry,
+              "eyeball.execute.idempotency_preflight",
+              { "eyeball.tool": tool.name },
+              async () => this.store.inspectAllocation(allocationRequest),
+              executionTrace.context,
+            );
+            if (lateInspection.kind !== "available") {
+              allocation = lateInspection;
+            }
+          }
+          if (allocation === undefined) {
+            throw new ExecutionRequestError(429, {
+              code: TOOL_ERROR_CODES.RATE_LIMITED,
+              message: admission.message,
+              retryable: false,
+            });
+          }
+        } else {
+          usageReport = admission.report;
+          usageReservationId = admission.reservationId;
+        }
+      }
+
+      if (allocation === undefined) {
+        try {
+          allocation = await inTelemetrySpan(
+            this.telemetry,
+            "eyeball.execute.idempotency",
+            {
+              "eyeball.tool": tool.name,
+              "eyeball.idempotency.present":
+                command.idempotencyKey !== undefined,
+            },
+            async (_spanContext, span) => {
+              const result = await this.store.allocate(allocationRequest);
+              span?.setAttribute("eyeball.idempotency.result", result.kind);
+              return result;
+            },
+            executionTrace.context,
+          );
+        } catch (error) {
+          if (usageReservationId !== undefined) {
+            await this.usageGate.release(usageReservationId);
+          }
+          throw error;
+        }
+      }
       if (allocation.kind === "conflict") {
+        if (usageReservationId !== undefined) {
+          await this.usageGate.release(usageReservationId);
+        }
         return invalidRequest(
           "Idempotency-Key was already used with different request parameters.",
           409,
@@ -912,6 +1053,8 @@ export class ExecutionEngine {
               concurrencyLimit,
               executionTrace,
               true,
+              usageReport,
+              usageReservationId,
             ),
           )
           .catch((error: unknown) => {
@@ -945,6 +1088,8 @@ export class ExecutionEngine {
         concurrencyLimit,
         executionTrace,
         false,
+        usageReport,
+        usageReservationId,
         syncPermit,
       );
       syncPermit = undefined;
@@ -1066,9 +1211,13 @@ export class ExecutionEngine {
     concurrencyLimit: number | undefined,
     executionTrace: ExecutionTrace,
     finishTrace: boolean,
+    usageReport?: UsageReportContext,
+    usageReservationId?: string,
     reservedPermit?: ConcurrencyPermit,
   ): Promise<void> {
     let concurrencyPermit: ConcurrencyPermit | undefined;
+    let dispatchAttempted = false;
+    let usageFinalized = false;
     let terminalStatus: "succeeded" | "failed" | undefined;
     let terminalError: unknown;
     try {
@@ -1099,7 +1248,6 @@ export class ExecutionEngine {
         async () => this.store.update(projectId, running),
         executionTrace.context,
       );
-
       try {
         // Preserve the original execution boundary: a materialized toolkit with
         // no adapter is a deterministic runtime capability failure and must not
@@ -1177,6 +1325,7 @@ export class ExecutionEngine {
             "eyeball.toolkit": tool.toolkit,
           },
           async (dispatchContext) => {
+            dispatchAttempted = true;
             return adapter.execute({
               projectId,
               userId: request.userId,
@@ -1243,6 +1392,13 @@ export class ExecutionEngine {
           async () => this.store.update(projectId, terminal),
           executionTrace.context,
         );
+        if (usageReport !== undefined) {
+          this.usageGate.reportTerminal({
+            context: usageReport,
+            record: terminal,
+          });
+          usageFinalized = true;
+        }
         terminalStatus = "succeeded";
         executionTrace.span?.setAttribute(
           "eyeball.execution.latency_ms",
@@ -1288,6 +1444,18 @@ export class ExecutionEngine {
           async () => this.store.update(projectId, terminal),
           executionTrace.context,
         );
+        if (usageReport !== undefined && dispatchAttempted) {
+          this.usageGate.reportTerminal({
+            context: usageReport,
+            record: terminal,
+          });
+          usageFinalized = true;
+        } else if (!dispatchAttempted) {
+          if (usageReservationId !== undefined) {
+            await this.usageGate.release(usageReservationId);
+          }
+          usageFinalized = true;
+        }
         terminalStatus = "failed";
         executionTrace.span?.setAttribute(
           "eyeball.execution.latency_ms",
@@ -1311,6 +1479,14 @@ export class ExecutionEngine {
       }
     } catch (error) {
       terminalError ??= error;
+      if (
+        !dispatchAttempted &&
+        !usageFinalized &&
+        usageReservationId !== undefined
+      ) {
+        await this.usageGate.release(usageReservationId);
+        usageFinalized = true;
+      }
       throw error;
     } finally {
       concurrencyPermit?.release();

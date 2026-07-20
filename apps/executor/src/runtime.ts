@@ -10,7 +10,7 @@ import {
   voiceWorkerTokenFromEnv,
   voiceWorkerUrlFromEnv,
 } from "@eyeball/toolkits";
-import { AdapterRegistry } from "./adapters/index.js";
+import { AdapterRegistry, type Clock } from "./adapters/index.js";
 import {
   type ApiKeyAuthenticator,
   createConfiguredApiKeyAuthenticator,
@@ -27,6 +27,14 @@ import {
   initializeOpenTelemetry,
 } from "./telemetry/index.js";
 import { TriggerPollingScheduler, TriggerService } from "./triggers/service.js";
+import {
+  CloudUsageClient,
+  CloudUsageGate,
+  cloudUsageConfiguration,
+  InMemoryUsageOutboxStore,
+  UsageOutboxFlusher,
+  type UsageOutboxStore,
+} from "./usage/index.js";
 import { WebhookDeliverer } from "./webhooks/deliverer.js";
 
 export interface CreateExecutorRuntimeOptions {
@@ -37,6 +45,7 @@ export interface CreateExecutorRuntimeOptions {
   /** In-process test/deployment seam shared by remote composition and adapters. */
   fetchImpl?: typeof fetch;
   telemetry?: ExecutorTelemetry;
+  clock?: Clock;
   /** Test/deployment seam; the stock factory uses pg with a five-connection pool. */
   persistenceFactory?: (
     connectionString: string,
@@ -52,7 +61,14 @@ export interface ExecutorRuntime {
   apiKeyAuthenticator: ApiKeyAuthenticator;
   triggerPollingScheduler: TriggerPollingScheduler;
   persistence?: ExecutorPersistence;
+  usageOutboxFlusher?: UsageOutboxFlusher;
   close(): Promise<void>;
+}
+
+interface ConfiguredUsage {
+  readonly gate: CloudUsageGate;
+  readonly flusher: UsageOutboxFlusher;
+  readonly drainTimeoutMs: number;
 }
 
 async function drainRuntime(
@@ -62,6 +78,42 @@ async function drainRuntime(
   await triggerPollingScheduler.onIdle();
   await engine.queue.onIdle();
   await engine.webhookDeliverer.onIdle();
+}
+
+function configuredUsage(
+  env: Readonly<Record<string, string | undefined>>,
+  store: UsageOutboxStore,
+  telemetry: ReturnType<typeof createExecutorTelemetryRuntime>,
+  fetchImpl: typeof fetch | undefined,
+  clock: Clock | undefined,
+): ConfiguredUsage | undefined {
+  const configuration = cloudUsageConfiguration(env);
+  if (configuration === undefined) return undefined;
+  const client = new CloudUsageClient({
+    baseUrl: configuration.baseUrl,
+    internalApiSecret: configuration.internalApiSecret,
+    timeoutMs: configuration.timeoutMs,
+    ...(fetchImpl === undefined ? {} : { fetchImpl }),
+  });
+  const gate = new CloudUsageGate({
+    client,
+    outboxStore: store,
+    telemetry,
+    strict: configuration.strict,
+    ...(clock === undefined ? {} : { clock }),
+  });
+  return {
+    gate,
+    flusher: new UsageOutboxFlusher({
+      client,
+      store,
+      telemetry,
+      intervalMs: configuration.flushIntervalMs,
+      alertAfterAttempts: configuration.alertAfterAttempts,
+      ...(clock === undefined ? {} : { clock }),
+    }),
+    drainTimeoutMs: configuration.drainTimeoutMs,
+  };
 }
 
 function configuredVoiceWorker(
@@ -199,6 +251,13 @@ export async function createExecutorRuntime(
   const databaseUrl = env.EYEBALL_DATABASE_URL?.trim();
   if (databaseUrl === undefined || databaseUrl.length === 0) {
     try {
+      const usage = configuredUsage(
+        env,
+        new InMemoryUsageOutboxStore(),
+        telemetry,
+        options.fetchImpl,
+        options.clock,
+      );
       const engine = new ExecutionEngine({
         env,
         catalog,
@@ -207,6 +266,8 @@ export async function createExecutorRuntime(
           : { adapters: voiceWorker.adapters }),
         credentialProvider,
         telemetryRuntime: telemetry,
+        ...(options.clock === undefined ? {} : { clock: options.clock }),
+        ...(usage === undefined ? {} : { usageGate: usage.gate }),
         ...(options.fetchImpl === undefined
           ? {}
           : { fetchImpl: options.fetchImpl }),
@@ -216,15 +277,22 @@ export async function createExecutorRuntime(
         service: engine.triggerService,
         logger: telemetry.logger,
       });
+      usage?.flusher.start();
       return {
         engine,
         apiKeyAuthenticator,
         triggerPollingScheduler,
+        ...(usage === undefined ? {} : { usageOutboxFlusher: usage.flusher }),
         close: async () => {
           triggerPollingScheduler.stop();
+          usage?.flusher.stop();
           try {
             await voiceWorker.driver?.close();
             await drainRuntime(engine, triggerPollingScheduler);
+            await engine.usageGate.onIdle();
+            if (usage !== undefined) {
+              await usage.flusher.drain(usage.drainTimeoutMs);
+            }
           } finally {
             await otel.shutdown();
           }
@@ -245,6 +313,13 @@ export async function createExecutorRuntime(
         createPgStoreBundle({ connectionString, maxConnections: 5 }))
     )(databaseUrl);
     const initializedPersistence = persistence;
+    const usage = configuredUsage(
+      env,
+      initializedPersistence.usageOutboxStore,
+      telemetry,
+      options.fetchImpl,
+      options.clock,
+    );
     const webhookDeliverer = new WebhookDeliverer({
       endpointStore: initializedPersistence.webhookEndpointStore,
       deliveryStore: initializedPersistence.webhookDeliveryStore,
@@ -270,6 +345,8 @@ export async function createExecutorRuntime(
       webhookDeliverer,
       triggerService,
       telemetryRuntime: telemetry,
+      ...(options.clock === undefined ? {} : { clock: options.clock }),
+      ...(usage === undefined ? {} : { usageGate: usage.gate }),
       ...(options.fetchImpl === undefined
         ? {}
         : { fetchImpl: options.fetchImpl }),
@@ -279,16 +356,23 @@ export async function createExecutorRuntime(
       service: engine.triggerService,
       logger: telemetry.logger,
     });
+    usage?.flusher.start();
     return {
       engine,
       apiKeyAuthenticator,
       triggerPollingScheduler,
       persistence: initializedPersistence,
+      ...(usage === undefined ? {} : { usageOutboxFlusher: usage.flusher }),
       close: async () => {
         triggerPollingScheduler.stop();
+        usage?.flusher.stop();
         try {
           await voiceWorker.driver?.close();
           await drainRuntime(engine, triggerPollingScheduler);
+          await engine.usageGate.onIdle();
+          if (usage !== undefined) {
+            await usage.flusher.drain(usage.drainTimeoutMs);
+          }
         } finally {
           try {
             await initializedPersistence.close();

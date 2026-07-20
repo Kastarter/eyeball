@@ -20,6 +20,7 @@ Open-core tool and integration platform for AI agents: one typed, authenticated 
 - Credential env vars use `EYEBALL_CRED_<TOOLKIT>_*`; `EYEBALL_API_KEYS` accepts `key:project[:user]`.
 - Manifest `endpoint.baseUrlOverrideEnv` values are the only trusted provider endpoint override seam.
 - HTTP and provider tests prefer Hono `app.request`; do not require loopback sockets.
+- Real Cloud integration tests load the ignored sibling checkout conditionally so OSS-only clones keep passing.
 - Webhooks sign `<unix-seconds>.<raw-body>` as `v1=<HMAC-SHA256 hex>`; attempts time out at 10s and retry after 0s/30s/2m/10m/1h.
 - Webhook URL validation strips trailing DNS root dots before rejecting localhost, `.localhost`, `.local`, and literal private-network targets; delivery never follows redirects.
 - Executor logs and telemetry attributes pass through central redaction; never emit credentials, authorization headers, canonical bodies, webhook secrets, or file bytes.
@@ -28,6 +29,8 @@ Open-core tool and integration platform for AI agents: one typed, authenticated 
 - Unauthenticated push-trigger ingest is capped at 1 MiB before buffering; exposed path credentials rotate through the subscription rotation endpoint.
 - `EYEBALL_DATABASE_URL` enables the executor's five-connection Postgres pool and applies committed Drizzle migrations at boot; absent keeps all zero-config in-memory defaults.
 - Executor HTTP limits share project buckets: standard 120/min with 240 burst, execute 60/min with 120 burst; `EYEBALL_RATE_LIMIT_*` overrides them and daily quota is off by default.
+- Cloud execution usage reserves after project throttling and before record allocation; execution stores preflight idempotent replays, and terminal reports reuse one opaque SHA-256 identity.
+- Usage reservations release on failures before adapter dispatch; attempted adapter calls report through the terminal outbox.
 - The docs shell follows Mintlify-derived geometry: a 56px top bar, 576px prose column, and 256px/264px navigation rails.
 - Dashboard cloud mode is explicit: `NEXT_PUBLIC_EYEBALL_MODE=cloud` selects cloud-backed features and server-only `EYEBALL_CLOUD_URL` supplies the control-plane origin; unset remains demo mode.
 - Dashboard cloud requests use the same-origin `/api/cloud` allowlist proxy; org/project context and manually pasted per-project executor keys live in validated `HttpOnly` cookies.
@@ -56,6 +59,7 @@ Open-core tool and integration platform for AI agents: one typed, authenticated 
 - `@eyeball/toolkits` owns adapters; the executor resolves one manifest and credential per call.
 - Execution storage and scheduling sit behind `ExecutionStore` and `TaskQueue`.
 - Authenticated throttling sits behind async `RateLimiter`; manifest concurrency caps use a project/toolkit semaphore around adapter dispatch.
+- `UsageGate` defaults to no-op; the Cloud implementation reserves synchronously and reports terminal records through an at-least-once outbox.
 - Webhook endpoints/delivery logs sit behind injectable stores; delivery is async and concurrency-one per endpoint.
 - Trigger subscriptions, cursors, and dedup claims sit behind injectable stores; Slack push and Gmail polling normalize against catalog schemas.
 - Executor-owned Drizzle stores persist executions/idempotency, webhook endpoints/delivery attempts, and trigger subscriptions/state/dedup against pg or PGlite with the same schema and migrations.
@@ -100,6 +104,7 @@ Open-core tool and integration platform for AI agents: one typed, authenticated 
 - Catalog `1.1` includes `gmail.email_received` polling and `slack.message_received` push, with executor subscription CRUD and SDK clients.
 - Postgres durable stores are wired behind `EYEBALL_DATABASE_URL`; shared contracts run all stores against both memory and one embedded PGlite database.
 - Project request token buckets, optional UTC daily execution quotas, and manifest-declared toolkit concurrency caps are implemented.
+- `EYEBALL_USAGE_URL` enables Cloud quota admission and terminal billing reports; default transport failures fail open, while `EYEBALL_USAGE_STRICT=1` fails closed.
 - A separately deployed Python voice worker provides versioned remote sessions, SQLite event durability, stable child execution identity, and account-free fake/chat contract suites; Pipecat/Twilio/LiveKit paths are certification scaffolding, not proven live-call capability.
 - Voice agents expose LiveKit web-session activation plus Twilio buy/list/bind/detach/release inventory flows against account-free mocks; reassignment is detach then attach, and bound numbers cannot be released.
 - The security posture pass added product/cloud threat models, an incident-response runbook, SHA-pinned CI actions, trigger-secret rotation, and query/log/redirect hardening.
@@ -119,6 +124,7 @@ Open-core tool and integration platform for AI agents: one typed, authenticated 
 - Trigger records and dedup claims are durable with Postgres, while the polling scheduler still needs distributed leases, replay/backfill, provider signature verification, and an atomic claim/outbox.
 - Provider idempotency propagation is separate from working executor-level replay protection.
 - The stock executor remains process-local without `EYEBALL_DATABASE_URL`; Postgres makes records and 24-hour idempotency durable, but async task queues are still process-local.
+- The usage outbox is restart-durable with Postgres; without it, pending reports and the single-process flusher remain process-local.
 - Stock rate and concurrency limiters are process-local; multi-replica global enforcement requires injected distributed implementations.
 - MCP sessions and task pollers are process-local with the stock `InMemorySessionStore`; inject a durable atomic store for restart recovery. SSE event replay and stock executor cancellation are not implemented.
 - The local vault serializes only within one process; do not share one file across executors.
