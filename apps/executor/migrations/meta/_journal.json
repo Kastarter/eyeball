@@ -15,6 +15,13 @@
       "when": 1784514561953,
       "tag": "0001_usage_outbox",
       "breakpoints": true
+    },
+    {
+      "idx": 2,
+      "version": "7",
+      "when": 1784590657656,
+      "tag": "0002_durable_task_queue",
+      "breakpoints": true
     }
   ]
 }

@@ -1,3 +1,4 @@
+import { isDeepStrictEqual } from "node:util";
 import type {
   ConnectionId,
   ExecuteRequest,
@@ -7,6 +8,10 @@ import type {
   JsonValue,
   QualifiedToolName,
 } from "@eyeball/core";
+import type {
+  UsageReportContext,
+  UsageReservationHandle,
+} from "./usage/gate.js";
 
 export interface IdempotencyScope {
   key: string;
@@ -33,6 +38,45 @@ export interface ExecutionAllocation {
   record: ExecutionRecord & { status: "pending" };
   request: ExecuteRequest;
   idempotency?: IdempotencyReservation;
+  /** Executor-only restart metadata; never returned by public execution APIs. */
+  recovery?: ExecutionRecoveryAllocation;
+}
+
+export interface ExecutionResumeContextV1 {
+  readonly version: 1;
+  readonly tool: QualifiedToolName;
+  readonly toolVersion: string;
+  readonly toolkitSlug: string;
+  readonly requiredScopes: readonly string[];
+  readonly concurrencyBucketKey: string;
+  readonly concurrencyLimit?: number;
+  readonly usageReport?: UsageReportContext;
+  readonly usageReservation?: UsageReservationHandle;
+  readonly traceParent?: string;
+}
+
+export type ExecutionResumeContext = ExecutionResumeContextV1;
+
+export interface ExecutionRecoveryAllocation {
+  readonly resumeContext: ExecutionResumeContext;
+  readonly webhookEventId: string;
+}
+
+export interface RecoverableExecution {
+  readonly sequence: number;
+  readonly projectId: string;
+  readonly record: ExecutionRecord;
+  readonly request: ExecuteRequest;
+  readonly resumeContext?: ExecutionResumeContext;
+  readonly dispatchStartedAt?: string;
+  readonly webhookEventId?: string;
+  readonly webhookPublishedAt?: string;
+  readonly usageFinalizedAt?: string;
+}
+
+export interface ExecutionRecoveryPage {
+  readonly candidates: readonly RecoverableExecution[];
+  readonly nextCursor?: number;
 }
 
 export type ExecutionAllocationResult =
@@ -102,13 +146,54 @@ export interface ExecutionStore {
     projectId: string,
     filters: ExecutionListFilters,
   ): Promise<ExecutionPage>;
+  getRecoverable(
+    projectId: string,
+    executionId: ExecutionId,
+  ): Promise<RecoverableExecution | undefined>;
+  listRecoveryCandidates(input: {
+    readonly cursor?: number;
+    readonly limit: number;
+  }): Promise<ExecutionRecoveryPage>;
+  setResumeContext(
+    projectId: string,
+    executionId: ExecutionId,
+    recovery: ExecutionRecoveryAllocation,
+  ): Promise<boolean>;
+  /** Persists the stable terminal webhook identity even for legacy rows. */
+  setWebhookEventId(
+    projectId: string,
+    executionId: ExecutionId,
+    webhookEventId: string,
+  ): Promise<boolean>;
+  /** True only for the worker that changes the dispatch marker from absent to present. */
+  markDispatchStarted(
+    projectId: string,
+    executionId: ExecutionId,
+    dispatchedAt: string,
+  ): Promise<boolean>;
+  markUsageFinalized(
+    projectId: string,
+    executionId: ExecutionId,
+    finalizedAt: string,
+  ): Promise<boolean>;
+  markWebhookPublished(
+    projectId: string,
+    executionId: ExecutionId,
+    publishedAt: string,
+  ): Promise<boolean>;
 }
 
 interface StoredExecution {
+  sequence: number;
   record: ExecutionRecord;
   request: ExecuteRequest;
   idempotencyKey?: string;
   resolvedConnectionId?: ConnectionId;
+  resumeContext?: ExecutionResumeContext;
+  dispatchStartedAt?: string;
+  webhookEventId?: string;
+  webhookPublishedAt?: string;
+  usageFinalizedAt?: string;
 }
 
 function clone<T>(value: T): T {
@@ -202,6 +287,7 @@ export class InMemoryExecutionStore implements ExecutionStore {
     string,
     Set<(record: ExecutionRecord & { status: "succeeded" | "failed" }) => void>
   >();
+  #sequence = 0;
 
   async inspectAllocation(
     allocation: ExecutionAllocation,
@@ -292,11 +378,18 @@ export class InMemoryExecutionStore implements ExecutionStore {
       );
     }
     projectExecutions.set(allocation.record.executionId, {
+      sequence: ++this.#sequence,
       record: clone(allocation.record),
       request: clone(allocation.request),
       ...(allocation.idempotency === undefined
         ? {}
         : { idempotencyKey: allocation.idempotency.scope.key }),
+      ...(allocation.recovery === undefined
+        ? {}
+        : {
+            resumeContext: clone(allocation.recovery.resumeContext),
+            webhookEventId: allocation.recovery.webhookEventId,
+          }),
     });
     return { kind: "allocated", record: clone(allocation.record) };
   }
@@ -433,6 +526,164 @@ export class InMemoryExecutionStore implements ExecutionStore {
         ? { nextCursor: executionCursorAfter(last.executionId) }
         : {}),
     };
+  }
+
+  async getRecoverable(
+    projectId: string,
+    executionId: ExecutionId,
+  ): Promise<RecoverableExecution | undefined> {
+    const stored = this.#executions.get(projectId)?.get(executionId);
+    return stored === undefined
+      ? undefined
+      : clone({
+          sequence: stored.sequence,
+          projectId,
+          record: stored.record,
+          request: stored.request,
+          ...(stored.resumeContext === undefined
+            ? {}
+            : { resumeContext: stored.resumeContext }),
+          ...(stored.dispatchStartedAt === undefined
+            ? {}
+            : { dispatchStartedAt: stored.dispatchStartedAt }),
+          ...(stored.webhookEventId === undefined
+            ? {}
+            : { webhookEventId: stored.webhookEventId }),
+          ...(stored.webhookPublishedAt === undefined
+            ? {}
+            : { webhookPublishedAt: stored.webhookPublishedAt }),
+          ...(stored.usageFinalizedAt === undefined
+            ? {}
+            : { usageFinalizedAt: stored.usageFinalizedAt }),
+        });
+  }
+
+  async listRecoveryCandidates(input: {
+    readonly cursor?: number;
+    readonly limit: number;
+  }): Promise<ExecutionRecoveryPage> {
+    if (!Number.isSafeInteger(input.limit) || input.limit < 1) {
+      throw new RangeError("Execution recovery limit must be positive.");
+    }
+    const candidates = [...this.#executions.entries()]
+      .flatMap(([projectId, executions]) =>
+        [...executions.values()].map((stored) => ({ projectId, stored })),
+      )
+      .filter(({ stored }) => {
+        if (input.cursor !== undefined && stored.sequence <= input.cursor) {
+          return false;
+        }
+        if (
+          stored.record.status === "pending" ||
+          stored.record.status === "running"
+        ) {
+          return true;
+        }
+        const webhookIncomplete =
+          stored.webhookEventId !== undefined &&
+          stored.webhookPublishedAt === undefined;
+        const usageRequired =
+          stored.resumeContext?.usageReport !== undefined ||
+          stored.resumeContext?.usageReservation !== undefined;
+        return (
+          webhookIncomplete ||
+          (usageRequired && stored.usageFinalizedAt === undefined)
+        );
+      })
+      .sort((left, right) => left.stored.sequence - right.stored.sequence)
+      .slice(0, input.limit);
+    const materialized = await Promise.all(
+      candidates.map(({ projectId, stored }) =>
+        this.getRecoverable(projectId, stored.record.executionId),
+      ),
+    );
+    const page = materialized.filter(
+      (candidate): candidate is RecoverableExecution => candidate !== undefined,
+    );
+    const last = page.at(-1);
+    return {
+      candidates: page,
+      ...(candidates.length === input.limit && last !== undefined
+        ? { nextCursor: last.sequence }
+        : {}),
+    };
+  }
+
+  async setResumeContext(
+    projectId: string,
+    executionId: ExecutionId,
+    recovery: ExecutionRecoveryAllocation,
+  ): Promise<boolean> {
+    const stored = this.#executions.get(projectId)?.get(executionId);
+    if (stored === undefined) return false;
+    if (
+      stored.resumeContext !== undefined &&
+      !isDeepStrictEqual(stored.resumeContext, recovery.resumeContext)
+    ) {
+      throw new Error("Execution resume context is immutable.");
+    }
+    if (
+      stored.webhookEventId !== undefined &&
+      stored.webhookEventId !== recovery.webhookEventId
+    ) {
+      throw new Error("Execution webhook event identity is immutable.");
+    }
+    stored.resumeContext = clone(recovery.resumeContext);
+    stored.webhookEventId = recovery.webhookEventId;
+    return true;
+  }
+
+  async setWebhookEventId(
+    projectId: string,
+    executionId: ExecutionId,
+    webhookEventId: string,
+  ): Promise<boolean> {
+    const stored = this.#executions.get(projectId)?.get(executionId);
+    if (stored === undefined) return false;
+    if (
+      stored.webhookEventId !== undefined &&
+      stored.webhookEventId !== webhookEventId
+    ) {
+      throw new Error("Execution webhook event identity is immutable.");
+    }
+    stored.webhookEventId = webhookEventId;
+    return true;
+  }
+
+  async markDispatchStarted(
+    projectId: string,
+    executionId: ExecutionId,
+    dispatchedAt: string,
+  ): Promise<boolean> {
+    const stored = this.#executions.get(projectId)?.get(executionId);
+    if (stored === undefined || stored.record.status !== "running")
+      return false;
+    if (stored.dispatchStartedAt !== undefined) return false;
+    stored.dispatchStartedAt = new Date(dispatchedAt).toISOString();
+    return true;
+  }
+
+  async markUsageFinalized(
+    projectId: string,
+    executionId: ExecutionId,
+    finalizedAt: string,
+  ): Promise<boolean> {
+    const stored = this.#executions.get(projectId)?.get(executionId);
+    if (stored === undefined) return false;
+    stored.usageFinalizedAt ??= new Date(finalizedAt).toISOString();
+    return true;
+  }
+
+  async markWebhookPublished(
+    projectId: string,
+    executionId: ExecutionId,
+    publishedAt: string,
+  ): Promise<boolean> {
+    const stored = this.#executions.get(projectId)?.get(executionId);
+    if (stored === undefined || stored.webhookEventId === undefined)
+      return false;
+    stored.webhookPublishedAt ??= new Date(publishedAt).toISOString();
+    return true;
   }
 
   #projectExecutions(projectId: string): Map<ExecutionId, StoredExecution> {

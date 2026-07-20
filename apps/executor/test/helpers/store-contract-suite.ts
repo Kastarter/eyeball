@@ -11,12 +11,20 @@ import { beforeAll, describe, expect, it } from "vitest";
 import type {
   ExecutionAllocation,
   ExecutionStore,
+  JobStore,
   StoredTriggerSubscription,
   TriggerStateStore,
   TriggerSubscriptionStore,
   UsageOutboxStore,
   WebhookDeliveryStore,
   WebhookEndpointStore,
+  WebhookWorkStore,
+} from "../../src/index.js";
+import {
+  createJobEnvelope,
+  executorJobId,
+  WEBHOOK_SELECTION_GROUP_KEY,
+  webhookEndpointGroupKey,
 } from "../../src/index.js";
 
 export interface StoreContractStores {
@@ -26,6 +34,8 @@ export interface StoreContractStores {
   triggerSubscriptionStore: TriggerSubscriptionStore;
   triggerStateStore: TriggerStateStore;
   usageOutboxStore: UsageOutboxStore;
+  jobStore: JobStore;
+  webhookWorkStore: WebhookWorkStore;
 }
 
 export interface StoreContractImplementation {
@@ -300,6 +310,110 @@ export function registerStoreContractSuite(
         ]);
       });
 
+      it("persists recovery state and fences provider dispatch to one worker", async () => {
+        const scope = namespace(implementation.name);
+        const projectId = `project_${scope}`;
+        const clock = new MutableClock("2026-07-18T02:30:00.000Z");
+        const executionId = createExecutionId(`${scope}_recovery`);
+        const base = allocation(projectId, executionId, clock);
+        const recovery = {
+          webhookEventId: `evt_execution_${scope}`,
+          resumeContext: {
+            version: 1 as const,
+            tool: base.record.tool,
+            toolVersion: base.record.toolVersion,
+            toolkitSlug: "gmail",
+            requiredScopes: ["gmail.send"],
+            concurrencyBucketKey: `${projectId}:gmail`,
+          },
+        };
+        await expect(
+          stores.executionStore.allocate({ ...base, recovery }),
+        ).resolves.toMatchObject({ kind: "allocated" });
+        await expect(
+          stores.executionStore.getRecoverable(projectId, executionId),
+        ).resolves.toMatchObject({
+          projectId,
+          record: { status: "pending" },
+          request: base.request,
+          resumeContext: recovery.resumeContext,
+          webhookEventId: recovery.webhookEventId,
+        });
+        await expect(
+          stores.executionStore.setResumeContext(projectId, executionId, {
+            resumeContext: {
+              concurrencyBucketKey: `${projectId}:gmail`,
+              requiredScopes: ["gmail.send"],
+              toolkitSlug: "gmail",
+              toolVersion: base.record.toolVersion,
+              tool: base.record.tool,
+              version: 1,
+            },
+            webhookEventId: recovery.webhookEventId,
+          }),
+        ).resolves.toBe(true);
+        await expect(
+          stores.executionStore.setWebhookEventId(
+            projectId,
+            executionId,
+            recovery.webhookEventId,
+          ),
+        ).resolves.toBe(true);
+        await expect(
+          stores.executionStore.setWebhookEventId(
+            projectId,
+            executionId,
+            `${recovery.webhookEventId}_different`,
+          ),
+        ).rejects.toThrow("webhook event identity is immutable");
+
+        const runningRecord = running(base.record);
+        await stores.executionStore.update(projectId, runningRecord);
+        const dispatchClaims = await Promise.all([
+          stores.executionStore.markDispatchStarted(
+            projectId,
+            executionId,
+            "2026-07-18T02:30:01.000Z",
+          ),
+          stores.executionStore.markDispatchStarted(
+            projectId,
+            executionId,
+            "2026-07-18T02:30:02.000Z",
+          ),
+        ]);
+        expect(dispatchClaims.sort()).toEqual([false, true]);
+
+        await stores.executionStore.update(projectId, succeeded(runningRecord));
+        const beforeFinalization =
+          await stores.executionStore.listRecoveryCandidates({ limit: 100 });
+        expect(
+          beforeFinalization.candidates.some(
+            ({ record }) => record.executionId === executionId,
+          ),
+        ).toBe(true);
+        await expect(
+          stores.executionStore.markUsageFinalized(
+            projectId,
+            executionId,
+            "2026-07-18T02:30:03.000Z",
+          ),
+        ).resolves.toBe(true);
+        await expect(
+          stores.executionStore.markWebhookPublished(
+            projectId,
+            executionId,
+            "2026-07-18T02:30:04.000Z",
+          ),
+        ).resolves.toBe(true);
+        const afterFinalization =
+          await stores.executionStore.listRecoveryCandidates({ limit: 100 });
+        expect(
+          afterFinalization.candidates.some(
+            ({ record }) => record.executionId === executionId,
+          ),
+        ).toBe(false);
+      });
+
       it("filters and paginates from a stable project-scoped anchor", async () => {
         const scope = namespace(implementation.name);
         const projectId = `project_${scope}`;
@@ -347,6 +461,452 @@ export function registerStoreContractSuite(
         expect(
           await stores.executionStore.list(`other_${projectId}`, { limit: 10 }),
         ).toEqual({ executions: [] });
+      });
+    });
+
+    describe("durable jobs", () => {
+      it("round-trips ID-only payloads and enforces lease fencing", async () => {
+        const scope = namespace(implementation.name);
+        const now = "2026-07-18T03:10:00.000Z";
+        const leaseExpiresAt = "2026-07-18T03:10:30.000Z";
+        const description = {
+          kind: "execution.run.v1" as const,
+          payload: {
+            projectId: `project_${scope}`,
+            executionId: `exe_${scope}`,
+          },
+        };
+        const envelope = createJobEnvelope(description, { runAfter: now });
+        await expect(stores.jobStore.ensure(envelope)).resolves.toMatchObject({
+          kind: "inserted",
+          job: { description, attempts: 0, state: "pending" },
+        });
+        await expect(stores.jobStore.ensure(envelope)).resolves.toMatchObject({
+          kind: "existing",
+        });
+        await expect(
+          stores.jobStore.ensure({
+            ...envelope,
+            description: {
+              ...description,
+              payload: {
+                ...description.payload,
+                executionId: `exe_other_${scope}`,
+              },
+            },
+          }),
+        ).resolves.toEqual({ kind: "conflict" });
+
+        const [claimed] = await stores.jobStore.claim({
+          queueName: "execution",
+          workerId: `worker_a_${scope}`,
+          now,
+          leaseExpiresAt,
+          limit: 1,
+        });
+        expect(claimed).toMatchObject({ attempts: 1, description });
+        if (claimed === undefined) throw new Error("Expected a claimed job.");
+        const renewedUntil = "2026-07-18T03:10:40.000Z";
+        await expect(
+          stores.jobStore.renew({
+            jobId: claimed.jobId,
+            workerId: claimed.claimedBy,
+            leaseToken: claimed.leaseToken,
+            now: "2026-07-18T03:10:10.000Z",
+            leaseExpiresAt: renewedUntil,
+          }),
+        ).resolves.toBe(true);
+        await expect(
+          stores.jobStore.complete({
+            jobId: claimed.jobId,
+            workerId: `stale_${scope}`,
+            leaseToken: claimed.leaseToken,
+            now: "2026-07-18T03:10:11.000Z",
+          }),
+        ).resolves.toBe(false);
+        const retryAt = "2026-07-18T03:11:00.000Z";
+        await expect(
+          stores.jobStore.reschedule({
+            jobId: claimed.jobId,
+            workerId: claimed.claimedBy,
+            leaseToken: claimed.leaseToken,
+            now: "2026-07-18T03:10:12.000Z",
+            runAfter: retryAt,
+          }),
+        ).resolves.toBe(true);
+        await expect(
+          stores.jobStore.claim({
+            queueName: "execution",
+            workerId: `worker_b_${scope}`,
+            now: "2026-07-18T03:10:59.000Z",
+            leaseExpiresAt: "2026-07-18T03:11:29.000Z",
+            limit: 1,
+          }),
+        ).resolves.toEqual([]);
+        const [reclaimed] = await stores.jobStore.claim({
+          queueName: "execution",
+          workerId: `worker_b_${scope}`,
+          now: retryAt,
+          leaseExpiresAt: "2026-07-18T03:11:30.000Z",
+          limit: 1,
+        });
+        expect(reclaimed?.attempts).toBe(2);
+        if (reclaimed === undefined)
+          throw new Error("Expected a reclaimed job.");
+        await expect(
+          stores.jobStore.complete({
+            jobId: reclaimed.jobId,
+            workerId: reclaimed.claimedBy,
+            leaseToken: reclaimed.leaseToken,
+            now: "2026-07-18T03:11:01.000Z",
+          }),
+        ).resolves.toBe(true);
+        await expect(
+          stores.jobStore.listAttachedTerminal([reclaimed.jobId]),
+        ).resolves.toMatchObject([{ state: "succeeded" }]);
+        await expect(
+          stores.jobStore.reopenForRecovery({
+            jobId: reclaimed.jobId,
+            expectedDescription: description,
+            runAfter: retryAt,
+          }),
+        ).resolves.toBe(true);
+        await expect(
+          stores.jobStore.get(reclaimed.jobId),
+        ).resolves.toMatchObject({
+          state: "pending",
+          attempts: 2,
+        });
+        const [recovered] = await stores.jobStore.claim({
+          queueName: "execution",
+          workerId: `worker_recovery_${scope}`,
+          now: retryAt,
+          leaseExpiresAt: "2026-07-18T03:11:30.000Z",
+          limit: 1,
+        });
+        if (recovered === undefined)
+          throw new Error("Expected the reopened recovery job.");
+        await expect(
+          stores.jobStore.complete({
+            jobId: recovered.jobId,
+            workerId: recovered.claimedBy,
+            leaseToken: recovered.leaseToken,
+            now: "2026-07-18T03:11:01.000Z",
+          }),
+        ).resolves.toBe(true);
+      });
+
+      it("expires leases and prevents a stale owner from acknowledging", async () => {
+        const scope = namespace(implementation.name);
+        const now = "2026-07-18T03:20:00.000Z";
+        const description = {
+          kind: "execution.run.v1" as const,
+          payload: {
+            projectId: `project_${scope}`,
+            executionId: `exe_${scope}`,
+          },
+        };
+        await stores.jobStore.ensure(
+          createJobEnvelope(description, { runAfter: now }),
+        );
+        const [first] = await stores.jobStore.claim({
+          queueName: "execution",
+          workerId: `first_${scope}`,
+          now,
+          leaseExpiresAt: "2026-07-18T03:20:01.000Z",
+          limit: 1,
+        });
+        if (first === undefined) throw new Error("Expected first lease.");
+        await expect(
+          stores.jobStore.renew({
+            jobId: first.jobId,
+            workerId: first.claimedBy,
+            leaseToken: first.leaseToken,
+            now: "2026-07-18T03:20:01.000Z",
+            leaseExpiresAt: "2026-07-18T03:20:31.000Z",
+          }),
+        ).resolves.toBe(false);
+        await expect(
+          stores.jobStore.expireLeases({
+            queueNames: ["execution"],
+            now: "2026-07-18T03:20:01.000Z",
+            limit: 10,
+          }),
+        ).resolves.toBe(1);
+        const [second] = await stores.jobStore.claim({
+          queueName: "execution",
+          workerId: `second_${scope}`,
+          now: "2026-07-18T03:20:01.000Z",
+          leaseExpiresAt: "2026-07-18T03:20:31.000Z",
+          limit: 1,
+        });
+        expect(second?.attempts).toBe(2);
+        if (second === undefined) throw new Error("Expected second lease.");
+        await expect(
+          stores.jobStore.fail({
+            jobId: first.jobId,
+            workerId: first.claimedBy,
+            leaseToken: first.leaseToken,
+            now: "2026-07-18T03:20:02.000Z",
+            errorCode: "lease_lost",
+          }),
+        ).resolves.toBe(false);
+        await expect(
+          stores.jobStore.fail({
+            jobId: second.jobId,
+            workerId: second.claimedBy,
+            leaseToken: second.leaseToken,
+            now: "2026-07-18T03:20:02.000Z",
+            errorCode: "handler_rejected",
+          }),
+        ).resolves.toBe(true);
+      });
+
+      it("never shortens a live lease when an older heartbeat commits late", async () => {
+        const scope = namespace(implementation.name);
+        const now = "2026-07-18T03:22:00.000Z";
+        const description = {
+          kind: "execution.run.v1" as const,
+          payload: {
+            projectId: `project_${scope}`,
+            executionId: `exe_${scope}`,
+          },
+        };
+        await stores.jobStore.ensure(
+          createJobEnvelope(description, { runAfter: now }),
+        );
+        const [claimed] = await stores.jobStore.claim({
+          queueName: "execution",
+          workerId: `worker_${scope}`,
+          now,
+          leaseExpiresAt: "2026-07-18T03:22:30.000Z",
+          limit: 1,
+        });
+        if (claimed === undefined) throw new Error("Expected a live lease.");
+        await expect(
+          stores.jobStore.renew({
+            jobId: claimed.jobId,
+            workerId: claimed.claimedBy,
+            leaseToken: claimed.leaseToken,
+            now: "2026-07-18T03:22:20.000Z",
+            leaseExpiresAt: "2026-07-18T03:22:50.000Z",
+          }),
+        ).resolves.toBe(true);
+        await expect(
+          stores.jobStore.renew({
+            jobId: claimed.jobId,
+            workerId: claimed.claimedBy,
+            leaseToken: claimed.leaseToken,
+            now: "2026-07-18T03:22:10.000Z",
+            leaseExpiresAt: "2026-07-18T03:22:40.000Z",
+          }),
+        ).resolves.toBe(true);
+        await expect(stores.jobStore.get(claimed.jobId)).resolves.toMatchObject(
+          {
+            leaseExpiresAt: "2026-07-18T03:22:50.000Z",
+            updatedAt: "2026-07-18T03:22:20.000Z",
+          },
+        );
+        await expect(
+          stores.jobStore.expireLeases({
+            queueNames: ["execution"],
+            now: "2026-07-18T03:22:45.000Z",
+            limit: 10,
+          }),
+        ).resolves.toBe(0);
+        await expect(
+          stores.jobStore.complete({
+            jobId: claimed.jobId,
+            workerId: claimed.claimedBy,
+            leaseToken: claimed.leaseToken,
+            now: "2026-07-18T03:22:45.000Z",
+          }),
+        ).resolves.toBe(true);
+      });
+
+      it("blocks a newer group job behind an older future job", async () => {
+        const scope = namespace(implementation.name);
+        const now = "2026-07-18T03:25:00.000Z";
+        const future = "2026-07-18T03:26:00.000Z";
+        const projectId = `project_${scope}`;
+        const groupA = webhookEndpointGroupKey(projectId, `whe_a_${scope}`);
+        const groupB = webhookEndpointGroupKey(projectId, `whe_b_${scope}`);
+        const jobs = [
+          createJobEnvelope(
+            {
+              kind: "webhook.deliver.v1",
+              payload: { projectId, deliveryId: `whd_old_${scope}` },
+            },
+            { runAfter: future, groupKey: groupA, groupOrder: 1 },
+          ),
+          createJobEnvelope(
+            {
+              kind: "webhook.deliver.v1",
+              payload: { projectId, deliveryId: `whd_new_${scope}` },
+            },
+            { runAfter: now, groupKey: groupA, groupOrder: 2 },
+          ),
+          createJobEnvelope(
+            {
+              kind: "webhook.deliver.v1",
+              payload: { projectId, deliveryId: `whd_other_${scope}` },
+            },
+            { runAfter: now, groupKey: groupB, groupOrder: 1 },
+          ),
+        ];
+        await Promise.all(jobs.map((job) => stores.jobStore.ensure(job)));
+        const claims = await Promise.all([
+          stores.jobStore.claim({
+            queueName: "webhook-delivery",
+            workerId: `worker_a_${scope}`,
+            now,
+            leaseExpiresAt: "2026-07-18T03:25:30.000Z",
+            limit: 2,
+          }),
+          stores.jobStore.claim({
+            queueName: "webhook-delivery",
+            workerId: `worker_b_${scope}`,
+            now,
+            leaseExpiresAt: "2026-07-18T03:25:30.000Z",
+            limit: 2,
+          }),
+        ]);
+        expect(claims.flat().map((job) => job.description.payload)).toEqual([
+          { projectId, deliveryId: `whd_other_${scope}` },
+        ]);
+      });
+    });
+
+    describe("private webhook work", () => {
+      it("atomically admits ordered reference-only webhook work", async () => {
+        const scope = namespace(implementation.name);
+        const projectId = `project_${scope}`;
+        const firstEventId = `evt_first_${scope}`;
+        const secondEventId = `evt_second_${scope}`;
+        const createdAt = "2026-07-18T03:28:00.000Z";
+        await expect(
+          stores.webhookWorkStore.ensureEvent({
+            projectId,
+            eventId: firstEventId,
+            eventType: "execution.succeeded",
+            sourceKind: "execution",
+            sourceId: `exe_first_${scope}`,
+            endpointIds: null,
+            createdAt,
+            selectionRunAfter: createdAt,
+          }),
+        ).resolves.toBe("inserted");
+        await expect(
+          stores.webhookWorkStore.ensureEvent({
+            projectId,
+            eventId: firstEventId,
+            eventType: "execution.succeeded",
+            sourceKind: "execution",
+            sourceId: `exe_first_${scope}`,
+            endpointIds: null,
+            createdAt,
+            selectionRunAfter: createdAt,
+          }),
+        ).resolves.toBe("existing");
+        await stores.webhookWorkStore.ensureEvent({
+          projectId,
+          eventId: secondEventId,
+          eventType: "execution.succeeded",
+          sourceKind: "execution",
+          sourceId: `exe_second_${scope}`,
+          endpointIds: null,
+          createdAt,
+          selectionRunAfter: createdAt,
+        });
+        const firstDescription = {
+          kind: "webhook.select.v1" as const,
+          payload: { projectId, eventId: firstEventId },
+        };
+        const secondDescription = {
+          kind: "webhook.select.v1" as const,
+          payload: { projectId, eventId: secondEventId },
+        };
+        const firstJob = await stores.jobStore.get(
+          executorJobId(firstDescription),
+        );
+        const secondJob = await stores.jobStore.get(
+          executorJobId(secondDescription),
+        );
+        expect(firstJob).toMatchObject({
+          state: "pending",
+          groupKey: WEBHOOK_SELECTION_GROUP_KEY,
+        });
+        expect(secondJob).toMatchObject({
+          state: "pending",
+          groupKey: WEBHOOK_SELECTION_GROUP_KEY,
+        });
+        expect(firstJob?.groupOrder).toBeLessThan(secondJob?.groupOrder ?? 0);
+        const firstClaims = await stores.jobStore.claim({
+          queueName: "webhook-selection",
+          workerId: `first_${scope}`,
+          now: createdAt,
+          leaseExpiresAt: "2026-07-18T03:28:30.000Z",
+          limit: 2,
+        });
+        expect(firstClaims.map(({ description }) => description)).toEqual([
+          firstDescription,
+        ]);
+        const firstClaim = firstClaims[0];
+        if (firstClaim === undefined)
+          throw new Error("Expected first selection.");
+        await stores.jobStore.complete({
+          jobId: firstClaim.jobId,
+          workerId: firstClaim.claimedBy,
+          leaseToken: firstClaim.leaseToken,
+          now: "2026-07-18T03:28:01.000Z",
+        });
+        const [secondClaim] = await stores.jobStore.claim({
+          queueName: "webhook-selection",
+          workerId: `second_${scope}`,
+          now: "2026-07-18T03:28:01.000Z",
+          leaseExpiresAt: "2026-07-18T03:28:31.000Z",
+          limit: 2,
+        });
+        expect(secondClaim?.description).toEqual(secondDescription);
+        if (secondClaim === undefined)
+          throw new Error("Expected second selection.");
+        await stores.jobStore.complete({
+          jobId: secondClaim.jobId,
+          workerId: secondClaim.claimedBy,
+          leaseToken: secondClaim.leaseToken,
+          now: "2026-07-18T03:28:02.000Z",
+        });
+
+        const event = await stores.webhookWorkStore.getEvent(
+          projectId,
+          firstEventId,
+        );
+        expect(event).toMatchObject({
+          sourceKind: "execution",
+          sourceId: `exe_first_${scope}`,
+        });
+        expect(event).not.toHaveProperty("rawBody");
+        const materialized = await stores.webhookWorkStore.materializeEvent({
+          projectId,
+          eventId: firstEventId,
+          endpointIds: [`whe_${scope}`],
+          materializedAt: "2026-07-18T03:28:03.000Z",
+        });
+        const delivery = materialized[0]?.delivery;
+        if (delivery === undefined)
+          throw new Error("Expected materialized delivery.");
+        await stores.webhookWorkStore.materializeEvent({
+          projectId,
+          eventId: firstEventId,
+          endpointIds: [delivery.endpointId],
+          materializedAt: "2026-07-18T03:28:04.000Z",
+        });
+        const publicDelivery = await stores.webhookDeliveryStore.get(
+          projectId,
+          delivery.deliveryId,
+        );
+        expect(publicDelivery).not.toHaveProperty("endpointSecret");
+        expect(publicDelivery).not.toHaveProperty("rawBody");
       });
     });
 

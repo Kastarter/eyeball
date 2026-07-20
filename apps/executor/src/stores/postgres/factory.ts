@@ -9,14 +9,17 @@ import {
   type PgliteDatabase,
 } from "drizzle-orm/pglite";
 import { Pool } from "pg";
+import type { JobStore } from "../../jobs/store.js";
 import type { ExecutionStore } from "../../store.js";
 import type { TriggerStateStore } from "../../triggers/state-store.js";
 import type { TriggerSubscriptionStore } from "../../triggers/subscription-store.js";
 import type { UsageOutboxStore } from "../../usage/outbox.js";
 import type { WebhookDeliveryStore } from "../../webhooks/delivery-store.js";
 import type { WebhookEndpointStore } from "../../webhooks/endpoint-store.js";
+import type { WebhookWorkStore } from "../../webhooks/work-store.js";
 import type { EyeballPostgresDatabase } from "./database.js";
 import { PostgresExecutionStore } from "./execution-store.js";
+import { PostgresJobStore } from "./job-store.js";
 import { migrate } from "./migrate.js";
 import { type PostgresSchema, postgresSchema } from "./schema.js";
 import { PostgresTriggerStateStore } from "./trigger-state-store.js";
@@ -24,6 +27,7 @@ import { PostgresTriggerSubscriptionStore } from "./trigger-subscription-store.j
 import { PostgresUsageOutboxStore } from "./usage-outbox-store.js";
 import { PostgresWebhookDeliveryStore } from "./webhook-delivery-store.js";
 import { PostgresWebhookEndpointStore } from "./webhook-endpoint-store.js";
+import { PostgresWebhookWorkStore } from "./webhook-work-store.js";
 
 export interface PostgresStoreSet {
   executionStore: ExecutionStore;
@@ -32,6 +36,8 @@ export interface PostgresStoreSet {
   triggerSubscriptionStore: TriggerSubscriptionStore;
   triggerStateStore: TriggerStateStore;
   usageOutboxStore: UsageOutboxStore;
+  jobStore: JobStore;
+  webhookWorkStore: WebhookWorkStore;
 }
 
 export interface PgStoreBundle extends PostgresStoreSet {
@@ -71,6 +77,8 @@ function stores<TQueryResult extends PgQueryResultHKT>(
     triggerSubscriptionStore: new PostgresTriggerSubscriptionStore(database),
     triggerStateStore: new PostgresTriggerStateStore(database),
     usageOutboxStore: new PostgresUsageOutboxStore(database),
+    jobStore: new PostgresJobStore(database),
+    webhookWorkStore: new PostgresWebhookWorkStore(database),
   };
 }
 

@@ -119,6 +119,6 @@ Delivery is at least once. Store processed event IDs and make handlers idempoten
 
 Eyeball processes one delivery at a time per endpoint. Retries for an earlier event finish or exhaust before a later event is attempted on that same endpoint. This is best-effort per-endpoint order, not global order: different endpoints progress independently, and duplicate delivery remains possible.
 
-The stock executor uses process-local endpoint, delivery-log, and queue implementations. They are suitable for development and tests, but a restart loses pending deliveries. Production self-hosters must inject durable `WebhookEndpointStore`, `WebhookDeliveryStore`, and queue implementations and add delivery metrics and alerting.
+Without `EYEBALL_DATABASE_URL`, the stock endpoint, delivery, work, and job stores are process-local and a restart loses pending deliveries. With Postgres, Eyeball persists the exact raw body and selected endpoint URL/secret, admits deterministic ID-only jobs, retains retry deadlines, and restores unfinished selection and delivery work before workers begin claiming after restart. Production self-hosters still need delivery metrics, exhausted-attempt alerts, backups, restore drills, and receiver-side event-ID deduplication.
 
 See the [webhook API reference](/api/webhooks) for route shapes and [Triggers](/concepts/triggers) for subscription and payload semantics.

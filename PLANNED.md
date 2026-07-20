@@ -25,17 +25,14 @@ change. Never bind ports in tests; use in-process apps (`app.request`, PGlite).
 - M2.2 Billing/usage UI, org members, BYO OAuth apps, redirect origins.
 - M2.3 Lease-guarded jobs runner (refresh/snapshots/month-close/sweeps).
 - M2.4 CLOUD-002 delinquency enforcement + operator exemption.
+- M3.1 Durable serializable async queue, Postgres leases, and startup recovery
+  for pending/running executions plus webhook selection/delivery work.
 
 ## M3 — Restart and replica safety (executor durability)
 
-Until M3 lands, deploy ONE executor replica and ONE MCP gateway replica.
+Until M3.2 and M3.3 land, deploy ONE executor replica and ONE MCP gateway
+replica.
 
-1. **M3.1 Durable async work queue + startup recovery sweep.** The `TaskQueue`
-   holds JS closures, so async executions and webhook retries die on restart.
-   Replace with serializable job descriptions, Postgres-backed queue with
-   leases, and a boot sweep that resumes pending/running executions and due
-   webhook attempts. Evidence: `apps/executor/src/engine.ts:513` defaults,
-   audit finding 7.
 2. **M3.2 Durable FileStore + `GET /v1/files` list.** Staged bytes are
    in-memory only — upload returns 201, restart makes it 404 (reproduced).
    Postgres impl behind the existing `FileStore` seam (bytea now; object-store

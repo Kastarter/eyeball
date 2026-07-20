@@ -31,7 +31,7 @@ The MVP implements:
 - Historical replay, backfill, or arbitrary cursor selection.
 - Provider signature verification beyond the unguessable per-subscription ingest secret.
 - Automatic provider webhook registration or OAuth consent changes.
-- A distributed polling scheduler, transactional claim-and-outbox delivery, or durable retry queue in the stock OSS executor. Optional PostgreSQL subscription, state, and dedup stores are implemented.
+- A distributed polling scheduler or transactional provider-event claim-and-outbox boundary. Optional PostgreSQL subscription/state/dedup stores and restart-durable outbound webhook jobs are implemented.
 - A guarantee that downstream webhook delivery happens exactly once. RFC 001 delivery remains at least once.
 
 ## Canonical model
@@ -141,7 +141,7 @@ The MVP routes are:
 4. parses an `event_callback` message;
 5. applies portable filters and normalizes the payload;
 6. claims the Slack `event_id` in the dedup store; and
-7. enqueues a signed `trigger.slack.message_received` webhook event.
+7. durably admits a signed `trigger.slack.message_received` webhook event when Postgres is configured.
 
 The credential-in-path design supports providers that cannot set a custom callback header, but request targets are commonly logged. Deployments must suppress or redact `/v1/ingest/*` request targets at every proxy and APM boundary and rotate the secret after suspected disclosure.
 
@@ -153,7 +153,7 @@ For Slack `url_verification`, the route returns `{ "challenge": "..." }` immedia
 
 The subscription stores a provider-safe cadence. Gmail defaults to 60 seconds and rejects intervals below 30 seconds. On success, the state store receives the new cursor and next due time. On failure, the prior cursor is retained and the next attempt is scheduled normally. One executor process never polls the same subscription concurrently.
 
-The scheduler remains an in-process OSS default. Without `EYEBALL_DATABASE_URL`, subscription and trigger state are also in memory. With that variable, the executor wires the committed PostgreSQL subscription, cursor, and dedup stores, but production multi-replica deployments still need distributed leases and durable jobs around the same `runDue` seam.
+The scheduler remains an in-process OSS default. Without `EYEBALL_DATABASE_URL`, subscription and trigger state are also in memory. With that variable, the executor wires the committed PostgreSQL subscription, cursor, and dedup stores, and emitted events enter the durable webhook job pipeline. Production multi-replica deployments still need distributed polling leases/jobs around the same `runDue` seam.
 
 ## Deduplication and delivery semantics
 
@@ -164,7 +164,7 @@ This is a best-effort exactly-once ingestion window, not end-to-end exactly-once
 - the zero-config stores are process-local and lose claims on restart; the optional PostgreSQL stores retain them;
 - a provider may reuse an identity after the claim expires;
 - a durable implementation still needs transactional claim-and-outbox behavior to close crash windows; and
-- the outbound webhook engine retries at least once, so receivers must deduplicate by webhook envelope `id` and remain idempotent.
+- the outbound webhook engine delivers at least once, so receivers must deduplicate by webhook envelope `id` and remain idempotent.
 
 ## Signed trigger events
 

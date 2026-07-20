@@ -11,7 +11,7 @@ import {
   WEBHOOK_ID_HEADER,
   type WebhookDelivery,
 } from "@eyeball/core";
-import { Hono } from "hono";
+import { type Handler, Hono } from "hono";
 import { describe, expect, it } from "vitest";
 import {
   type AdapterContext,
@@ -488,6 +488,88 @@ describe("signed webhook delivery", () => {
       503, 503, 204,
     ]);
     expect(attempts).toEqual(["1784289600", "1784289630", "1784289750"]);
+  });
+
+  it("re-resolves the endpoint URL and signing secret before a retry", async () => {
+    let secret = "";
+    const received: Array<{ body: string; path: string; valid: boolean }> = [];
+    const receiver = new Hono();
+    const receive: Handler = async (context) => {
+      const body = await context.req.text();
+      received.push({
+        body,
+        path: context.req.path,
+        valid: verifyWebhookSignature({
+          payload: body,
+          headers: context.req.raw.headers,
+          secret,
+          now: Date.parse(START),
+        }),
+      });
+      return received.length === 1
+        ? context.json({ retry: true }, 503)
+        : context.body(null, 204);
+    };
+    receiver.post("/hook", receive);
+    receiver.post("/rotated", receive);
+    const harness = createHarness({ receiver });
+    const endpoint = await createEndpoint(harness);
+    secret = endpoint.secret;
+
+    await execute(harness.engine, "resolve-current-endpoint");
+    await until(
+      () => received.length === 1,
+      "First webhook attempt did not run.",
+    );
+    const rotated = await harness.endpointStore.rotateSecret(
+      PROJECT_ID,
+      endpoint.endpointId,
+      harness.clock.now().toISOString(),
+    );
+    if (rotated === undefined) throw new Error("Expected endpoint rotation.");
+    secret = rotated.secret;
+    await harness.endpointStore.update(PROJECT_ID, endpoint.endpointId, {
+      url: "https://receiver.example.test/rotated",
+      updatedAt: harness.clock.now().toISOString(),
+    });
+    harness.clock.advance(30_000);
+    await until(
+      () => received.length === 2,
+      "Rotated webhook retry did not run.",
+    );
+    await harness.webhookDeliverer.onIdle();
+
+    expect(received.map(({ path }) => path)).toEqual(["/hook", "/rotated"]);
+    expect(received.map(({ valid }) => valid)).toEqual([true, true]);
+    expect(received[1]?.body).toBe(received[0]?.body);
+  });
+
+  it("delivers immediately when an event timestamp is ahead of the worker clock", async () => {
+    let received = 0;
+    const receiver = new Hono();
+    receiver.post("/hook", (context) => {
+      received += 1;
+      return context.body(null, 204);
+    });
+    const harness = createHarness({ receiver });
+    await createEndpoint(harness);
+
+    await harness.webhookDeliverer.enqueueExecution(PROJECT_ID, {
+      executionId: createExecutionId("future_webhook"),
+      tool: "webhook-fixture.run",
+      toolVersion: "1.0.0",
+      catalogVersion: "2.0",
+      status: "succeeded",
+      userId: USER_ID,
+      createdAt: START,
+      startedAt: START,
+      completedAt: "2026-07-17T13:00:00.000Z",
+      output: { echo: "future" },
+      latencyMs: 0,
+    });
+
+    await harness.webhookDeliverer.onIdle();
+    expect(received).toBe(1);
   });
 
   it("gives up after five attempts and retains every response status", async () => {

@@ -124,6 +124,6 @@ Label values are deliberately bounded operational identifiers. Never add project
 
 ## Graceful shutdown
 
-The stock server handles `SIGINT` and `SIGTERM`. It stops accepting requests and trigger polling, waits for execution and webhook queues to become idle, closes PostgreSQL persistence, and then shuts down OpenTelemetry so buffered spans and metrics can flush.
+The stock server handles `SIGINT` and `SIGTERM`. It stops accepting requests, trigger polling, and new job claims; drains jobs owned by the process; hands still-pending durable jobs back to Postgres; performs the bounded usage-outbox drain; closes persistence; and then shuts down OpenTelemetry so buffered spans and metrics can flush. The zero-config in-memory queue waits until its locally admitted work is idle because it has nowhere durable to hand off.
 
 Custom server entry points should stop their HTTP listener and call `ExecutorRuntime.close()` before exiting. Collectors, retention, dashboards, alerts, and telemetry-backend access control remain deployment responsibilities.

@@ -18,6 +18,17 @@ export interface ListWebhookDeliveriesInput {
   limit: number;
 }
 
+export interface SequencedWebhookDelivery {
+  readonly projectId: string;
+  readonly sequence: number;
+  readonly delivery: WebhookDelivery;
+}
+
+export interface WebhookDeliveryRecoveryPage {
+  readonly deliveries: readonly SequencedWebhookDelivery[];
+  readonly nextCursor?: number;
+}
+
 export interface WebhookDeliveryStore {
   create(
     projectId: string,
@@ -33,6 +44,28 @@ export interface WebhookDeliveryStore {
     endpointId: string,
     input: ListWebhookDeliveriesInput,
   ): Promise<WebhookDeliveryPage>;
+  /** Internal deterministic creation used by atomic webhook materialization. */
+  createDeterministic(
+    projectId: string,
+    deliveryId: string,
+    input: CreateWebhookDeliveryInput,
+  ): Promise<SequencedWebhookDelivery>;
+  getSequenced(
+    projectId: string,
+    deliveryId: string,
+  ): Promise<SequencedWebhookDelivery | undefined>;
+  listUnfinished(input: {
+    readonly cursor?: number;
+    readonly limit: number;
+  }): Promise<WebhookDeliveryRecoveryPage>;
+  /** Recovery-only delivering -> pending reset without a fabricated attempt. */
+  resetForRecovery(projectId: string, deliveryId: string): Promise<boolean>;
+  /** Recovery-only terminalization for legacy rows without immutable work. */
+  markRecoveryFailed(
+    projectId: string,
+    deliveryId: string,
+    completedAt: string,
+  ): Promise<boolean>;
 }
 
 export interface InMemoryWebhookDeliveryStoreOptions {
@@ -140,7 +173,9 @@ export function validateListWebhookDeliveries(
 /** Process-local delivery log. It deliberately stores no endpoint secret or payload. */
 export class InMemoryWebhookDeliveryStore implements WebhookDeliveryStore {
   readonly #deliveries = new Map<string, WebhookDelivery>();
+  readonly #sequences = new Map<string, number>();
   readonly #deliveryIdFactory: () => string;
+  #sequence = 0;
 
   constructor(options: InMemoryWebhookDeliveryStoreOptions = {}) {
     this.#deliveryIdFactory = options.deliveryIdFactory ?? deliveryId;
@@ -150,26 +185,37 @@ export class InMemoryWebhookDeliveryStore implements WebhookDeliveryStore {
     projectId: string,
     input: CreateWebhookDeliveryInput,
   ): Promise<WebhookDelivery> {
-    validateCreateWebhookDelivery(projectId, input);
     const generatedDeliveryId = this.#deliveryIdFactory();
     if (generatedDeliveryId.trim().length === 0) {
       throw new Error("Webhook delivery ID factory returned an empty value.");
     }
-    const key = storageKey(projectId, generatedDeliveryId);
-    if (this.#deliveries.has(key)) {
-      throw new Error(`Duplicate webhook delivery ID: ${generatedDeliveryId}`);
-    }
-    const delivery: WebhookDelivery = {
-      deliveryId: generatedDeliveryId,
-      endpointId: input.endpointId,
-      eventId: input.eventId,
-      eventType: input.eventType,
-      status: "pending",
-      attempts: [],
-      createdAt: input.createdAt,
-    };
-    this.#deliveries.set(key, copy(delivery));
-    return copy(delivery);
+    const created = await this.#create(
+      projectId,
+      generatedDeliveryId,
+      input,
+      false,
+    );
+    return copy(created.delivery);
+  }
+
+  async createDeterministic(
+    projectId: string,
+    deliveryId: string,
+    input: CreateWebhookDeliveryInput,
+  ): Promise<SequencedWebhookDelivery> {
+    return this.#create(projectId, deliveryId, input, true);
+  }
+
+  async getSequenced(
+    projectId: string,
+    deliveryId: string,
+  ): Promise<SequencedWebhookDelivery | undefined> {
+    const key = storageKey(projectId, deliveryId);
+    const delivery = this.#deliveries.get(key);
+    const sequence = this.#sequences.get(key);
+    return delivery === undefined || sequence === undefined
+      ? undefined
+      : copy({ projectId, sequence, delivery });
   }
 
   async get(
@@ -254,5 +300,121 @@ export class InMemoryWebhookDeliveryStore implements WebhookDeliveryStore {
         ? { nextCursor: deliveryCursorAfter(last.deliveryId) }
         : {}),
     };
+  }
+
+  async listUnfinished(input: {
+    readonly cursor?: number;
+    readonly limit: number;
+  }): Promise<WebhookDeliveryRecoveryPage> {
+    if (!Number.isSafeInteger(input.limit) || input.limit < 1) {
+      throw new RangeError("Webhook recovery limit must be positive.");
+    }
+    const rows = [...this.#deliveries.entries()]
+      .flatMap(([key, delivery]) => {
+        const sequence = this.#sequences.get(key);
+        const [projectId] = JSON.parse(key) as [string, string];
+        return sequence === undefined
+          ? []
+          : [{ projectId, sequence, delivery }];
+      })
+      .filter(
+        ({ sequence, delivery }) =>
+          (input.cursor === undefined || sequence > input.cursor) &&
+          (delivery.status === "pending" || delivery.status === "delivering"),
+      )
+      .sort((left, right) => left.sequence - right.sequence)
+      .slice(0, input.limit)
+      .map(copy);
+    const last = rows.at(-1);
+    return {
+      deliveries: rows,
+      ...(rows.length === input.limit && last !== undefined
+        ? { nextCursor: last.sequence }
+        : {}),
+    };
+  }
+
+  async resetForRecovery(
+    projectId: string,
+    deliveryId: string,
+  ): Promise<boolean> {
+    const key = storageKey(projectId, deliveryId);
+    const delivery = this.#deliveries.get(key);
+    if (delivery === undefined || delivery.status !== "delivering")
+      return false;
+    const {
+      nextRetryAt: _nextRetryAt,
+      completedAt: _completedAt,
+      ...identity
+    } = delivery;
+    this.#deliveries.set(key, copy({ ...identity, status: "pending" }));
+    return true;
+  }
+
+  async markRecoveryFailed(
+    projectId: string,
+    deliveryId: string,
+    completedAt: string,
+  ): Promise<boolean> {
+    const key = storageKey(projectId, deliveryId);
+    const delivery = this.#deliveries.get(key);
+    if (
+      delivery === undefined ||
+      (delivery.status !== "pending" && delivery.status !== "delivering")
+    ) {
+      return false;
+    }
+    const { nextRetryAt: _nextRetryAt, ...identity } = delivery;
+    this.#deliveries.set(
+      key,
+      copy({
+        ...identity,
+        status: "failed",
+        completedAt: new Date(completedAt).toISOString(),
+      }),
+    );
+    return true;
+  }
+
+  async #create(
+    projectId: string,
+    deliveryId: string,
+    input: CreateWebhookDeliveryInput,
+    idempotent: boolean,
+  ): Promise<SequencedWebhookDelivery> {
+    validateCreateWebhookDelivery(projectId, input);
+    if (deliveryId.trim().length === 0) {
+      throw new Error("Webhook delivery ID must not be empty.");
+    }
+    const key = storageKey(projectId, deliveryId);
+    const existing = this.#deliveries.get(key);
+    if (existing !== undefined) {
+      if (
+        idempotent &&
+        existing.endpointId === input.endpointId &&
+        existing.eventId === input.eventId &&
+        existing.eventType === input.eventType &&
+        existing.createdAt === input.createdAt
+      ) {
+        const sequence = this.#sequences.get(key);
+        if (sequence === undefined)
+          throw new Error("Delivery sequence is missing.");
+        return copy({ projectId, sequence, delivery: existing });
+      }
+      throw new Error(`Duplicate webhook delivery ID: ${deliveryId}`);
+    }
+    const delivery: WebhookDelivery = {
+      deliveryId,
+      endpointId: input.endpointId,
+      eventId: input.eventId,
+      eventType: input.eventType,
+      status: "pending",
+      attempts: [],
+      createdAt: input.createdAt,
+    };
+    const sequence = ++this.#sequence;
+    this.#deliveries.set(key, copy(delivery));
+    this.#sequences.set(key, sequence);
+    return copy({ projectId, sequence, delivery });
   }
 }

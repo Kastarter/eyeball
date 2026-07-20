@@ -143,7 +143,7 @@ Portable fields stay at `data.payload`. Provider-only metadata is confined to th
 
 ## Deduplication versus delivery retries
 
-Eyeball claims `(subscriptionId, providerEventId)` for 24 hours. Repeated Slack callbacks or repeated Gmail observations inside that window enqueue one trigger event. This is a best-effort exactly-once ingestion window; the stock state store is process-local and loses claims on restart.
+Eyeball claims `(subscriptionId, providerEventId)` for 24 hours. Repeated Slack callbacks or repeated Gmail observations inside that window enqueue one trigger event. This is a best-effort exactly-once ingestion window. Without `EYEBALL_DATABASE_URL`, the state store is process-local and loses claims on restart; the Postgres state store retains them. A crash between the dedup claim and durable webhook admission still requires a future transactional claim/outbox boundary for a closed exactly-once ingestion window.
 
 Outbound webhook delivery is separately at least once. A successful handler whose acknowledgement is lost can receive the same envelope again. Verify the signature over the exact raw body, persist the envelope `id`, and apply the event idempotently.
 

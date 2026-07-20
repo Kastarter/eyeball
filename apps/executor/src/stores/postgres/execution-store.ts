@@ -1,5 +1,19 @@
+import { isDeepStrictEqual } from "node:util";
 import type { ConnectionId, ExecutionId, ExecutionRecord } from "@eyeball/core";
-import { and, desc, eq, gt, lt, lte, or, type SQL } from "drizzle-orm";
+import {
+  and,
+  asc,
+  desc,
+  eq,
+  gt,
+  inArray,
+  isNotNull,
+  isNull,
+  lt,
+  lte,
+  or,
+  type SQL,
+} from "drizzle-orm";
 import type { PgQueryResultHKT } from "drizzle-orm/pg-core";
 import {
   assertExecutionTransition,
@@ -9,10 +23,13 @@ import {
   type ExecutionDetailRecord,
   type ExecutionListFilters,
   type ExecutionPage,
+  type ExecutionRecoveryAllocation,
+  type ExecutionRecoveryPage,
   type ExecutionStore,
   executionCursorAfter,
   executionIdFromCursor,
   InvalidExecutionCursorError,
+  type RecoverableExecution,
 } from "../../store.js";
 import type { EyeballPostgresDatabase } from "./database.js";
 import { executionIdempotency, executions } from "./schema.js";
@@ -24,6 +41,30 @@ export interface PostgresExecutionStoreOptions {
 
 function copy<T>(value: T): T {
   return structuredClone(value);
+}
+
+function recoverableFromRow(
+  row: typeof executions.$inferSelect,
+): RecoverableExecution {
+  return copy({
+    sequence: row.sequence,
+    projectId: row.projectId,
+    record: row.record,
+    request: row.request,
+    ...(row.resumeContext === null ? {} : { resumeContext: row.resumeContext }),
+    ...(row.dispatchStartedAt === null
+      ? {}
+      : { dispatchStartedAt: new Date(row.dispatchStartedAt).toISOString() }),
+    ...(row.webhookEventId === null
+      ? {}
+      : { webhookEventId: row.webhookEventId }),
+    ...(row.webhookPublishedAt === null
+      ? {}
+      : { webhookPublishedAt: new Date(row.webhookPublishedAt).toISOString() }),
+    ...(row.usageFinalizedAt === null
+      ? {}
+      : { usageFinalizedAt: new Date(row.usageFinalizedAt).toISOString() }),
+  });
 }
 
 function executionWhere(projectId: string, executionId: ExecutionId) {
@@ -196,6 +237,12 @@ export class PostgresExecutionStore<
           ...(reservation === undefined
             ? {}
             : { idempotencyKey: reservation.scope.key }),
+          ...(allocation.recovery === undefined
+            ? {}
+            : {
+                resumeContext: copy(allocation.recovery.resumeContext),
+                webhookEventId: allocation.recovery.webhookEventId,
+              }),
         })
         .onConflictDoNothing()
         .returning({ executionId: executions.executionId });
@@ -416,5 +463,194 @@ export class PostgresExecutionStore<
         ? { nextCursor: executionCursorAfter(last.executionId) }
         : {}),
     };
+  }
+
+  async getRecoverable(
+    projectId: string,
+    executionId: ExecutionId,
+  ): Promise<RecoverableExecution | undefined> {
+    const [row] = await this.#database
+      .select()
+      .from(executions)
+      .where(executionWhere(projectId, executionId))
+      .limit(1);
+    return row === undefined ? undefined : recoverableFromRow(row);
+  }
+
+  async listRecoveryCandidates(input: {
+    readonly cursor?: number;
+    readonly limit: number;
+  }): Promise<ExecutionRecoveryPage> {
+    if (!Number.isSafeInteger(input.limit) || input.limit < 1) {
+      throw new RangeError("Execution recovery limit must be positive.");
+    }
+    const rows = await this.#database
+      .select()
+      .from(executions)
+      .where(
+        and(
+          ...(input.cursor === undefined
+            ? []
+            : [gt(executions.sequence, input.cursor)]),
+          or(
+            inArray(executions.status, ["pending", "running"]),
+            and(
+              inArray(executions.status, ["succeeded", "failed"]),
+              isNotNull(executions.webhookEventId),
+              isNull(executions.webhookPublishedAt),
+            ),
+            and(
+              inArray(executions.status, ["succeeded", "failed"]),
+              isNotNull(executions.resumeContext),
+              isNull(executions.usageFinalizedAt),
+            ),
+          ),
+        ),
+      )
+      .orderBy(asc(executions.sequence))
+      .limit(input.limit);
+    const candidates = rows.map(recoverableFromRow);
+    const last = candidates.at(-1);
+    return {
+      candidates,
+      ...(candidates.length === input.limit && last !== undefined
+        ? { nextCursor: last.sequence }
+        : {}),
+    };
+  }
+
+  async setResumeContext(
+    projectId: string,
+    executionId: ExecutionId,
+    recovery: ExecutionRecoveryAllocation,
+  ): Promise<boolean> {
+    return this.#database.transaction(async (transaction) => {
+      const [row] = await transaction
+        .select({
+          resumeContext: executions.resumeContext,
+          webhookEventId: executions.webhookEventId,
+        })
+        .from(executions)
+        .where(executionWhere(projectId, executionId))
+        .for("update")
+        .limit(1);
+      if (row === undefined) return false;
+      if (
+        row.resumeContext !== null &&
+        !isDeepStrictEqual(row.resumeContext, recovery.resumeContext)
+      ) {
+        throw new Error("Execution resume context is immutable.");
+      }
+      if (
+        row.webhookEventId !== null &&
+        row.webhookEventId !== recovery.webhookEventId
+      ) {
+        throw new Error("Execution webhook event identity is immutable.");
+      }
+      await transaction
+        .update(executions)
+        .set({
+          resumeContext: copy(recovery.resumeContext),
+          webhookEventId: recovery.webhookEventId,
+        })
+        .where(executionWhere(projectId, executionId));
+      return true;
+    });
+  }
+
+  async setWebhookEventId(
+    projectId: string,
+    executionId: ExecutionId,
+    webhookEventId: string,
+  ): Promise<boolean> {
+    return this.#database.transaction(async (transaction) => {
+      const [row] = await transaction
+        .select({ webhookEventId: executions.webhookEventId })
+        .from(executions)
+        .where(executionWhere(projectId, executionId))
+        .for("update")
+        .limit(1);
+      if (row === undefined) return false;
+      if (
+        row.webhookEventId !== null &&
+        row.webhookEventId !== webhookEventId
+      ) {
+        throw new Error("Execution webhook event identity is immutable.");
+      }
+      if (row.webhookEventId === null) {
+        await transaction
+          .update(executions)
+          .set({ webhookEventId })
+          .where(executionWhere(projectId, executionId));
+      }
+      return true;
+    });
+  }
+
+  async markDispatchStarted(
+    projectId: string,
+    executionId: ExecutionId,
+    dispatchedAt: string,
+  ): Promise<boolean> {
+    const changed = await this.#database
+      .update(executions)
+      .set({ dispatchStartedAt: dispatchedAt })
+      .where(
+        and(
+          executionWhere(projectId, executionId),
+          eq(executions.status, "running"),
+          isNull(executions.dispatchStartedAt),
+        ),
+      )
+      .returning({ executionId: executions.executionId });
+    return changed.length === 1;
+  }
+
+  async markUsageFinalized(
+    projectId: string,
+    executionId: ExecutionId,
+    finalizedAt: string,
+  ): Promise<boolean> {
+    return this.#markOnce(projectId, executionId, "usage", finalizedAt);
+  }
+
+  async markWebhookPublished(
+    projectId: string,
+    executionId: ExecutionId,
+    publishedAt: string,
+  ): Promise<boolean> {
+    return this.#markOnce(projectId, executionId, "webhook", publishedAt);
+  }
+
+  async #markOnce(
+    projectId: string,
+    executionId: ExecutionId,
+    kind: "usage" | "webhook",
+    value: string,
+  ): Promise<boolean> {
+    const column =
+      kind === "usage"
+        ? executions.usageFinalizedAt
+        : executions.webhookPublishedAt;
+    const changed = await this.#database
+      .update(executions)
+      .set(
+        kind === "usage"
+          ? { usageFinalizedAt: value }
+          : { webhookPublishedAt: value },
+      )
+      .where(
+        and(
+          executionWhere(projectId, executionId),
+          isNull(column),
+          ...(kind === "webhook" ? [isNotNull(executions.webhookEventId)] : []),
+        ),
+      )
+      .returning({ executionId: executions.executionId });
+    if (changed.length === 1) return true;
+    const existing = await this.getRecoverable(projectId, executionId);
+    return kind === "usage"
+      ? existing?.usageFinalizedAt !== undefined
+      : existing?.webhookPublishedAt !== undefined;
   }
 }

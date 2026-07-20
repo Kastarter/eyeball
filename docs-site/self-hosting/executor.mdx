@@ -84,7 +84,7 @@ If an admitted execution cannot reach adapter dispatch—for example, credential
 
 ## Postgres persistence
 
-Set `EYEBALL_DATABASE_URL` to persist execution records and idempotency reservations, webhook endpoints and delivery attempts, trigger subscriptions, cursors and dedup claims, and terminal usage reports awaiting delivery. The stock runtime uses a `pg` pool capped at five connections and applies the committed Drizzle migrations before accepting traffic.
+Set `EYEBALL_DATABASE_URL` to persist execution records and idempotency reservations; lease-fenced execution, webhook-selection, and webhook-delivery jobs; immutable webhook payload/endpoint snapshots and delivery attempts; trigger subscriptions, cursors, and dedup claims; and terminal usage reports awaiting delivery. The stock runtime uses a `pg` pool capped at five connections and applies the committed Drizzle migrations before accepting traffic.
 
 ```bash
 EYEBALL_DATABASE_URL="postgresql://eyeball:eyeball_dev@127.0.0.1:5432/eyeball" \
@@ -107,11 +107,15 @@ docker compose up -d postgres
 
 The contract suite runs the same schema, migrations, and Drizzle queries against embedded PGlite, so tests do not require Docker or a live database. Protect the database like any credential store: webhook signing secrets are intentionally available to the delivery worker and therefore reside in the database.
 
+Before the worker starts claiming, the runtime expires abandoned leases and sweeps durable execution, webhook-event, and delivery records into deterministic ID-only jobs. Async execution admission returns only after its job row is durable. Webhook retries retain `nextRetryAt` and serialize by an opaque project/endpoint group, while different endpoints may progress concurrently.
+
+Execution restart behavior is intentionally conservative. Pending work and running work with no dispatch marker can resume. Once `dispatch_started_at` is committed, a restart cannot know whether the provider accepted the request, so recovery records a terminal `execution_interrupted` failure and does not call the adapter again. Terminal usage and webhook effects are reconciled idempotently before the job is acknowledged.
+
 <Warning>
-  Postgres makes records durable, not work scheduling. Async execution tasks, webhook retry queues, and trigger polling leases remain process-local. A restart preserves their records but does not yet resume every in-flight task. The voice-agent `AgentStore` also remains in memory because its current injectable contract is synchronous and cannot perform networked database I/O.
+  Postgres does not make every scheduler distributed. Trigger polling leases, rate limits, toolkit concurrency permits, remote voice-event observation, and the voice-agent `AgentStore` remain process-local. The current worker also requires deployment-specific queue-age/failure alerts, backup and restore drills, and multi-replica load/chaos validation before production use.
 </Warning>
 
-When `EYEBALL_DATABASE_URL` is absent, all current in-memory defaults remain unchanged for a zero-config local process.
+When `EYEBALL_DATABASE_URL` is absent, execution and webhook jobs use the same serializable state machine in memory but do not survive a process restart.
 
 Provider base-URL overrides use the manifest-declared environment variable for that adapter. Keep those variables trusted; requests cannot supply an arbitrary origin.
 

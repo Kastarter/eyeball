@@ -29,6 +29,7 @@ Failed execution records carry the same normalized error under `error`.
 | Upstream 5xx/network failure | `provider_unavailable` |
 | Other provider rejection | `provider_error` |
 | Unsupported deployment/adapter surface | `not_supported` |
+| Restart after provider dispatch may have begun | `execution_interrupted` |
 
 Use the code and `retryable` field rather than inferring behavior from status alone. The complete remediation guide is [Errors](/concepts/errors).
 

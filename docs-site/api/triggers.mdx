@@ -101,7 +101,7 @@ The SDK equivalent is `eyeball.subscriptions.rotateSecret(subscriptionId)`.
 
 `DELETE /v1/subscriptions/:subscriptionId`
 
-Returns `204` when deleted or `404` when the subscription is absent from the authenticated project. A pinned key cannot delete another user's subscription. Deletion removes process-local cursor and dedup state and prevents future ingestion.
+Returns `204` when deleted or `404` when the subscription is absent from the authenticated project. A pinned key cannot delete another user's subscription. Deletion removes cursor and dedup state from the configured in-memory or Postgres store and prevents future ingestion.
 
 The SDK equivalent is `eyeball.subscriptions.delete(subscriptionId)`.
 

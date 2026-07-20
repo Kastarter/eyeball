@@ -117,7 +117,7 @@ The fake transport is accepted only with both `EYEBALL_VOICE_MEDIA_MODE=fake` an
 
 - Run exactly one worker replica per SQLite volume. Multi-replica scheduling needs a distributed repository and session lease.
 - The executor's default `AgentStore` still keeps definitions, bindings, and session pointers in process memory. Worker sessions are durable, but full executor restart recovery needs a durable injected store.
-- The remote event observer and webhook-selection task are process-local. The worker event log remains the source of truth across an executor restart.
+- The remote event observer is process-local, so the worker event log remains the source of truth across an executor restart. Once an observed event is admitted, its webhook-selection and delivery jobs are restart-durable when the executor uses `EYEBALL_DATABASE_URL`.
 - Provider-backed session requests currently require `recordingPolicy.mode=disabled`; no compliant audio-recording and retention backend ships here.
 - Direct chat is covered by account-free tests. Outbound Twilio and worker-level LiveKit integration paths are assembled but unverified; the catalog still has no public WebRTC session-entry tool, and inbound Twilio number provisioning/webhook verification remains open in RFC 002.
 - The media path targets Pipecat 1.5.0 APIs but has not been exercised or certified against real Twilio, LiveKit, Deepgram, ElevenLabs, or Anthropic accounts in this repository.

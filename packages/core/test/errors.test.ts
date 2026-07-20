@@ -8,6 +8,15 @@ import {
 } from "../src/index.js";
 
 describe("error taxonomy", () => {
+  it("classifies interrupted execution outcomes as non-retryable", () => {
+    const error = new EyeballError({
+      code: TOOL_ERROR_CODES.EXECUTION_INTERRUPTED,
+      message: "External outcome may be unknown.",
+    });
+    expect(error.code).toBe("execution_interrupted");
+    expect(error.retryable).toBe(false);
+  });
+
   it.each([
     [400, "invalid_input", false, {}],
     [401, "auth_missing", false, {}],

@@ -617,10 +617,14 @@ each receiver request has a 10-second default timeout.
 Retries and later events are serialized at concurrency one per endpoint, providing
 best-effort per-endpoint order but no global ordering. Delivery scheduling is asynchronous
 after the terminal record update and never waits for receiver I/O or retries. The zero-config
-source default uses in-memory project endpoint and delivery stores. `EYEBALL_DATABASE_URL`
-wires the committed PostgreSQL implementations for those records, while the retry queue remains
-process-local and needs a durable queue for restart-safe production delivery. `execution.completed` is a subscription-only
-convenience selector that matches both terminal event types without changing envelope types.
+source default uses in-memory project endpoint, delivery, work, and task stores.
+`EYEBALL_DATABASE_URL` wires the committed PostgreSQL implementations for those stores: the
+exact raw body is persisted before an ID-only selection job is admitted, each selected endpoint
+URL/secret snapshot is persisted before its delivery job is admitted, delivery attempts use
+leased jobs with durable `runAfter` deadlines, and startup recovery restores unfinished work
+before claims begin. `execution.completed` is a
+subscription-only convenience selector that matches both terminal event types without changing
+envelope types.
 
 ## 4. Error taxonomy
 
@@ -631,7 +635,7 @@ export type ToolErrorCode =
   | "invalid_input" | "auth_missing" | "auth_expired"
   | "auth_insufficient_scope" | "not_found" | "rate_limited"
   | "provider_unavailable" | "provider_error" | "timeout"
-  | "not_supported";
+  | "not_supported" | "execution_interrupted";
 
 export interface NormalizedToolError {
   code: ToolErrorCode;
@@ -675,6 +679,7 @@ export interface ErrorEnvelope {
 | Other sanitized provider failure | `provider_error` | adapter-defined |
 | Executor/provider deadline exceeded | `timeout` | only when no side effect occurred or idempotency protects retry |
 | Manifest omits the canonical tool | `not_supported` | false |
+| Restart leaves provider dispatch outcome ambiguous | `execution_interrupted` | false |
 
 Clients branch on `code`, not HTTP status or provider text. Adapters redact credentials,
 cookies, authorization headers, and unrelated user data before setting `provider.detail`.

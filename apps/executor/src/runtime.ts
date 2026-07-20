@@ -10,13 +10,20 @@ import {
   voiceWorkerTokenFromEnv,
   voiceWorkerUrlFromEnv,
 } from "@eyeball/toolkits";
-import { AdapterRegistry, type Clock } from "./adapters/index.js";
+import { AdapterRegistry, type Clock, systemClock } from "./adapters/index.js";
 import {
   type ApiKeyAuthenticator,
   createConfiguredApiKeyAuthenticator,
 } from "./api-key-authenticator.js";
 import { createConfiguredCredentialProvider } from "./credential-provider.js";
 import { ExecutionEngine, type RuntimeCatalog } from "./engine.js";
+import {
+  createExecutorJobHandlerRegistry,
+  ExecutorTaskSystem,
+  InMemoryJobStore,
+  type JobStore,
+  recoverExecutorJobs,
+} from "./queue.js";
 import {
   createPgStoreBundle,
   type PostgresStoreSet,
@@ -50,6 +57,13 @@ export interface CreateExecutorRuntimeOptions {
   persistenceFactory?: (
     connectionString: string,
   ) => Promise<ExecutorPersistence>;
+  /** Constructs the worker over the already-selected memory or Postgres store. */
+  taskQueueFactory?: (input: {
+    readonly jobStore: JobStore;
+    readonly clock?: Clock;
+    readonly telemetry: ReturnType<typeof createExecutorTelemetryRuntime>;
+    readonly durable: boolean;
+  }) => ExecutorTaskSystem;
 }
 
 export interface ExecutorPersistence extends PostgresStoreSet {
@@ -72,12 +86,14 @@ interface ConfiguredUsage {
 }
 
 async function drainRuntime(
-  engine: ExecutionEngine,
+  taskSystem: ExecutorTaskSystem,
   triggerPollingScheduler: TriggerPollingScheduler,
 ): Promise<void> {
+  await taskSystem.stopClaiming();
   await triggerPollingScheduler.onIdle();
-  await engine.queue.onIdle();
-  await engine.webhookDeliverer.onIdle();
+  await taskSystem.drainOwned();
+  await taskSystem.handoffPending();
+  await taskSystem.onIdle();
 }
 
 function configuredUsage(
@@ -155,18 +171,30 @@ function configuredVoiceWorker(
           onEvent: ({ request, event }) => {
             if (!request.agent.webhooks.events.includes(event.data.type))
               return;
-            engine?.webhookDeliverer.enqueueVoiceSessionEvent({
-              projectId: request.scope.projectId,
-              endpointIds: request.agent.webhooks.endpointIds,
-              event,
+            const admission = engine?.webhookDeliverer.enqueueVoiceSessionEvent(
+              {
+                projectId: request.scope.projectId,
+                endpointIds: request.agent.webhooks.endpointIds,
+                event,
+              },
+            );
+            void admission?.catch(() => {
+              engine?.telemetry.logger.error("voice.webhook_admission_failed", {
+                kind: "session_event",
+              });
             });
           },
           onTranscript: ({ request, transcript }) => {
             if (!request.agent.webhooks.transcript) return;
-            engine?.webhookDeliverer.enqueueVoiceTranscript({
+            const admission = engine?.webhookDeliverer.enqueueVoiceTranscript({
               projectId: request.scope.projectId,
               endpointIds: request.agent.webhooks.endpointIds,
               transcript,
+            });
+            void admission?.catch(() => {
+              engine?.telemetry.logger.error("voice.webhook_admission_failed", {
+                kind: "transcript",
+              });
             });
           },
         });
@@ -266,90 +294,79 @@ export async function createExecutorRuntime(
     env,
   );
   const databaseUrl = env.EYEBALL_DATABASE_URL?.trim();
-  if (databaseUrl === undefined || databaseUrl.length === 0) {
-    try {
-      const usage = configuredUsage(
-        env,
-        new InMemoryUsageOutboxStore(),
-        telemetry,
-        options.fetchImpl,
-        options.clock,
-      );
-      const engine = new ExecutionEngine({
-        env,
-        catalog,
-        ...(voiceWorker.adapters === undefined
-          ? {}
-          : { adapters: voiceWorker.adapters }),
-        credentialProvider,
-        telemetryRuntime: telemetry,
-        ...(options.clock === undefined ? {} : { clock: options.clock }),
-        ...(usage === undefined ? {} : { usageGate: usage.gate }),
-        ...(options.fetchImpl === undefined
-          ? {}
-          : { fetchImpl: options.fetchImpl }),
-      });
-      voiceWorker.bind(engine);
-      const triggerPollingScheduler = new TriggerPollingScheduler({
-        service: engine.triggerService,
-        logger: telemetry.logger,
-      });
-      usage?.flusher.start();
-      return {
-        engine,
-        apiKeyAuthenticator,
-        triggerPollingScheduler,
-        ...(usage === undefined ? {} : { usageOutboxFlusher: usage.flusher }),
-        close: async () => {
-          triggerPollingScheduler.stop();
-          usage?.flusher.stop();
-          try {
-            await voiceWorker.driver?.close();
-            await drainRuntime(engine, triggerPollingScheduler);
-            await engine.usageGate.onIdle();
-            if (usage !== undefined) {
-              await usage.flusher.drain(usage.drainTimeoutMs);
-            }
-          } finally {
-            await otel.shutdown();
-          }
-        },
-      };
-    } catch (error) {
-      await voiceWorker.driver?.close();
-      await otel.shutdown();
-      throw error;
-    }
-  }
-
   let persistence: ExecutorPersistence | undefined;
+  let taskSystem: ExecutorTaskSystem | undefined;
+  let usage: ConfiguredUsage | undefined;
   try {
-    persistence = await (
-      options.persistenceFactory ??
-      ((connectionString: string) =>
-        createPgStoreBundle({ connectionString, maxConnections: 5 }))
-    )(databaseUrl);
+    const durable = databaseUrl !== undefined && databaseUrl.length > 0;
+    if (durable) {
+      persistence = await (
+        options.persistenceFactory ??
+        ((connectionString: string) =>
+          createPgStoreBundle({ connectionString, maxConnections: 5 }))
+      )(databaseUrl);
+    }
     const initializedPersistence = persistence;
-    const usage = configuredUsage(
+    const clock = options.clock ?? systemClock;
+    const jobStore = initializedPersistence?.jobStore ?? new InMemoryJobStore();
+    taskSystem =
+      options.taskQueueFactory?.({
+        jobStore,
+        ...(options.clock === undefined ? {} : { clock: options.clock }),
+        telemetry,
+        durable,
+      }) ??
+      new ExecutorTaskSystem({
+        jobStore,
+        clock,
+        logger: telemetry.logger,
+        durable,
+      });
+    if (taskSystem.jobStore !== jobStore) {
+      throw new Error(
+        "The task queue factory must use the runtime-selected job store.",
+      );
+    }
+    usage = configuredUsage(
       env,
-      initializedPersistence.usageOutboxStore,
+      initializedPersistence?.usageOutboxStore ??
+        new InMemoryUsageOutboxStore(),
       telemetry,
       options.fetchImpl,
       options.clock,
     );
     const webhookDeliverer = new WebhookDeliverer({
-      endpointStore: initializedPersistence.webhookEndpointStore,
-      deliveryStore: initializedPersistence.webhookDeliveryStore,
+      queue: taskSystem,
+      ...(initializedPersistence === undefined
+        ? {}
+        : {
+            executionStore: initializedPersistence.executionStore,
+            endpointStore: initializedPersistence.webhookEndpointStore,
+            deliveryStore: initializedPersistence.webhookDeliveryStore,
+            workStore: initializedPersistence.webhookWorkStore,
+          }),
       telemetry,
+      ...(options.fetchImpl === undefined
+        ? {}
+        : { fetchImpl: options.fetchImpl }),
+      ...(options.clock === undefined ? {} : { clock: options.clock }),
     });
     const triggerService = new TriggerService({
       catalog,
       credentialProvider,
       webhookDeliverer,
-      subscriptionStore: initializedPersistence.triggerSubscriptionStore,
-      stateStore: initializedPersistence.triggerStateStore,
+      ...(initializedPersistence === undefined
+        ? {}
+        : {
+            subscriptionStore: initializedPersistence.triggerSubscriptionStore,
+            stateStore: initializedPersistence.triggerStateStore,
+          }),
       telemetry,
       env,
+      ...(options.fetchImpl === undefined
+        ? {}
+        : { fetchImpl: options.fetchImpl }),
+      ...(options.clock === undefined ? {} : { clock: options.clock }),
     });
     const engine = new ExecutionEngine({
       env,
@@ -358,7 +375,10 @@ export async function createExecutorRuntime(
         ? {}
         : { adapters: voiceWorker.adapters }),
       credentialProvider,
-      store: initializedPersistence.executionStore,
+      queue: taskSystem,
+      ...(initializedPersistence === undefined
+        ? {}
+        : { store: initializedPersistence.executionStore }),
       webhookDeliverer,
       triggerService,
       telemetryRuntime: telemetry,
@@ -369,6 +389,21 @@ export async function createExecutorRuntime(
         : { fetchImpl: options.fetchImpl }),
     });
     voiceWorker.bind(engine);
+    taskSystem.bindHandlers(
+      createExecutorJobHandlerRegistry({ engine, webhookDeliverer }),
+    );
+    if (initializedPersistence !== undefined) {
+      await recoverExecutorJobs({
+        jobStore: initializedPersistence.jobStore,
+        executionStore: initializedPersistence.executionStore,
+        webhookWorkStore: initializedPersistence.webhookWorkStore,
+        webhookDeliveryStore: initializedPersistence.webhookDeliveryStore,
+        clock,
+        logger: telemetry.logger,
+      });
+    }
+    taskSystem.start();
+    const runningTaskSystem = taskSystem;
     const triggerPollingScheduler = new TriggerPollingScheduler({
       service: engine.triggerService,
       logger: telemetry.logger,
@@ -378,21 +413,23 @@ export async function createExecutorRuntime(
       engine,
       apiKeyAuthenticator,
       triggerPollingScheduler,
-      persistence: initializedPersistence,
+      ...(initializedPersistence === undefined
+        ? {}
+        : { persistence: initializedPersistence }),
       ...(usage === undefined ? {} : { usageOutboxFlusher: usage.flusher }),
       close: async () => {
         triggerPollingScheduler.stop();
         usage?.flusher.stop();
         try {
           await voiceWorker.driver?.close();
-          await drainRuntime(engine, triggerPollingScheduler);
+          await drainRuntime(runningTaskSystem, triggerPollingScheduler);
           await engine.usageGate.onIdle();
           if (usage !== undefined) {
             await usage.flusher.drain(usage.drainTimeoutMs);
           }
         } finally {
           try {
-            await initializedPersistence.close();
+            await initializedPersistence?.close();
           } finally {
             await otel.shutdown();
           }
@@ -400,6 +437,9 @@ export async function createExecutorRuntime(
       },
     };
   } catch (error) {
+    usage?.flusher.stop();
+    await taskSystem?.stopClaiming();
+    await taskSystem?.drainOwned();
     await voiceWorker.driver?.close();
     await persistence?.close();
     await otel.shutdown();

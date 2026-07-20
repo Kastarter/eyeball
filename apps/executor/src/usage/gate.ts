@@ -20,15 +20,18 @@ export interface UsageReportContext {
 
 export interface UsageReservationHandle {
   readonly reservationId: string;
+  readonly projectId: string;
+  readonly localExecutionId: ExecutionId;
   readonly idempotencyKey: string;
   readonly cloudExecutionId?: ExecutionId;
+  readonly reservedAt?: string;
 }
 
 export type UsageAdmission =
   | {
       readonly allowed: true;
       readonly report?: UsageReportContext;
-      readonly reservationId?: string;
+      readonly reservation?: UsageReservationHandle;
     }
   | {
       readonly allowed: false;
@@ -43,10 +46,10 @@ export interface TerminalUsageReport {
 export interface UsageGate {
   readonly enabled: boolean;
   reserve(context: UsageReservationContext): Promise<UsageAdmission>;
-  /** Starts an asynchronous, tracked enqueue into the terminal usage outbox. */
-  reportTerminal(report: TerminalUsageReport): void;
-  /** Best-effort release for an admitted execution abandoned before allocation. */
-  release(reservationId: string): Promise<void>;
+  /** Resolves only after the terminal usage outbox row is durably ensured. */
+  reportTerminal(report: TerminalUsageReport): Promise<void>;
+  /** Releases a persisted pre-dispatch reservation handle. */
+  release(reservation: UsageReservationHandle): Promise<void>;
   /** Waits only for local enqueue/release work, never for scheduled report retries. */
   onIdle(): Promise<void>;
 }
@@ -61,9 +64,9 @@ export class NoopUsageGate implements UsageGate {
     return NOOP_ADMISSION;
   }
 
-  reportTerminal(_report: TerminalUsageReport): void {}
+  async reportTerminal(_report: TerminalUsageReport): Promise<void> {}
 
-  async release(_reservationId: string): Promise<void> {}
+  async release(_reservation: UsageReservationHandle): Promise<void> {}
 
   async onIdle(): Promise<void> {}
 }

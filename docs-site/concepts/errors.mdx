@@ -70,6 +70,11 @@ The request or local wait deadline elapsed. It is not retryable by default becau
 
 The selected adapter, deployment, or protocol cannot perform the operation. Examples include the OSS executor without hosted OAuth and MCP async tools before Tasks negotiation. Choose a supported surface; retrying unchanged will not help.
 
+<a id="execution_interrupted"></a>
+## `execution_interrupted`
+
+A durable worker restarted after provider dispatch may have begun, so the external side effect is ambiguous. Eyeball deliberately does not replay the adapter call. Inspect the provider and reconcile the operation using its business identity or the original idempotency key before starting another execution.
+
 ## Default retry policy
 
 Only `rate_limited` and `provider_unavailable` default to `retryable: true`. Every other code defaults to false. Treat the envelope—not HTTP status guesses—as authoritative.

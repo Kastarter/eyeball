@@ -425,7 +425,6 @@ export class CloudUsageGate implements UsageGate {
   readonly #strict: boolean;
   readonly #clock: Clock;
   readonly #pending = new Set<Promise<void>>();
-  readonly #releaseBindings = new Map<string, UsageReservationHandle>();
 
   constructor(options: CloudUsageGateOptions) {
     this.client = options.client;
@@ -460,12 +459,14 @@ export class CloudUsageGate implements UsageGate {
       });
       const reservation: UsageReservationHandle = {
         reservationId: result.reservation.id,
+        projectId: context.projectId,
+        localExecutionId: context.executionId,
         idempotencyKey: context.idempotencyKey,
+        reservedAt: result.reservation.createdAt,
         ...(context.cloudExecutionId === undefined
           ? {}
           : { cloudExecutionId: context.cloudExecutionId }),
       };
-      this.#releaseBindings.set(reservation.reservationId, reservation);
       return {
         allowed: true,
         report: {
@@ -478,7 +479,7 @@ export class CloudUsageGate implements UsageGate {
             ? {}
             : { cloudExecutionId: context.cloudExecutionId }),
         },
-        reservationId: reservation.reservationId,
+        reservation,
       };
     } catch (error) {
       if (this.#strict) {
@@ -511,10 +512,7 @@ export class CloudUsageGate implements UsageGate {
     }
   }
 
-  reportTerminal(report: TerminalUsageReport): void {
-    if (report.context.reservationId !== undefined) {
-      this.#releaseBindings.delete(report.context.reservationId);
-    }
+  async reportTerminal(report: TerminalUsageReport): Promise<void> {
     const occurredAt =
       report.context.reservedAt ??
       report.record.completedAt ??
@@ -541,30 +539,26 @@ export class CloudUsageGate implements UsageGate {
           executionId: report.context.executionId,
           errorName: error instanceof Error ? error.name : "unknown",
         });
+        throw error;
       });
     this.#track(pending);
+    await pending;
   }
 
-  async release(reservationId: string): Promise<void> {
-    const reservation = this.#releaseBindings.get(reservationId);
-    if (reservation === undefined) {
-      this.#logger.error("usage.reservation_release_binding_missing", {
-        reservationId,
-      });
-      return;
-    }
+  async release(reservation: UsageReservationHandle): Promise<void> {
     try {
       await this.client.release(reservation);
       this.#logger.info("usage.reservation_released", {
-        reservationId,
+        projectId: reservation.projectId,
+        executionId: reservation.localExecutionId,
       });
     } catch (error) {
       this.#logger.error("usage.reservation_release_failed", {
-        reservationId,
+        projectId: reservation.projectId,
+        executionId: reservation.localExecutionId,
         errorName: error instanceof Error ? error.name : "unknown",
       });
-    } finally {
-      this.#releaseBindings.delete(reservationId);
+      throw error;
     }
   }
 
@@ -576,7 +570,10 @@ export class CloudUsageGate implements UsageGate {
 
   #track(pending: Promise<void>): void {
     this.#pending.add(pending);
-    void pending.finally(() => this.#pending.delete(pending));
+    void pending.then(
+      () => this.#pending.delete(pending),
+      () => this.#pending.delete(pending),
+    );
   }
 
   #now(): Date {

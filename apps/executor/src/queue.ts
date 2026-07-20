@@ -1,83 +1,34 @@
-export interface TaskQueue {
-  enqueue(task: () => Promise<void>): Promise<void>;
+import type { JobHandlerRegistry } from "./jobs/handlers.js";
+import type { JobStore } from "./jobs/store.js";
+import type { ExecutorJob, SubmitJobOptions } from "./jobs/types.js";
+
+export interface JobSubmission {
+  /** Resolves after the job is inserted or an identical deterministic job exists. */
+  readonly accepted: Promise<void>;
+  /** Resolves at logical completion and rejects on permanent failure or handoff. */
+  readonly completed: Promise<void>;
+}
+
+export interface TaskQueue<J extends ExecutorJob = ExecutorJob> {
+  readonly jobStore: JobStore;
+  submit(job: J, options?: SubmitJobOptions): JobSubmission;
+  /** Compatibility convenience with completion, rather than admission, semantics. */
+  enqueue(job: J, options?: SubmitJobOptions): Promise<void>;
   onIdle(): Promise<void>;
 }
 
-interface QueuedTask {
-  task: () => Promise<void>;
-  resolve: () => void;
-  reject: (error: unknown) => void;
+export interface ManagedTaskQueue<J extends ExecutorJob = ExecutorJob>
+  extends TaskQueue<J> {
+  bindHandlers(handlers: JobHandlerRegistry): void;
+  start(): void;
+  stopClaiming(): Promise<void>;
+  drainOwned(): Promise<void>;
+  handoffPending(): Promise<void>;
 }
 
-export class PromiseTaskQueue implements TaskQueue {
-  readonly #concurrency: number;
-  readonly #pending: QueuedTask[] = [];
-  readonly #idleWaiters = new Set<() => void>();
-  #active = 0;
-  #scheduled = false;
-
-  constructor(concurrency = 4) {
-    if (!Number.isInteger(concurrency) || concurrency < 1) {
-      throw new RangeError(
-        "Task queue concurrency must be a positive integer.",
-      );
-    }
-    this.#concurrency = concurrency;
-  }
-
-  enqueue(task: () => Promise<void>): Promise<void> {
-    const result = new Promise<void>((resolve, reject) => {
-      this.#pending.push({ task, resolve, reject });
-    });
-    this.#schedule();
-    return result;
-  }
-
-  onIdle(): Promise<void> {
-    if (this.#active === 0 && this.#pending.length === 0) {
-      return Promise.resolve();
-    }
-    return new Promise((resolve) => this.#idleWaiters.add(resolve));
-  }
-
-  #schedule(): void {
-    if (this.#scheduled) {
-      return;
-    }
-    this.#scheduled = true;
-    queueMicrotask(() => {
-      this.#scheduled = false;
-      this.#drain();
-    });
-  }
-
-  #drain(): void {
-    while (this.#active < this.#concurrency) {
-      const queued = this.#pending.shift();
-      if (queued === undefined) {
-        break;
-      }
-
-      this.#active += 1;
-      void Promise.resolve()
-        .then(queued.task)
-        .then(queued.resolve, queued.reject)
-        .finally(() => {
-          this.#active -= 1;
-          this.#drain();
-          this.#resolveIdle();
-        });
-    }
-    this.#resolveIdle();
-  }
-
-  #resolveIdle(): void {
-    if (this.#active !== 0 || this.#pending.length !== 0) {
-      return;
-    }
-    for (const resolve of this.#idleWaiters) {
-      resolve();
-    }
-    this.#idleWaiters.clear();
-  }
-}
+export * from "./jobs/handlers.js";
+export * from "./jobs/memory-store.js";
+export * from "./jobs/recovery.js";
+export * from "./jobs/store.js";
+export * from "./jobs/types.js";
+export * from "./jobs/worker.js";

@@ -309,7 +309,9 @@ describe("executor observability", () => {
       "execution.received",
       "execution.dispatched",
       "execution.terminal",
+      "queue.job_finished",
       "webhook.delivery_attempt",
+      "queue.job_finished",
     ]);
     expect(events[0]).toEqual({
       level: "info",
@@ -329,11 +331,23 @@ describe("executor observability", () => {
       status: "succeeded",
       outputSchemaValid: true,
     });
-    expect(events[3]?.fields).toEqual({
+    expect(events[3]?.fields).toMatchObject({
+      kind: "webhook.select.v1",
+      queueName: "webhook-selection",
+      leaseAttempt: 1,
+      result: "complete",
+    });
+    expect(events[4]?.fields).toEqual({
       endpointId: "whe_telemetry",
       attempt: 1,
       status: "succeeded",
       statusCode: 204,
+    });
+    expect(events[5]?.fields).toMatchObject({
+      kind: "webhook.deliver.v1",
+      queueName: "webhook-delivery",
+      leaseAttempt: 1,
+      result: "complete",
     });
     const serialized = lines.join("\n");
     expect(serialized).not.toContain(INPUT_SECRET);

@@ -804,12 +804,21 @@ export class TriggerService {
       occurredAt: event.occurredAt,
       payload: validation.value,
     };
-    this.webhookDeliverer.enqueueTriggerEvent({
+    await this.webhookDeliverer.enqueueTriggerEvent({
       projectId: subscription.projectId,
       endpointIds: subscription.webhookEndpointIds,
       trigger: trigger.name,
       data,
       createdAt: now.toISOString(),
+      eventId: `evt_trigger_${createHash("sha256")
+        .update(
+          JSON.stringify([
+            subscription.projectId,
+            subscription.subscriptionId,
+            event.providerEventId,
+          ]),
+        )
+        .digest("base64url")}`,
     });
     return true;
   }

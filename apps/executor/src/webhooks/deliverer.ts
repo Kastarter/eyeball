@@ -1,4 +1,5 @@
 import { randomUUID } from "node:crypto";
+import { isDeepStrictEqual } from "node:util";
 import {
   createWebhookSignature,
   type ExecutionRecord,
@@ -17,11 +18,20 @@ import {
   type WebhookDelivery,
   type WebhookDeliveryAttempt,
   type WebhookEvent,
+  type WebhookEventType,
   type WebhookSubscriptionEventType,
 } from "@eyeball/core";
 import type { Clock, ExecutorLogger } from "../adapters/index.js";
 import { systemClock } from "../adapters/index.js";
-import { PromiseTaskQueue, type TaskQueue } from "../queue.js";
+import {
+  InMemoryTaskQueue,
+  type JobHandlerContext,
+  type JobHandlerResult,
+  type TaskQueue,
+  WEBHOOK_SELECTION_GROUP_KEY,
+  webhookEndpointGroupKey,
+} from "../queue.js";
+import type { ExecutionStore } from "../store.js";
 import {
   createExecutorTelemetryRuntime,
   type ExecutorTelemetryRuntime,
@@ -37,6 +47,12 @@ import {
   type StoredWebhookEndpoint,
   type WebhookEndpointStore,
 } from "./endpoint-store.js";
+import { InMemoryWebhookWorkStore } from "./memory-work-store.js";
+import type {
+  WebhookEventSourceKind,
+  WebhookEventWork,
+  WebhookWorkStore,
+} from "./work-store.js";
 
 export const DEFAULT_WEBHOOK_RETRY_DELAYS_MS = [
   0,
@@ -47,20 +63,23 @@ export const DEFAULT_WEBHOOK_RETRY_DELAYS_MS = [
 ] as const;
 export const DEFAULT_WEBHOOK_ATTEMPT_TIMEOUT_MS = 10_000;
 
+/** @deprecated Retry waiting is now represented by durable job runAfter values. */
 export type WebhookSleep = (milliseconds: number) => Promise<void>;
 
 export interface WebhookDelivererOptions {
   endpointStore?: WebhookEndpointStore;
   deliveryStore?: WebhookDeliveryStore;
+  workStore?: WebhookWorkStore;
+  executionStore?: ExecutionStore;
+  queue?: TaskQueue;
   fetchImpl?: typeof globalThis.fetch;
   clock?: Clock;
+  /** @deprecated Durable retries no longer sleep inside a handler. */
   sleep?: WebhookSleep;
   telemetry?: ExecutorTelemetryRuntime;
   /** @deprecated Pass telemetry from ExecutionEngine instead. */
   logger?: ExecutorLogger;
   retryDelaysMs?: readonly number[];
-  selectionQueue?: TaskQueue;
-  attemptQueue?: TaskQueue;
   attemptConcurrency?: number;
   attemptTimeoutMs?: number;
   eventIdFactory?: () => string;
@@ -85,18 +104,12 @@ export interface EnqueueTriggerEventInput {
   trigger: QualifiedTriggerName;
   data: TriggerEventData;
   createdAt?: string;
-}
-
-function defaultSleep(milliseconds: number): Promise<void> {
-  return new Promise((resolve) => setTimeout(resolve, milliseconds));
+  /** Stable provider-derived ID when one is available. */
+  eventId?: string;
 }
 
 function eventId(): string {
   return `evt_${randomUUID().replaceAll("-", "")}`;
-}
-
-function endpointQueueKey(projectId: string, endpointId: string): string {
-  return JSON.stringify([projectId, endpointId]);
 }
 
 function withoutNextRetry(
@@ -108,19 +121,18 @@ function withoutNextRetry(
 
 function subscribed(
   events: readonly WebhookSubscriptionEventType[],
-  event: WebhookEvent,
+  eventType: WebhookEventType,
 ): boolean {
   if (
-    (event.type === "execution.succeeded" ||
-      event.type === "execution.failed") &&
+    (eventType === "execution.succeeded" || eventType === "execution.failed") &&
     events.includes("execution.completed")
   ) {
     return true;
   }
-  if (event.type.startsWith("trigger.") && events.includes("trigger.*")) {
+  if (eventType.startsWith("trigger.") && events.includes("trigger.*")) {
     return true;
   }
-  return events.includes(event.type);
+  return events.includes(eventType);
 }
 
 function terminalExecution(
@@ -159,24 +171,27 @@ class WebhookAttemptTimeoutError extends Error {
 }
 
 /**
- * Asynchronous signed webhook dispatcher. Endpoint selection is serialized,
- * attempts use a separate bounded queue, and each endpoint owns a concurrency-1
- * queue so retries cannot reorder later events for that endpoint.
+ * Durable signed webhook dispatcher. Event materialization is serialized, HTTP
+ * work is bounded at four by default, and hashed project/endpoint queue groups
+ * retain concurrency one across replicas.
  */
 export class WebhookDeliverer {
   readonly endpointStore: WebhookEndpointStore;
   readonly deliveryStore: WebhookDeliveryStore;
+  readonly workStore: WebhookWorkStore;
   readonly retryDelaysMs: readonly number[];
+  readonly queue: TaskQueue;
   readonly #fetchImpl: typeof globalThis.fetch;
   readonly #clock: Clock;
-  readonly #sleep: WebhookSleep;
   readonly #logger: ExecutorLogger;
   readonly #telemetry: ExecutorTelemetryRuntime;
-  readonly #selectionQueue: TaskQueue;
-  readonly #attemptQueue: TaskQueue;
   readonly #attemptTimeoutMs: number;
   readonly #eventIdFactory: () => string;
-  readonly #endpointQueues = new Map<string, TaskQueue>();
+  readonly #retryWake: WebhookSleep | undefined;
+  readonly #executionStore: ExecutionStore | undefined;
+  readonly #volatileEvents = new Map<string, WebhookEvent>();
+  readonly #admissions = new Set<Promise<void>>();
+  readonly #ownedQueue?: InMemoryTaskQueue;
 
   constructor(options: WebhookDelivererOptions = {}) {
     this.endpointStore =
@@ -185,7 +200,6 @@ export class WebhookDeliverer {
       options.deliveryStore ?? new InMemoryWebhookDeliveryStore();
     this.#fetchImpl = options.fetchImpl ?? globalThis.fetch;
     this.#clock = options.clock ?? systemClock;
-    this.#sleep = options.sleep ?? defaultSleep;
     this.#telemetry =
       options.telemetry ??
       createExecutorTelemetryRuntime(
@@ -195,124 +209,444 @@ export class WebhookDeliverer {
     this.retryDelaysMs = validRetryDelays(
       options.retryDelaysMs ?? DEFAULT_WEBHOOK_RETRY_DELAYS_MS,
     );
-    this.#selectionQueue = options.selectionQueue ?? new PromiseTaskQueue(1);
-    this.#attemptQueue =
-      options.attemptQueue ??
-      new PromiseTaskQueue(options.attemptConcurrency ?? 4);
     this.#attemptTimeoutMs = validAttemptTimeout(
       options.attemptTimeoutMs ?? DEFAULT_WEBHOOK_ATTEMPT_TIMEOUT_MS,
     );
     this.#eventIdFactory = options.eventIdFactory ?? eventId;
-  }
-
-  enqueueExecution(projectId: string, record: ExecutionRecord): void {
-    const snapshot = structuredClone(record);
-    this.#enqueueSelection(async () => {
-      if (!terminalExecution(snapshot)) {
-        throw new Error("Only terminal executions can emit webhook events.");
-      }
-      const event: WebhookEvent = {
-        id: this.#eventIdFactory(),
-        type:
-          snapshot.status === "succeeded"
-            ? "execution.succeeded"
-            : "execution.failed",
-        createdAt: snapshot.completedAt ?? this.#now().toISOString(),
-        projectId,
-        data: snapshot,
-      };
-      await this.#selectAndEnqueue(projectId, event);
-    });
-  }
-
-  enqueueVoiceSessionEvent(input: EnqueueVoiceSessionEventInput): void {
-    const snapshot = structuredClone(input);
-    this.#enqueueSelection(async () => {
-      const event: VoiceSessionWebhookEvent = {
-        id: snapshot.event.id,
-        type: "voice.session.event",
-        createdAt: snapshot.event.createdAt,
-        projectId: snapshot.projectId,
-        data: snapshot.event,
-      };
-      await this.#selectAndEnqueue(
-        snapshot.projectId,
-        event,
-        snapshot.endpointIds,
-      );
-    });
-  }
-
-  enqueueVoiceTranscript(input: EnqueueVoiceTranscriptInput): void {
-    const snapshot = structuredClone(input);
-    this.#enqueueSelection(async () => {
-      const event: VoiceTranscriptWebhookEvent = {
-        id: snapshot.transcript.id,
-        type: "voice.transcript.ready",
-        createdAt: snapshot.createdAt ?? this.#now().toISOString(),
-        projectId: snapshot.projectId,
-        data: snapshot.transcript,
-      };
-      await this.#selectAndEnqueue(
-        snapshot.projectId,
-        event,
-        snapshot.endpointIds,
-      );
-    });
-  }
-
-  enqueueTriggerEvent(input: EnqueueTriggerEventInput): void {
-    const snapshot = structuredClone(input);
-    this.#enqueueSelection(async () => {
-      const event: TriggerWebhookEvent = {
-        id: this.#eventIdFactory(),
-        type: `trigger.${snapshot.trigger}`,
-        createdAt: snapshot.createdAt ?? this.#now().toISOString(),
-        projectId: snapshot.projectId,
-        data: snapshot.data,
-      };
-      await this.#selectAndEnqueue(
-        snapshot.projectId,
-        event,
-        snapshot.endpointIds,
-      );
-    });
-  }
-
-  /** Waits for scheduled deliveries; tests and graceful shutdown use this seam. */
-  async onIdle(): Promise<void> {
-    await this.#selectionQueue.onIdle();
-    await Promise.all(
-      [...this.#endpointQueues.values()].map((queue) => queue.onIdle()),
-    );
-    await this.#attemptQueue.onIdle();
-  }
-
-  #enqueueSelection(task: () => Promise<void>): void {
-    try {
-      void this.#selectionQueue.enqueue(task).catch((error: unknown) => {
-        this.#logger.error("Webhook scheduling failed.", {
-          errorName: error instanceof Error ? error.name : "unknown",
-        });
+    this.#retryWake = options.sleep;
+    this.#executionStore = options.executionStore;
+    let ownedQueue: InMemoryTaskQueue | undefined;
+    if (options.queue === undefined) {
+      ownedQueue = new InMemoryTaskQueue({
+        clock: this.#clock,
+        logger: this.#logger,
+        webhookDeliveryConcurrency: options.attemptConcurrency ?? 4,
       });
-    } catch (error) {
-      this.#logger.error("Webhook scheduling failed.", {
-        errorName: error instanceof Error ? error.name : "unknown",
+      this.queue = ownedQueue;
+    } else {
+      this.queue = options.queue;
+    }
+    this.workStore =
+      options.workStore ??
+      new InMemoryWebhookWorkStore(this.deliveryStore, this.queue.jobStore);
+    if (ownedQueue !== undefined) {
+      ownedQueue.bindHandlers({
+        "execution.run.v1": async () => ({ type: "complete" }),
+        "webhook.select.v1": (payload, context) =>
+          this.handleWebhookSelectJob(payload, context),
+        "webhook.deliver.v1": (payload, context) =>
+          this.handleWebhookDeliverJob(payload, context),
       });
+      ownedQueue.start();
+      this.#ownedQueue = ownedQueue;
     }
   }
 
-  async #selectAndEnqueue(
+  /**
+   * Durably admits a terminal execution event and its ID-only selection job.
+   *
+   * @param projectId Authenticated project boundary.
+   * @param record Terminal execution snapshot.
+   * @param stableEventId Preallocated recovery identity when available.
+   */
+  async enqueueExecution(
     projectId: string,
-    event: WebhookEvent,
-    endpointIds?: readonly string[],
+    record: ExecutionRecord,
+    stableEventId?: string,
   ): Promise<void> {
+    const snapshot = structuredClone(record);
+    if (!terminalExecution(snapshot)) {
+      throw new Error("Only terminal executions can emit webhook events.");
+    }
+    const event: WebhookEvent = {
+      id: stableEventId ?? this.#eventIdFactory(),
+      type:
+        snapshot.status === "succeeded"
+          ? "execution.succeeded"
+          : "execution.failed",
+      createdAt: snapshot.completedAt ?? this.#now().toISOString(),
+      projectId,
+      data: snapshot,
+    };
+    await this.#admit(event, null, "execution", snapshot.executionId);
+  }
+
+  /** Durably admits an observed voice-session event for selected endpoints. */
+  async enqueueVoiceSessionEvent(
+    input: EnqueueVoiceSessionEventInput,
+  ): Promise<void> {
+    const snapshot = structuredClone(input);
+    const event: VoiceSessionWebhookEvent = {
+      id: snapshot.event.id,
+      type: "voice.session.event",
+      createdAt: snapshot.event.createdAt,
+      projectId: snapshot.projectId,
+      data: snapshot.event,
+    };
+    await this.#admit(
+      event,
+      snapshot.endpointIds,
+      "voice-session-event",
+      snapshot.event.id,
+    );
+  }
+
+  /** Durably admits a voice transcript event for selected endpoints. */
+  async enqueueVoiceTranscript(
+    input: EnqueueVoiceTranscriptInput,
+  ): Promise<void> {
+    const snapshot = structuredClone(input);
+    const event: VoiceTranscriptWebhookEvent = {
+      id: snapshot.transcript.id,
+      type: "voice.transcript.ready",
+      createdAt: snapshot.createdAt ?? this.#now().toISOString(),
+      projectId: snapshot.projectId,
+      data: snapshot.transcript,
+    };
+    await this.#admit(
+      event,
+      snapshot.endpointIds,
+      "voice-transcript",
+      snapshot.transcript.id,
+    );
+  }
+
+  /** Durably admits a normalized trigger event for selected endpoints. */
+  async enqueueTriggerEvent(input: EnqueueTriggerEventInput): Promise<void> {
+    const snapshot = structuredClone(input);
+    const event: TriggerWebhookEvent = {
+      id: snapshot.eventId ?? this.#eventIdFactory(),
+      type: `trigger.${snapshot.trigger}`,
+      createdAt: snapshot.createdAt ?? this.#now().toISOString(),
+      projectId: snapshot.projectId,
+      data: snapshot.data,
+    };
+    await this.#admit(event, snapshot.endpointIds, "trigger", event.id);
+  }
+
+  /** Waits for event admission, selection, delivery, and future retries. */
+  async onIdle(): Promise<void> {
+    while (this.#admissions.size > 0) {
+      await Promise.allSettled([...this.#admissions]);
+    }
+    await this.queue.onIdle();
+  }
+
+  async handleWebhookSelectJob(
+    payload: Readonly<{ projectId: string; eventId: string }>,
+    _context: JobHandlerContext,
+  ): Promise<JobHandlerResult> {
+    const eventWork = await this.workStore.getEvent(
+      payload.projectId,
+      payload.eventId,
+    );
+    if (eventWork === undefined) {
+      this.#logger.warn("webhook.selection_missing", {
+        projectId: payload.projectId,
+      });
+      return { type: "complete" };
+    }
+    let deliveries = await this.workStore.getMaterializedDeliveries(
+      payload.projectId,
+      payload.eventId,
+    );
+    if (eventWork.materializedAt === undefined) {
+      const endpoints = await this.#selectedEndpoints(
+        payload.projectId,
+        eventWork.eventType,
+        eventWork.endpointIds,
+      );
+      deliveries = await this.workStore.materializeEvent({
+        projectId: payload.projectId,
+        eventId: payload.eventId,
+        endpointIds: endpoints.map((endpoint) => endpoint.endpointId),
+        materializedAt: this.#now().toISOString(),
+      });
+    }
+    if (deliveries.length === 0) {
+      this.#volatileEvents.delete(
+        this.#eventKey(payload.projectId, payload.eventId),
+      );
+    }
+    await Promise.all(
+      deliveries.map(async ({ sequence, delivery }) => {
+        const submission = this.queue.submit(
+          {
+            kind: "webhook.deliver.v1",
+            payload: {
+              projectId: payload.projectId,
+              deliveryId: delivery.deliveryId,
+            },
+          },
+          {
+            groupKey: webhookEndpointGroupKey(
+              payload.projectId,
+              delivery.endpointId,
+            ),
+            groupOrder: sequence,
+            runAfter: delivery.nextRetryAt ?? this.#now().toISOString(),
+          },
+        );
+        void submission.completed.catch(() => {
+          this.#logger.error("webhook.delivery_job_failed", {
+            deliveryId: delivery.deliveryId,
+            endpointId: delivery.endpointId,
+          });
+        });
+        await submission.accepted;
+      }),
+    );
+    return { type: "complete" };
+  }
+
+  async handleWebhookDeliverJob(
+    payload: Readonly<{ projectId: string; deliveryId: string }>,
+    context: JobHandlerContext,
+  ): Promise<JobHandlerResult> {
+    let delivery = await this.deliveryStore.get(
+      payload.projectId,
+      payload.deliveryId,
+    );
+    if (
+      delivery === undefined ||
+      delivery.status === "succeeded" ||
+      delivery.status === "failed"
+    ) {
+      return { type: "complete" };
+    }
+    const now = this.#now();
+    if (
+      delivery.nextRetryAt !== undefined &&
+      Date.parse(delivery.nextRetryAt) > now.valueOf()
+    ) {
+      return { type: "reschedule", runAfter: delivery.nextRetryAt };
+    }
+    if (delivery.status === "delivering") {
+      await this.deliveryStore.resetForRecovery(
+        payload.projectId,
+        payload.deliveryId,
+      );
+      delivery =
+        (await this.deliveryStore.get(payload.projectId, payload.deliveryId)) ??
+        delivery;
+    }
+    const eventWork = await this.workStore.getEvent(
+      payload.projectId,
+      delivery.eventId,
+    );
+    const event =
+      eventWork === undefined ? undefined : await this.#resolveEvent(eventWork);
+    const endpoint = await this.endpointStore.getForDelivery(
+      payload.projectId,
+      delivery.endpointId,
+    );
+    if (eventWork === undefined || event === undefined || !endpoint?.active) {
+      await this.deliveryStore.markRecoveryFailed(
+        payload.projectId,
+        payload.deliveryId,
+        this.#now().toISOString(),
+      );
+      this.#logger.warn("webhook.delivery_unrecoverable", {
+        deliveryId: payload.deliveryId,
+      });
+      await this.#releaseEventIfTerminal(payload.projectId, delivery.eventId);
+      return { type: "complete" };
+    }
+    delivery = { ...withoutNextRetry(delivery), status: "delivering" };
+    await this.deliveryStore.update(payload.projectId, delivery);
+
+    const attemptNumber = delivery.attempts.length + 1;
+    const attemptedAt = this.#now();
+    const timestamp = String(Math.floor(attemptedAt.valueOf() / 1_000));
+    const rawBody = JSON.stringify(event);
+    const signature = createWebhookSignature({
+      payload: rawBody,
+      secret: endpoint.secret,
+      timestamp,
+    });
+    let statusCode: number | undefined;
+    let attemptError: unknown;
+    const attemptSpan = this.#telemetry.startSpan(
+      "eyeball.webhook.delivery_attempt",
+      {
+        "eyeball.webhook.endpoint.id": delivery.endpointId,
+        "eyeball.webhook.delivery.id": delivery.deliveryId,
+        "eyeball.webhook.attempt": attemptNumber,
+        "eyeball.webhook.event_type": delivery.eventType,
+      },
+    );
+    try {
+      statusCode = await this.#request({
+        url: endpoint.url,
+        eventId: delivery.eventId,
+        rawBody,
+        timestamp,
+        signature,
+        signal: context.signal,
+      });
+    } catch (error) {
+      attemptError = error;
+    }
+    if (statusCode !== undefined) {
+      attemptSpan.span?.setAttribute("http.response.status_code", statusCode);
+    }
+    const telemetryStatus =
+      statusCode !== undefined && statusCode >= 200 && statusCode < 300
+        ? "succeeded"
+        : statusCode !== undefined
+          ? "http_error"
+          : attemptError instanceof WebhookAttemptTimeoutError
+            ? "timeout"
+            : "transport_error";
+    attemptSpan.span?.setAttribute("eyeball.webhook.status", telemetryStatus);
+    if (telemetryStatus === "succeeded") markSpanOk(attemptSpan.span);
+    else markSpanError(attemptSpan.span, attemptError);
+    attemptSpan.span?.end();
+    this.#telemetry.recordWebhookDeliveryAttempt(telemetryStatus);
+    this.#logger.info("webhook.delivery_attempt", {
+      endpointId: delivery.endpointId,
+      attempt: attemptNumber,
+      status: telemetryStatus,
+      ...(statusCode === undefined ? {} : { statusCode }),
+    });
+
+    const completedAt = this.#now();
+    const attempt: WebhookDeliveryAttempt = {
+      attempt: attemptNumber,
+      attemptedAt: attemptedAt.toISOString(),
+      completedAt: completedAt.toISOString(),
+      ...(statusCode === undefined ? {} : { statusCode }),
+      ...(statusCode !== undefined
+        ? {}
+        : {
+            error:
+              attemptError instanceof WebhookAttemptTimeoutError
+                ? attemptError.message
+                : "Webhook request failed before receiving an HTTP response.",
+          }),
+    };
+    const attempts = [...delivery.attempts, attempt];
+    try {
+      if (statusCode !== undefined && statusCode >= 200 && statusCode < 300) {
+        await this.deliveryStore.update(payload.projectId, {
+          ...withoutNextRetry(delivery),
+          status: "succeeded",
+          attempts,
+          completedAt: completedAt.toISOString(),
+        });
+        await this.#releaseEventIfTerminal(payload.projectId, delivery.eventId);
+        return { type: "complete" };
+      }
+      const nextDelay = this.retryDelaysMs[attemptNumber];
+      if (nextDelay === undefined) {
+        await this.deliveryStore.update(payload.projectId, {
+          ...withoutNextRetry(delivery),
+          status: "failed",
+          attempts,
+          completedAt: completedAt.toISOString(),
+        });
+        await this.#releaseEventIfTerminal(payload.projectId, delivery.eventId);
+        this.#logger.warn("webhook.delivery_exhausted", {
+          deliveryId: delivery.deliveryId,
+          endpointId: delivery.endpointId,
+          attempts: attempts.length,
+        });
+        return { type: "complete" };
+      }
+      const runAfter = new Date(
+        completedAt.valueOf() + nextDelay,
+      ).toISOString();
+      await this.deliveryStore.update(payload.projectId, {
+        ...withoutNextRetry(delivery),
+        status: "pending",
+        attempts,
+        nextRetryAt: runAfter,
+      });
+      this.#scheduleRetryWake(nextDelay);
+      return { type: "reschedule", runAfter };
+    } catch {
+      return {
+        type: "reschedule",
+        runAfter: new Date(this.#now().valueOf() + 1_000).toISOString(),
+      };
+    }
+  }
+
+  async #admit(
+    event: WebhookEvent,
+    endpointIds: readonly string[] | null,
+    sourceKind: WebhookEventSourceKind,
+    sourceId: string,
+  ): Promise<void> {
+    const retainedVolatileEvent =
+      sourceKind === "execution" && this.#executionStore !== undefined
+        ? false
+        : this.#rememberEvent(event);
+    const selectionRunAfter = this.#now().toISOString();
+    const admission = this.workStore
+      .ensureEvent({
+        projectId: event.projectId,
+        eventId: event.id,
+        eventType: event.type,
+        sourceKind,
+        sourceId,
+        endpointIds: endpointIds === null ? null : [...new Set(endpointIds)],
+        createdAt: event.createdAt,
+        selectionRunAfter,
+      })
+      .catch((error: unknown) => {
+        if (retainedVolatileEvent) {
+          this.#volatileEvents.delete(
+            this.#eventKey(event.projectId, event.id),
+          );
+        }
+        throw error;
+      })
+      .then(async () => {
+        const eventWork = await this.workStore.getEvent(
+          event.projectId,
+          event.id,
+        );
+        if (eventWork === undefined) {
+          throw new Error("Webhook event disappeared after durable admission.");
+        }
+        const submission = this.queue.submit(
+          {
+            kind: "webhook.select.v1",
+            payload: { projectId: event.projectId, eventId: event.id },
+          },
+          {
+            groupKey: WEBHOOK_SELECTION_GROUP_KEY,
+            groupOrder: eventWork.sequence,
+            runAfter: selectionRunAfter,
+          },
+        );
+        void submission.completed.catch(() => {
+          this.#logger.error("webhook.selection_job_failed", {
+            projectId: event.projectId,
+          });
+        });
+        await submission.accepted;
+      });
+    this.#admissions.add(admission);
+    void admission.then(
+      () => this.#admissions.delete(admission),
+      () => this.#admissions.delete(admission),
+    );
+    await admission;
+  }
+
+  async #selectedEndpoints(
+    projectId: string,
+    eventType: WebhookEventType,
+    endpointIds: readonly string[] | null,
+  ): Promise<readonly StoredWebhookEndpoint[]> {
     const endpoints =
-      endpointIds === undefined
+      endpointIds === null
         ? await this.endpointStore.listForDelivery(projectId)
         : (
             await Promise.all(
-              [...new Set(endpointIds)].map((endpointId) =>
+              endpointIds.map((endpointId) =>
                 this.endpointStore.getForDelivery(projectId, endpointId),
               ),
             )
@@ -320,164 +654,98 @@ export class WebhookDeliverer {
             (endpoint): endpoint is StoredWebhookEndpoint =>
               endpoint !== undefined,
           );
-    const rawBody = JSON.stringify(event);
-
-    for (const endpoint of endpoints) {
-      if (!endpoint.active || !subscribed(endpoint.events, event)) continue;
-      const delivery = await this.deliveryStore.create(projectId, {
-        endpointId: endpoint.endpointId,
-        eventId: event.id,
-        eventType: event.type,
-        createdAt: this.#now().toISOString(),
-      });
-      const queue = this.#endpointQueue(projectId, endpoint.endpointId);
-      void queue
-        .enqueue(() =>
-          this.#deliver(projectId, endpoint, event, rawBody, delivery),
-        )
-        .catch((error: unknown) => {
-          this.#logger.error(
-            "Webhook delivery failed outside the dispatcher boundary.",
-            {
-              deliveryId: delivery.deliveryId,
-              endpointId: endpoint.endpointId,
-              errorName: error instanceof Error ? error.name : "unknown",
-            },
-          );
-        });
-    }
+    return endpoints.filter(
+      (endpoint) => endpoint.active && subscribed(endpoint.events, eventType),
+    );
   }
 
-  async #deliver(
-    projectId: string,
-    endpoint: StoredWebhookEndpoint,
-    event: WebhookEvent,
-    rawBody: string,
-    initialDelivery: WebhookDelivery,
-  ): Promise<void> {
-    let delivery = initialDelivery;
-    for (let index = 0; index < this.retryDelaysMs.length; index += 1) {
-      delivery = {
-        ...withoutNextRetry(delivery),
-        status: "delivering",
-      };
-      await this.deliveryStore.update(projectId, delivery);
+  #rememberEvent(event: WebhookEvent): boolean {
+    const key = this.#eventKey(event.projectId, event.id);
+    const existing = this.#volatileEvents.get(key);
+    if (existing !== undefined) {
+      if (!isDeepStrictEqual(existing, event)) {
+        throw new Error(
+          "Webhook event identity was reused with different data.",
+        );
+      }
+      return false;
+    }
+    this.#volatileEvents.set(key, structuredClone(event));
+    return true;
+  }
 
-      const attemptedAt = this.#now();
-      const timestamp = String(Math.floor(attemptedAt.valueOf() / 1_000));
-      const signature = createWebhookSignature({
-        payload: rawBody,
-        secret: endpoint.secret,
-        timestamp,
-      });
-      let statusCode: number | undefined;
-      let errorMessage: string | undefined;
-      let attemptError: unknown;
-      const attemptSpan = this.#telemetry.startSpan(
-        "eyeball.webhook.delivery_attempt",
-        {
-          "eyeball.webhook.endpoint.id": endpoint.endpointId,
-          "eyeball.webhook.delivery.id": delivery.deliveryId,
-          "eyeball.webhook.attempt": index + 1,
-          "eyeball.webhook.event_type": event.type,
-        },
+  async #resolveEvent(
+    eventWork: WebhookEventWork,
+  ): Promise<WebhookEvent | undefined> {
+    if (
+      eventWork.sourceKind === "execution" &&
+      this.#executionStore !== undefined
+    ) {
+      const record = await this.#executionStore.get(
+        eventWork.projectId,
+        eventWork.sourceId as ExecutionRecord["executionId"],
       );
-      try {
-        await this.#attemptQueue.enqueue(async () => {
-          statusCode = await this.#request(
-            endpoint,
-            event,
-            rawBody,
-            timestamp,
-            signature,
-          );
-        });
-      } catch (error) {
-        attemptError = error;
-        errorMessage =
-          error instanceof WebhookAttemptTimeoutError
-            ? error.message
-            : "Webhook request failed before receiving an HTTP response.";
-      }
-      if (statusCode !== undefined) {
-        attemptSpan.span?.setAttribute("http.response.status_code", statusCode);
-      }
-      const telemetryStatus =
-        statusCode !== undefined && statusCode >= 200 && statusCode < 300
-          ? "succeeded"
-          : statusCode !== undefined
-            ? "http_error"
-            : attemptError instanceof WebhookAttemptTimeoutError
-              ? "timeout"
-              : "transport_error";
-      attemptSpan.span?.setAttribute("eyeball.webhook.status", telemetryStatus);
-      if (telemetryStatus === "succeeded") markSpanOk(attemptSpan.span);
-      else markSpanError(attemptSpan.span, attemptError);
-      attemptSpan.span?.end();
-      this.#telemetry.recordWebhookDeliveryAttempt(telemetryStatus);
-      this.#logger.info("webhook.delivery_attempt", {
-        endpointId: endpoint.endpointId,
-        attempt: index + 1,
-        status: telemetryStatus,
-        ...(statusCode === undefined ? {} : { statusCode }),
-      });
-      const completedAt = this.#now();
-      const attempt: WebhookDeliveryAttempt = {
-        attempt: index + 1,
-        attemptedAt: attemptedAt.toISOString(),
-        completedAt: completedAt.toISOString(),
-        ...(statusCode === undefined ? {} : { statusCode }),
-        ...(errorMessage === undefined ? {} : { error: errorMessage }),
+      if (record === undefined || !terminalExecution(record)) return undefined;
+      const type =
+        record.status === "succeeded"
+          ? "execution.succeeded"
+          : "execution.failed";
+      if (type !== eventWork.eventType) return undefined;
+      return {
+        id: eventWork.eventId,
+        type,
+        createdAt: eventWork.createdAt,
+        projectId: eventWork.projectId,
+        data: structuredClone(record),
       };
-      const attempts = [...delivery.attempts, attempt];
-      if (statusCode !== undefined && statusCode >= 200 && statusCode < 300) {
-        delivery = {
-          ...withoutNextRetry(delivery),
-          status: "succeeded",
-          attempts,
-          completedAt: completedAt.toISOString(),
-        };
-        await this.deliveryStore.update(projectId, delivery);
-        return;
-      }
+    }
+    const event = this.#volatileEvents.get(
+      this.#eventKey(eventWork.projectId, eventWork.eventId),
+    );
+    if (
+      event === undefined ||
+      event.type !== eventWork.eventType ||
+      event.createdAt !== eventWork.createdAt
+    ) {
+      return undefined;
+    }
+    return structuredClone(event);
+  }
 
-      const nextDelay = this.retryDelaysMs[index + 1];
-      if (nextDelay === undefined) {
-        delivery = {
-          ...withoutNextRetry(delivery),
-          status: "failed",
-          attempts,
-          completedAt: completedAt.toISOString(),
-        };
-        await this.deliveryStore.update(projectId, delivery);
-        this.#logger.warn("Webhook delivery exhausted its retry policy.", {
-          deliveryId: delivery.deliveryId,
-          endpointId: endpoint.endpointId,
-          attempts: attempts.length,
-        });
-        return;
-      }
-
-      const nextRetryAt = new Date(completedAt.valueOf() + nextDelay);
-      delivery = {
-        ...withoutNextRetry(delivery),
-        status: "pending",
-        attempts,
-        nextRetryAt: nextRetryAt.toISOString(),
-      };
-      await this.deliveryStore.update(projectId, delivery);
-      await this.#sleep(nextDelay);
+  async #releaseEventIfTerminal(
+    projectId: string,
+    eventId: string,
+  ): Promise<void> {
+    const deliveries = await this.workStore.getMaterializedDeliveries(
+      projectId,
+      eventId,
+    );
+    if (
+      deliveries.every(
+        ({ delivery }) =>
+          delivery.status === "succeeded" || delivery.status === "failed",
+      )
+    ) {
+      this.#volatileEvents.delete(this.#eventKey(projectId, eventId));
     }
   }
 
-  async #request(
-    endpoint: StoredWebhookEndpoint,
-    event: WebhookEvent,
-    rawBody: string,
-    timestamp: string,
-    signature: string,
-  ): Promise<number> {
+  #eventKey(projectId: string, eventId: string): string {
+    return JSON.stringify([projectId, eventId]);
+  }
+
+  async #request(input: {
+    readonly url: string;
+    readonly eventId: string;
+    readonly rawBody: string;
+    readonly timestamp: string;
+    readonly signature: string;
+    readonly signal: AbortSignal;
+  }): Promise<number> {
     const controller = new AbortController();
+    const abort = () => controller.abort(input.signal.reason);
+    if (input.signal.aborted) abort();
+    else input.signal.addEventListener("abort", abort, { once: true });
     let timeout: ReturnType<typeof setTimeout> | undefined;
     const timedOut = new Promise<never>((_resolve, reject) => {
       timeout = setTimeout(() => {
@@ -487,17 +755,17 @@ export class WebhookDeliverer {
     });
     try {
       const response = await Promise.race([
-        this.#fetchImpl(endpoint.url, {
+        this.#fetchImpl(input.url, {
           method: "POST",
           headers: {
             "Content-Type": "application/json",
-            [WEBHOOK_ID_HEADER]: event.id,
-            [WEBHOOK_TIMESTAMP_HEADER]: timestamp,
-            [WEBHOOK_SIGNATURE_HEADER]: signature,
-            [WEBHOOK_TIMESTAMP_HEADER_ALIAS]: timestamp,
-            [WEBHOOK_SIGNATURE_HEADER_ALIAS]: signature,
+            [WEBHOOK_ID_HEADER]: input.eventId,
+            [WEBHOOK_TIMESTAMP_HEADER]: input.timestamp,
+            [WEBHOOK_SIGNATURE_HEADER]: input.signature,
+            [WEBHOOK_TIMESTAMP_HEADER_ALIAS]: input.timestamp,
+            [WEBHOOK_SIGNATURE_HEADER_ALIAS]: input.signature,
           },
-          body: rawBody,
+          body: input.rawBody,
           signal: controller.signal,
           redirect: "manual",
         }),
@@ -505,17 +773,17 @@ export class WebhookDeliverer {
       ]);
       return response.status;
     } finally {
+      input.signal.removeEventListener("abort", abort);
       if (timeout !== undefined) clearTimeout(timeout);
     }
   }
 
-  #endpointQueue(projectId: string, endpointId: string): TaskQueue {
-    const key = endpointQueueKey(projectId, endpointId);
-    const existing = this.#endpointQueues.get(key);
-    if (existing !== undefined) return existing;
-    const created = new PromiseTaskQueue(1);
-    this.#endpointQueues.set(key, created);
-    return created;
+  #scheduleRetryWake(milliseconds: number): void {
+    if (this.#retryWake === undefined || this.#ownedQueue === undefined) return;
+    void this.#retryWake(milliseconds).then(
+      () => this.#ownedQueue?.runOnce(),
+      () => undefined,
+    );
   }
 
   #now(): Date {

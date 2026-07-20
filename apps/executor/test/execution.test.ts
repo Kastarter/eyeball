@@ -4,6 +4,7 @@ import {
   type CredentialProvider,
   createExecutionId,
   type ExecuteRequest,
+  type ExecutionRecord,
   EyeballError,
   JSON_SCHEMA_DRAFT_2020_12,
   type JsonValue,
@@ -16,15 +17,24 @@ import {
   VOICE_WORKER_EXECUTION_ID_HEADER,
 } from "@eyeball/core";
 import { Hono } from "hono";
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import {
   type AdapterContext,
   AdapterRegistry,
   createExecutorApp,
+  createExecutorJobHandlerRegistry,
   createProviderHttpClient,
+  type EnsureJobResult,
   ExecutionEngine,
+  type ExecutionResumeContext,
+  ExecutorTaskSystem,
   InMemoryExecutionStore,
-  PromiseTaskQueue,
+  InMemoryJobStore,
+  InMemoryTaskQueue,
+  type JobEnvelope,
+  type JobHandlerContext,
+  noopLogger,
+  recoverExecutorJobs,
   type ToolkitAdapter,
 } from "../src/index.js";
 
@@ -55,7 +65,20 @@ interface HarnessOptions {
   pinnedUserId?: string;
   queueConcurrency?: number;
   readOnly?: boolean;
+  rejectFirstJobAdmission?: boolean;
   token?: string;
+}
+
+class FailFirstAdmissionJobStore extends InMemoryJobStore {
+  #failed = false;
+
+  override async ensure(job: JobEnvelope): Promise<EnsureJobResult> {
+    if (!this.#failed) {
+      this.#failed = true;
+      throw new Error("Injected durable admission failure.");
+    }
+    return super.ensure(job);
+  }
 }
 
 function echoContract(options: HarnessOptions): CapabilityToolContract {
@@ -267,7 +290,12 @@ function createHarness(options: HarnessOptions = {}) {
     },
   };
   const store = new InMemoryExecutionStore();
-  const queue = new PromiseTaskQueue(options.queueConcurrency ?? 1);
+  const queue = new InMemoryTaskQueue({
+    executionConcurrency: options.queueConcurrency ?? 1,
+    ...(options.rejectFirstJobAdmission
+      ? { jobStore: new FailFirstAdmissionJobStore() }
+      : {}),
+  });
   let executionSequence = 0;
   const fetchImpl = (async (input: RequestInfo | URL, init?: RequestInit) =>
     vendor.request(new Request(input, init))) as typeof fetch;
@@ -286,6 +314,13 @@ function createHarness(options: HarnessOptions = {}) {
       return createExecutionId(`test${executionSequence}`);
     },
   });
+  queue.bindHandlers(
+    createExecutorJobHandlerRegistry({
+      engine,
+      webhookDeliverer: engine.webhookDeliverer,
+    }),
+  );
+  queue.start();
   const app = createExecutorApp({
     engine,
     apiKeys: {
@@ -303,9 +338,54 @@ function createHarness(options: HarnessOptions = {}) {
     calls,
     engine,
     queue,
+    store,
     get credentialResolveCalls() {
       return credentialResolveCalls;
     },
+  };
+}
+
+const RECOVERY_CREATED_AT = "2026-07-18T04:00:00.000Z";
+
+function recoverySeed(label: string) {
+  const executionId = createExecutionId(label);
+  const request: ExecuteRequest = {
+    ...executeRequest(label, { mode: "async" }),
+    input: { message: label, uppercase: false },
+  };
+  const record: ExecutionRecord & { status: "pending" } = {
+    executionId,
+    tool: "echo.run",
+    toolVersion: "1.0.0",
+    catalogVersion: "2.0",
+    status: "pending",
+    userId: USER_1,
+    createdAt: RECOVERY_CREATED_AT,
+  };
+  const resumeContext: ExecutionResumeContext = {
+    version: 1,
+    tool: record.tool,
+    toolVersion: record.toolVersion,
+    toolkitSlug: "echo",
+    requiredScopes: ["echo:run"],
+    concurrencyBucketKey: `${PROJECT_A}:echo`,
+  };
+  return {
+    executionId,
+    request,
+    record,
+    resumeContext,
+    webhookEventId: `evt_${label}`,
+  };
+}
+
+function recoveryJobContext(label: string): JobHandlerContext {
+  return {
+    jobId: `job_${label}`,
+    queueName: "execution",
+    leaseAttempt: 1,
+    signal: new AbortController().signal,
+    now: () => "2026-07-18T04:00:05.000Z",
   };
 }
 
@@ -516,6 +596,33 @@ describe("RFC 001 execution API", () => {
     });
   });
 
+  it("repairs a missing async job when an idempotent client retries admission", async () => {
+    const harness = createHarness({ rejectFirstJobAdmission: true });
+    const request = executeRequest("repair-admission", { mode: "async" });
+
+    const rejected = await postExecute(harness.app, request, {
+      idempotencyKey: "repair-admission",
+    });
+    expect(rejected.status).toBe(500);
+    await expect(
+      harness.store.get(PROJECT_A, createExecutionId("test1")),
+    ).resolves.toMatchObject({ status: "pending" });
+
+    const replay = await postExecute(harness.app, request, {
+      idempotencyKey: "repair-admission",
+    });
+    expect(replay.status).toBe(202);
+    await expect(replay.json()).resolves.toMatchObject({
+      executionId: "exe_test1",
+      status: "pending",
+    });
+    await harness.queue.onIdle();
+    await expect(
+      harness.store.get(PROJECT_A, createExecutionId("test1")),
+    ).resolves.toMatchObject({ status: "succeeded" });
+    expect(harness.calls).toHaveLength(1);
+  });
+
   it("rejects sync mode for an async-annotated tool before allocation", async () => {
     const harness = createHarness({ asyncAnnotation: true });
 
@@ -568,6 +675,45 @@ describe("RFC 001 execution API", () => {
     expect(record).not.toHaveProperty("idempotencyKey");
     expect(record).not.toHaveProperty("input");
     expect(record).not.toHaveProperty("mode");
+  });
+
+  it("reconciles terminal side effects when an idempotent client retries", async () => {
+    const harness = createHarness();
+    const workStore = harness.engine.webhookDeliverer.workStore;
+    vi.spyOn(workStore, "ensureEvent").mockRejectedValueOnce(
+      new Error("Injected webhook admission failure."),
+    );
+    const request = executeRequest("repair-terminal");
+
+    const rejected = await postExecute(harness.app, request, {
+      idempotencyKey: "repair-terminal",
+    });
+    expect(rejected.status).toBe(500);
+    await expect(
+      harness.store.get(PROJECT_A, createExecutionId("test1")),
+    ).resolves.toMatchObject({ status: "succeeded" });
+
+    const replay = await postExecute(harness.app, request, {
+      idempotencyKey: "repair-terminal",
+    });
+    expect(replay.status).toBe(200);
+    await expect(replay.json()).resolves.toMatchObject({
+      executionId: "exe_test1",
+      status: "succeeded",
+    });
+    const recoverable = await harness.store.getRecoverable(
+      PROJECT_A,
+      createExecutionId("test1"),
+    );
+    expect(recoverable).toMatchObject({
+      usageFinalizedAt: expect.any(String),
+      webhookPublishedAt: expect.any(String),
+    });
+    await expect(
+      workStore.getEvent(PROJECT_A, recoverable?.webhookEventId ?? "missing"),
+    ).resolves.toBeDefined();
+    expect(harness.calls).toHaveLength(1);
+    await harness.queue.onIdle();
   });
 
   it("waits for an in-flight synchronous idempotent replay", async () => {
@@ -1136,5 +1282,222 @@ describe("RFC 001 execution API", () => {
       error: { code: "invalid_input" },
     });
     expect(harness.credentialResolveCalls).toBe(0);
+  });
+
+  it("recovers a persisted pending execution through an ID-only startup job", async () => {
+    const harness = createHarness();
+    const seed = recoverySeed("recovery_pending");
+    await harness.store.allocate({
+      projectId: PROJECT_A,
+      record: seed.record,
+      request: seed.request,
+      recovery: {
+        resumeContext: seed.resumeContext,
+        webhookEventId: seed.webhookEventId,
+      },
+    });
+    const jobStore = new InMemoryJobStore();
+    await recoverExecutorJobs({
+      jobStore,
+      executionStore: harness.store,
+      webhookWorkStore: harness.engine.webhookDeliverer.workStore,
+      webhookDeliveryStore: harness.engine.webhookDeliverer.deliveryStore,
+      clock: { now: () => new Date("2026-07-18T04:00:05.000Z") },
+      logger: noopLogger,
+    });
+    const taskSystem = new ExecutorTaskSystem({
+      jobStore,
+      durable: true,
+      manual: true,
+    });
+    taskSystem.bindHandlers(
+      createExecutorJobHandlerRegistry({
+        engine: harness.engine,
+        webhookDeliverer: harness.engine.webhookDeliverer,
+      }),
+    );
+    taskSystem.start();
+    await taskSystem.runOnce();
+    await taskSystem.drainOwned();
+    await taskSystem.stopClaiming();
+
+    await expect(
+      harness.store.get(PROJECT_A, seed.executionId),
+    ).resolves.toMatchObject({ status: "succeeded" });
+    expect(harness.calls).toHaveLength(1);
+    await harness.queue.onIdle();
+  });
+
+  it("resumes a running execution only when provider dispatch never began", async () => {
+    const harness = createHarness();
+    const seed = recoverySeed("recovery_before_dispatch");
+    await harness.store.allocate({
+      projectId: PROJECT_A,
+      record: seed.record,
+      request: seed.request,
+      recovery: {
+        resumeContext: seed.resumeContext,
+        webhookEventId: seed.webhookEventId,
+      },
+    });
+    await harness.store.update(PROJECT_A, {
+      ...seed.record,
+      status: "running",
+      startedAt: "2026-07-18T04:00:01.000Z",
+    });
+
+    await expect(
+      harness.engine.runExecutionJob(
+        { projectId: PROJECT_A, executionId: seed.executionId },
+        recoveryJobContext("before_dispatch"),
+      ),
+    ).resolves.toEqual({ type: "complete" });
+    await expect(
+      harness.store.get(PROJECT_A, seed.executionId),
+    ).resolves.toMatchObject({ status: "succeeded" });
+    expect(harness.calls).toHaveLength(1);
+    await harness.queue.onIdle();
+  });
+
+  it("fails an ambiguous post-dispatch execution without replaying the provider", async () => {
+    const harness = createHarness();
+    const seed = recoverySeed("recovery_after_dispatch");
+    await harness.store.allocate({
+      projectId: PROJECT_A,
+      record: seed.record,
+      request: seed.request,
+      recovery: {
+        resumeContext: seed.resumeContext,
+        webhookEventId: seed.webhookEventId,
+      },
+    });
+    await harness.store.update(PROJECT_A, {
+      ...seed.record,
+      status: "running",
+      startedAt: "2026-07-18T04:00:01.000Z",
+    });
+    await harness.store.markDispatchStarted(
+      PROJECT_A,
+      seed.executionId,
+      "2026-07-18T04:00:02.000Z",
+    );
+
+    await expect(
+      harness.engine.runExecutionJob(
+        { projectId: PROJECT_A, executionId: seed.executionId },
+        recoveryJobContext("after_dispatch"),
+      ),
+    ).resolves.toEqual({ type: "complete" });
+    await expect(
+      harness.store.get(PROJECT_A, seed.executionId),
+    ).resolves.toMatchObject({
+      status: "failed",
+      error: {
+        code: TOOL_ERROR_CODES.EXECUTION_INTERRUPTED,
+        retryable: false,
+      },
+    });
+    expect(harness.calls).toHaveLength(0);
+    await expect(
+      harness.engine.webhookDeliverer.workStore.getEvent(
+        PROJECT_A,
+        seed.webhookEventId,
+      ),
+    ).resolves.toMatchObject({ eventId: seed.webhookEventId });
+    await harness.queue.onIdle();
+  });
+
+  it("gives legacy running rows a durable terminal webhook identity without replay", async () => {
+    const harness = createHarness();
+    const seed = recoverySeed("recovery_legacy_running");
+    await harness.store.allocate({
+      projectId: PROJECT_A,
+      record: seed.record,
+      request: seed.request,
+    });
+    await harness.store.update(PROJECT_A, {
+      ...seed.record,
+      status: "running",
+      startedAt: "2026-07-18T04:00:01.000Z",
+    });
+
+    await expect(
+      harness.engine.runExecutionJob(
+        { projectId: PROJECT_A, executionId: seed.executionId },
+        recoveryJobContext("legacy_running"),
+      ),
+    ).resolves.toEqual({ type: "complete" });
+    const recoverable = await harness.store.getRecoverable(
+      PROJECT_A,
+      seed.executionId,
+    );
+    expect(recoverable).toMatchObject({
+      record: {
+        status: "failed",
+        error: { code: TOOL_ERROR_CODES.EXECUTION_INTERRUPTED },
+      },
+      webhookEventId: expect.stringMatching(/^evt_/u),
+      webhookPublishedAt: expect.any(String),
+    });
+    expect(harness.calls).toHaveLength(0);
+    await expect(
+      harness.engine.webhookDeliverer.workStore.getEvent(
+        PROJECT_A,
+        recoverable?.webhookEventId ?? "missing",
+      ),
+    ).resolves.toBeDefined();
+    await harness.queue.onIdle();
+  });
+
+  it("reconciles terminal webhook effects idempotently after a crash", async () => {
+    const harness = createHarness();
+    const seed = recoverySeed("recovery_terminal_effects");
+    await harness.store.allocate({
+      projectId: PROJECT_A,
+      record: seed.record,
+      request: seed.request,
+      recovery: {
+        resumeContext: seed.resumeContext,
+        webhookEventId: seed.webhookEventId,
+      },
+    });
+    const running: ExecutionRecord & { status: "running" } = {
+      ...seed.record,
+      status: "running",
+      startedAt: "2026-07-18T04:00:01.000Z",
+    };
+    await harness.store.update(PROJECT_A, running);
+    await harness.store.update(PROJECT_A, {
+      ...running,
+      status: "succeeded",
+      completedAt: "2026-07-18T04:00:03.000Z",
+      latencyMs: 2_000,
+      output: { echo: "recovery_terminal_effects", uppercase: false },
+    });
+
+    for (const suffix of ["first", "replay"]) {
+      await expect(
+        harness.engine.runExecutionJob(
+          { projectId: PROJECT_A, executionId: seed.executionId },
+          recoveryJobContext(`terminal_${suffix}`),
+        ),
+      ).resolves.toEqual({ type: "complete" });
+    }
+    const recoverable = await harness.store.getRecoverable(
+      PROJECT_A,
+      seed.executionId,
+    );
+    expect(recoverable).toMatchObject({
+      usageFinalizedAt: expect.any(String),
+      webhookPublishedAt: expect.any(String),
+    });
+    await expect(
+      harness.engine.webhookDeliverer.workStore.getEvent(
+        PROJECT_A,
+        seed.webhookEventId,
+      ),
+    ).resolves.toMatchObject({ eventId: seed.webhookEventId });
+    expect(harness.calls).toHaveLength(0);
+    await harness.queue.onIdle();
   });
 });

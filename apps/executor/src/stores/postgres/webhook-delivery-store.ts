@@ -4,7 +4,7 @@ import type {
   WebhookDeliveryAttempt,
   WebhookDeliveryPage,
 } from "@eyeball/core";
-import { and, desc, eq, inArray, lt, or, type SQL } from "drizzle-orm";
+import { and, asc, desc, eq, gt, inArray, lt, or, type SQL } from "drizzle-orm";
 import type { PgQueryResultHKT } from "drizzle-orm/pg-core";
 import {
   type CreateWebhookDeliveryInput,
@@ -13,10 +13,12 @@ import {
   type InMemoryWebhookDeliveryStoreOptions,
   InvalidWebhookDeliveryCursorError,
   type ListWebhookDeliveriesInput,
+  type SequencedWebhookDelivery,
   sameDeliveryAttempt,
   validateCreateWebhookDelivery,
   validateListWebhookDeliveries,
   validDeliveryTransition,
+  type WebhookDeliveryRecoveryPage,
   type WebhookDeliveryStore,
 } from "../../webhooks/delivery-store.js";
 import type { EyeballPostgresDatabase } from "./database.js";
@@ -163,6 +165,70 @@ export class PostgresWebhookDeliveryStore<
     return deliveryFromRow(row, []);
   }
 
+  async createDeterministic(
+    projectId: string,
+    deliveryId: string,
+    input: CreateWebhookDeliveryInput,
+  ): Promise<SequencedWebhookDelivery> {
+    validateCreateWebhookDelivery(projectId, input);
+    if (deliveryId.trim().length === 0) {
+      throw new Error("Webhook delivery ID must not be empty.");
+    }
+    const [inserted] = await this.#database
+      .insert(webhookDeliveries)
+      .values({
+        projectId,
+        deliveryId,
+        endpointId: input.endpointId,
+        eventId: input.eventId,
+        eventType: input.eventType,
+        status: "pending",
+        createdAt: input.createdAt,
+      })
+      .onConflictDoNothing()
+      .returning();
+    const row =
+      inserted ??
+      (
+        await this.#database
+          .select()
+          .from(webhookDeliveries)
+          .where(deliveryWhere(projectId, deliveryId))
+          .limit(1)
+      )[0];
+    if (
+      row === undefined ||
+      row.endpointId !== input.endpointId ||
+      row.eventId !== input.eventId ||
+      row.eventType !== input.eventType ||
+      isoTimestamp(row.createdAt) !== isoTimestamp(input.createdAt)
+    ) {
+      throw new Error(
+        "Webhook delivery identity was reused with different work.",
+      );
+    }
+    const delivery = await this.get(projectId, deliveryId);
+    if (delivery === undefined)
+      throw new Error("Webhook delivery disappeared.");
+    return { projectId, sequence: row.sequence, delivery };
+  }
+
+  async getSequenced(
+    projectId: string,
+    deliveryId: string,
+  ): Promise<SequencedWebhookDelivery | undefined> {
+    const [row] = await this.#database
+      .select({ sequence: webhookDeliveries.sequence })
+      .from(webhookDeliveries)
+      .where(deliveryWhere(projectId, deliveryId))
+      .limit(1);
+    if (row === undefined) return undefined;
+    const delivery = await this.get(projectId, deliveryId);
+    return delivery === undefined
+      ? undefined
+      : { projectId, sequence: row.sequence, delivery };
+  }
+
   async get(
     projectId: string,
     deliveryId: string,
@@ -305,5 +371,99 @@ export class PostgresWebhookDeliveryStore<
         ? { nextCursor: deliveryCursorAfter(last.deliveryId) }
         : {}),
     };
+  }
+
+  async listUnfinished(input: {
+    readonly cursor?: number;
+    readonly limit: number;
+  }): Promise<WebhookDeliveryRecoveryPage> {
+    if (!Number.isSafeInteger(input.limit) || input.limit < 1) {
+      throw new RangeError("Webhook recovery limit must be positive.");
+    }
+    const rows = await this.#database
+      .select()
+      .from(webhookDeliveries)
+      .where(
+        and(
+          inArray(webhookDeliveries.status, ["pending", "delivering"]),
+          ...(input.cursor === undefined
+            ? []
+            : [gt(webhookDeliveries.sequence, input.cursor)]),
+        ),
+      )
+      .orderBy(asc(webhookDeliveries.sequence))
+      .limit(input.limit);
+    const deliveryIds = rows.map(({ deliveryId }) => deliveryId);
+    const projectIds = [...new Set(rows.map(({ projectId }) => projectId))];
+    const attempts =
+      deliveryIds.length === 0
+        ? []
+        : await this.#database
+            .select()
+            .from(webhookDeliveryAttempts)
+            .where(
+              and(
+                inArray(webhookDeliveryAttempts.projectId, projectIds),
+                inArray(webhookDeliveryAttempts.deliveryId, deliveryIds),
+              ),
+            )
+            .orderBy(asc(webhookDeliveryAttempts.attempt));
+    const byDelivery = new Map<string, WebhookDeliveryAttempt[]>();
+    for (const attempt of attempts) {
+      const key = JSON.stringify([attempt.projectId, attempt.deliveryId]);
+      const values = byDelivery.get(key) ?? [];
+      values.push(attemptFromRow(attempt));
+      byDelivery.set(key, values);
+    }
+    const deliveries = rows.map((row) => ({
+      projectId: row.projectId,
+      sequence: row.sequence,
+      delivery: deliveryFromRow(
+        row,
+        byDelivery.get(JSON.stringify([row.projectId, row.deliveryId])) ?? [],
+      ),
+    }));
+    const last = deliveries.at(-1);
+    return {
+      deliveries,
+      ...(deliveries.length === input.limit && last !== undefined
+        ? { nextCursor: last.sequence }
+        : {}),
+    };
+  }
+
+  async resetForRecovery(
+    projectId: string,
+    deliveryId: string,
+  ): Promise<boolean> {
+    const changed = await this.#database
+      .update(webhookDeliveries)
+      .set({ status: "pending", nextRetryAt: null, completedAt: null })
+      .where(
+        and(
+          deliveryWhere(projectId, deliveryId),
+          eq(webhookDeliveries.status, "delivering"),
+        ),
+      )
+      .returning({ deliveryId: webhookDeliveries.deliveryId });
+    return changed.length === 1;
+  }
+
+  async markRecoveryFailed(
+    projectId: string,
+    deliveryId: string,
+    completedAt: string,
+  ): Promise<boolean> {
+    const changed = await this.#database
+      .update(webhookDeliveries)
+      .set({ status: "failed", nextRetryAt: null, completedAt })
+      .where(
+        and(
+          deliveryWhere(projectId, deliveryId),
+          inArray(webhookDeliveries.status, ["pending", "delivering"]),
+        ),
+      )
+      .returning({ deliveryId: webhookDeliveries.deliveryId });
+    return changed.length === 1;
   }
 }

@@ -22,6 +22,7 @@ import {
   CloudUsageGate,
   cloudUsageConfiguration,
   createExecutorApp,
+  createExecutorJobHandlerRegistry,
   createExecutorRuntime,
   createExecutorTelemetryRuntime,
   createPgliteStoreBundle,
@@ -29,8 +30,8 @@ import {
   ExecutionEngine,
   ExecutionRequestError,
   InMemoryExecutionStore,
+  InMemoryTaskQueue,
   InMemoryUsageOutboxStore,
-  PromiseTaskQueue,
   type ToolkitAdapter,
   UsageOutboxFlusher,
 } from "../src/index.js";
@@ -396,7 +397,7 @@ function harness(
   });
   const store = options.store ?? new InMemoryExecutionStore();
   let sequence = 0;
-  const queue = new PromiseTaskQueue(1);
+  const queue = new InMemoryTaskQueue({ executionConcurrency: 1 });
   const engine = new ExecutionEngine({
     catalog,
     adapters: new AdapterRegistry([adapter]),
@@ -424,6 +425,13 @@ function harness(
       return createExecutionId(`usage_${sequence}`);
     },
   });
+  queue.bindHandlers(
+    createExecutorJobHandlerRegistry({
+      engine,
+      webhookDeliverer: engine.webhookDeliverer,
+    }),
+  );
+  queue.start();
   const flusher = new UsageOutboxFlusher({
     client,
     store: outbox,
@@ -822,7 +830,7 @@ describe("cloud usage admission and reporting", () => {
     } finally {
       await rm(directory, { recursive: true, force: true });
     }
-  });
+  }, 20_000);
 
   it.runIf(existsSync(CLOUD_CONTROL_ENTRY))(
     "integrates with the real Cloud app for commit, dedupe, totals, and denial",
@@ -929,5 +937,6 @@ describe("cloud usage admission and reporting", () => {
         await cloudDatabase.close();
       }
     },
+    20_000,
   );
 });

@@ -58,12 +58,12 @@ Open-core tool and integration platform for AI agents: one typed, authenticated 
 - `@eyeball/core` owns canonical contracts, credentials, execution seams, and the local vault.
 - `@eyeball/catalog` owns manifests, auth metadata, versions, and deterministic tool search.
 - `@eyeball/toolkits` owns adapters; the executor resolves one manifest and credential per call.
-- Execution storage and scheduling sit behind `ExecutionStore` and `TaskQueue`.
+- Execution storage and serializable job scheduling sit behind `ExecutionStore` and `TaskQueue`; the Postgres composition uses leased jobs while zero-config remains in memory.
 - Authenticated throttling sits behind async `RateLimiter`; manifest concurrency caps use a project/toolkit semaphore around adapter dispatch.
 - `UsageGate` defaults to no-op; the Cloud implementation reserves synchronously and reports terminal records through an at-least-once outbox.
-- Webhook endpoints/delivery logs sit behind injectable stores; delivery is async and concurrency-one per endpoint.
+- Webhook endpoints, delivery logs, and ID-only event work sit behind injectable stores; handlers re-resolve current endpoints and source records, while delivery is async and concurrency-one per endpoint.
 - Trigger subscriptions, cursors, and dedup claims sit behind injectable stores; Slack push and Gmail polling normalize against catalog schemas.
-- Executor-owned Drizzle stores persist executions/idempotency, webhook endpoints/delivery attempts, and trigger subscriptions/state/dedup against pg or PGlite with the same schema and migrations.
+- Executor-owned Drizzle stores persist executions/idempotency, leased task jobs, ID-only webhook event work, webhook endpoints/delivery attempts, and trigger subscriptions/state/dedup against pg or PGlite with the same schema and migrations.
 - Staged bytes sit behind project-scoped `FileStore`; adapters resolve them only through execution-bound `AdapterContext.files`.
 - The MCP gateway delegates execution to the executor and preserves child execution identities; negotiated sessions and task records sit behind async `SessionStore`.
 - Project keys authorize all project users unless user-pinned; executor and MCP reject conflicting identities.
@@ -105,7 +105,7 @@ Open-core tool and integration platform for AI agents: one typed, authenticated 
 - Project-scoped signed execution webhooks and development voice-session event delivery are implemented with in-process defaults.
 - Structured execution/webhook/trigger logs and pluggable traces/metrics cover the executor pipeline; OTLP export remains opt-in.
 - Catalog `1.1` includes `gmail.email_received` polling and `slack.message_received` push, with executor subscription CRUD and SDK clients.
-- Postgres durable stores are wired behind `EYEBALL_DATABASE_URL`; shared contracts run all stores against both memory and one embedded PGlite database.
+- Postgres durable stores are wired behind `EYEBALL_DATABASE_URL`; the leased async queue and boot recovery sweep resume pending/running executions plus webhook selection/delivery jobs, while shared contracts run all stores against both memory and one embedded PGlite database.
 - Project request token buckets, optional UTC daily execution quotas, and manifest-declared toolkit concurrency caps are implemented.
 - `EYEBALL_USAGE_URL` enables Cloud quota admission and terminal billing reports; unset `EYEBALL_USAGE_STRICT` defaults strict with `EYEBALL_CREDENTIALS=cloud` and fail open otherwise, while explicit `1`/`true` or `0`/`false` overrides either composition.
 - A separately deployed Python voice worker provides versioned remote sessions, SQLite event durability, stable child execution identity, and account-free fake/chat contract suites; Pipecat/Twilio/LiveKit paths are certification scaffolding, not proven live-call capability.
@@ -123,10 +123,10 @@ Open-core tool and integration platform for AI agents: one typed, authenticated 
 - Voice-agent definitions, bindings, and executor-side session pointers remain process-local because the injectable `AgentStore` is synchronous. The remote worker durably owns session state and events, but a durable agent-store seam is still required for full executor restart recovery.
 - Voice-worker parity suites prove the control-plane wire contract, deterministic recovery, and mocked provider request assembly only; Twilio, LiveKit, Deepgram, ElevenLabs, Anthropic, and end-to-end audio behavior still require live-account certification.
 - One voice-worker bearer controls every session on that worker; keep the documented one-worker-per-trusted-pinned-user boundary until session-scoped capabilities or tenant isolation exist.
-- Webhook endpoints and delivery attempts are durable with Postgres, but retry queues and remote voice-event observation remain process-local. Restarting the executor during an active remote session can therefore delay or omit voice webhook publication.
+- Postgres makes webhook selection/delivery jobs and attempts restart-durable, but trigger and voice event bodies have no durable source record; only execution webhook envelopes can be reconstructed after restart. Remote voice-event observation also remains process-local, so an executor restart can still delay, fail, or omit voice webhook publication.
 - Trigger records and dedup claims are durable with Postgres, while the polling scheduler still needs distributed leases, replay/backfill, provider signature verification, and an atomic claim/outbox.
 - Provider idempotency propagation is separate from working executor-level replay protection.
-- The stock executor remains process-local without `EYEBALL_DATABASE_URL`; Postgres makes records and 24-hour idempotency durable, but async task queues are still process-local.
+- The stock executor remains process-local without `EYEBALL_DATABASE_URL`; Postgres makes records, 24-hour idempotency, and leased async task jobs durable, with the boot sweep repairing interrupted work before workers claim it.
 - The usage outbox is restart-durable with Postgres; without it, pending reports and the single-process flusher remain process-local.
 - Stock rate and concurrency limiters are process-local; multi-replica global enforcement requires injected distributed implementations.
 - MCP sessions and task pollers are process-local with the stock `InMemorySessionStore`; inject a durable atomic store for restart recovery. SSE event replay and stock executor cancellation are not implemented.

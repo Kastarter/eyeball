@@ -41,7 +41,13 @@ import {
   type FetchImplementation,
   systemClock,
 } from "./adapters/index.js";
-import { PromiseTaskQueue, type TaskQueue } from "./queue.js";
+import {
+  createExecutorJobHandlerRegistry,
+  InMemoryTaskQueue,
+  type JobHandlerContext,
+  type JobHandlerResult,
+  type TaskQueue,
+} from "./queue.js";
 import {
   type ConcurrencyPermit,
   InMemoryToolkitConcurrencyLimiter,
@@ -59,10 +65,12 @@ import {
   type ExecutionDetailRecord,
   type ExecutionListFilters,
   type ExecutionPage,
+  type ExecutionResumeContext,
   type ExecutionStore,
   type IdempotencyReservation,
   InMemoryExecutionStore,
   InvalidExecutionCursorError,
+  type RecoverableExecution,
 } from "./store.js";
 import {
   createExecutorTelemetryRuntime,
@@ -82,6 +90,7 @@ import {
   type UsageGate,
   UsageGateUnavailableError,
   type UsageReportContext,
+  type UsageReservationHandle,
 } from "./usage/index.js";
 import { WebhookDeliverer } from "./webhooks/deliverer.js";
 
@@ -367,6 +376,16 @@ export function deriveUsageIdempotencyKey(
     .digest("base64url")}`;
 }
 
+/** Stable webhook identity allocated before execution dispatch for recovery. */
+export function deriveExecutionWebhookEventId(
+  projectId: string,
+  executionId: ExecutionId,
+): string {
+  return `evt_${createHash("sha256")
+    .update(JSON.stringify(["execution.webhook.v1", projectId, executionId]))
+    .digest("base64url")}`;
+}
+
 function executeResponse(record: ExecutionRecord): ExecuteHttpResponse {
   const base: ExecutionBase = {
     executionId: record.executionId,
@@ -425,6 +444,13 @@ class UnexpectedCredentialProviderError extends Error {
   constructor(cause: unknown) {
     super("Credential provider failed unexpectedly.", { cause });
     this.name = "UnexpectedCredentialProviderError";
+  }
+}
+
+class ExecutionDispatchFencedError extends Error {
+  constructor() {
+    super("Execution provider dispatch was fenced by another worker.");
+    this.name = "ExecutionDispatchFencedError";
   }
 }
 
@@ -551,7 +577,6 @@ export class ExecutionEngine {
   readonly #executionIdFactory: () => ExecutionId;
   readonly #fileIdFactory: () => FileId;
   readonly #idempotencyRetentionMs: number;
-
   constructor(options: ExecutionEngineOptions = {}) {
     this.catalog = options.catalog ?? defaultCatalog;
     this.adapters =
@@ -575,7 +600,6 @@ export class ExecutionEngine {
       DEFAULT_MAX_FILE_SIZE_BYTES,
       "maxFileSizeBytes",
     );
-    this.queue = options.queue ?? new PromiseTaskQueue();
     this.toolkitConcurrencyLimiter =
       options.toolkitConcurrencyLimiter ??
       new InMemoryToolkitConcurrencyLimiter();
@@ -594,9 +618,21 @@ export class ExecutionEngine {
       );
     this.#logger = this.telemetry.logger;
     this.usageGate = options.usageGate ?? new NoopUsageGate();
+    let ownedQueue: InMemoryTaskQueue | undefined;
+    if (options.queue === undefined) {
+      ownedQueue = new InMemoryTaskQueue({
+        clock: this.#clock,
+        logger: this.#logger,
+      });
+      this.queue = ownedQueue;
+    } else {
+      this.queue = options.queue;
+    }
     this.webhookDeliverer =
       options.webhookDeliverer ??
       new WebhookDeliverer({
+        queue: this.queue,
+        executionStore: this.store,
         fetchImpl: this.#fetchImpl,
         clock: this.#clock,
         telemetry: this.telemetry,
@@ -627,6 +663,15 @@ export class ExecutionEngine {
       DAY_MS,
       options.idempotencyRetentionMs ?? DAY_MS,
     );
+    if (ownedQueue !== undefined) {
+      ownedQueue.bindHandlers(
+        createExecutorJobHandlerRegistry({
+          engine: this,
+          webhookDeliverer: this.webhookDeliverer,
+        }),
+      );
+      ownedQueue.start();
+    }
   }
 
   async stageFile(
@@ -868,7 +913,7 @@ export class ExecutionEngine {
         userId: canonicalRequest.userId,
         createdAt: createdAt.toISOString(),
       };
-      const allocationRequest: ExecutionAllocation = {
+      let allocationRequest: ExecutionAllocation = {
         projectId: command.projectId,
         record: pending,
         request: canonicalRequest,
@@ -890,7 +935,7 @@ export class ExecutionEngine {
       }
 
       let usageReport: UsageReportContext | undefined;
-      let usageReservationId: string | undefined;
+      let usageReservation: UsageReservationHandle | undefined;
       if (allocation === undefined && this.usageGate.enabled) {
         const cloudExecutionId =
           command.idempotencyKey === undefined ||
@@ -954,9 +999,31 @@ export class ExecutionEngine {
           }
         } else {
           usageReport = admission.report;
-          usageReservationId = admission.reservationId;
+          usageReservation = admission.reservation;
         }
       }
+
+      const webhookEventId = deriveExecutionWebhookEventId(
+        command.projectId,
+        pending.executionId,
+      );
+      allocationRequest = {
+        ...allocationRequest,
+        recovery: {
+          webhookEventId,
+          resumeContext: {
+            version: 1,
+            tool: tool.name,
+            toolVersion: tool.version,
+            toolkitSlug: tool.toolkit,
+            requiredScopes: [...requiredScopes],
+            concurrencyBucketKey,
+            ...(concurrencyLimit === undefined ? {} : { concurrencyLimit }),
+            ...(usageReport === undefined ? {} : { usageReport }),
+            ...(usageReservation === undefined ? {} : { usageReservation }),
+          },
+        },
+      };
 
       if (allocation === undefined) {
         try {
@@ -976,15 +1043,15 @@ export class ExecutionEngine {
             executionTrace.context,
           );
         } catch (error) {
-          if (usageReservationId !== undefined) {
-            await this.usageGate.release(usageReservationId);
+          if (usageReservation !== undefined) {
+            await this.usageGate.release(usageReservation);
           }
           throw error;
         }
       }
       if (allocation.kind === "conflict") {
-        if (usageReservationId !== undefined) {
-          await this.usageGate.release(usageReservationId);
+        if (usageReservation !== undefined) {
+          await this.usageGate.release(usageReservation);
         }
         return invalidRequest(
           "Idempotency-Key was already used with different request parameters.",
@@ -1005,6 +1072,9 @@ export class ExecutionEngine {
         replayed: allocation.kind === "replay",
       });
       if (allocation.kind === "replay") {
+        if (usageReservation !== undefined) {
+          await this.usageGate.release(usageReservation);
+        }
         syncPermit?.release();
         syncPermit = undefined;
         if (
@@ -1025,6 +1095,25 @@ export class ExecutionEngine {
                 allocation.record.executionId,
               )
             : allocation.record;
+        if (
+          replayRecord.status === "succeeded" ||
+          replayRecord.status === "failed"
+        ) {
+          await this.#reconcileReplayedTerminal(
+            command.projectId,
+            replayRecord,
+          );
+        }
+        if (
+          canonicalRequest.mode === "async" &&
+          (replayRecord.status === "pending" ||
+            replayRecord.status === "running")
+        ) {
+          await this.#submitExecutionJob(
+            command.projectId,
+            replayRecord.executionId,
+          );
+        }
         return {
           outcome: {
             statusCode:
@@ -1040,40 +1129,17 @@ export class ExecutionEngine {
       }
 
       if (canonicalRequest.mode === "async") {
-        void this.queue
-          .enqueue(() =>
-            this.#runAllocated(
-              command.projectId,
-              allocation.record,
-              canonicalRequest,
-              tool,
-              manifest,
-              requiredScopes,
-              concurrencyBucketKey,
-              concurrencyLimit,
-              executionTrace,
-              true,
-              usageReport,
-              usageReservationId,
-            ),
-          )
-          .catch((error: unknown) => {
-            this.#logger.error(
-              "Queued execution failed outside the engine boundary.",
-              {
-                executionId: allocation.record.executionId,
-                errorName: error instanceof Error ? error.name : "unknown",
-              },
-            );
-            executionTrace.finish("failed", error);
-          });
+        await this.#submitExecutionJob(
+          command.projectId,
+          allocation.record.executionId,
+        );
         return {
           outcome: {
             statusCode: 202,
             response: executeResponse(allocation.record),
             replayed: false,
           },
-          deferred: true,
+          deferred: false,
         };
       }
 
@@ -1089,7 +1155,8 @@ export class ExecutionEngine {
         executionTrace,
         false,
         usageReport,
-        usageReservationId,
+        usageReservation,
+        webhookEventId,
         syncPermit,
       );
       syncPermit = undefined;
@@ -1180,6 +1247,352 @@ export class ExecutionEngine {
     }
   }
 
+  /** Runs or reconciles one ID-only execution job from durable store state. */
+  async runExecutionJob(
+    payload: Readonly<{ projectId: string; executionId: string }>,
+    context: JobHandlerContext,
+  ): Promise<JobHandlerResult> {
+    if (!isExecutionId(payload.executionId)) {
+      return { type: "complete" };
+    }
+    let recoverable = await this.store.getRecoverable(
+      payload.projectId,
+      payload.executionId,
+    );
+    if (recoverable === undefined) {
+      this.#logger.warn("execution.recovery_missing", {
+        projectId: payload.projectId,
+      });
+      return { type: "complete" };
+    }
+
+    try {
+      if (
+        recoverable.record.status === "succeeded" ||
+        recoverable.record.status === "failed"
+      ) {
+        await this.reconcileTerminalExecution({
+          projectId: payload.projectId,
+          record: recoverable.record,
+          ...(recoverable.resumeContext?.usageReport === undefined
+            ? {}
+            : { usageReport: recoverable.resumeContext.usageReport }),
+          ...(recoverable.resumeContext?.usageReservation === undefined
+            ? {}
+            : { usageReservation: recoverable.resumeContext.usageReservation }),
+          ...(recoverable.webhookEventId === undefined
+            ? {}
+            : { webhookEventId: recoverable.webhookEventId }),
+          dispatchMayHaveBegun:
+            recoverable.record.status === "succeeded" ||
+            recoverable.dispatchStartedAt !== undefined,
+        });
+        return { type: "complete" };
+      }
+
+      if (recoverable.resumeContext === undefined) {
+        const webhookEventId =
+          recoverable.webhookEventId ??
+          deriveExecutionWebhookEventId(
+            payload.projectId,
+            recoverable.record.executionId,
+          );
+        if (recoverable.record.status === "running") {
+          await this.failInterruptedExecution(
+            recoverable,
+            webhookEventId,
+            true,
+          );
+          return { type: "complete" };
+        }
+        const reconstructed = this.#reconstructResumeContext(recoverable);
+        if (reconstructed === undefined || this.usageGate.enabled) {
+          await this.failInterruptedExecution(
+            recoverable,
+            webhookEventId,
+            false,
+          );
+          return { type: "complete" };
+        }
+        await this.store.setResumeContext(
+          payload.projectId,
+          recoverable.record.executionId,
+          { resumeContext: reconstructed, webhookEventId },
+        );
+        recoverable =
+          (await this.store.getRecoverable(
+            payload.projectId,
+            recoverable.record.executionId,
+          )) ?? recoverable;
+      }
+
+      if (
+        recoverable.record.status === "running" &&
+        recoverable.dispatchStartedAt !== undefined
+      ) {
+        await this.failInterruptedExecution(
+          recoverable,
+          recoverable.webhookEventId ??
+            deriveExecutionWebhookEventId(
+              payload.projectId,
+              recoverable.record.executionId,
+            ),
+          true,
+        );
+        return { type: "complete" };
+      }
+
+      if (context.signal.aborted) {
+        return {
+          type: "reschedule",
+          runAfter: new Date(Date.parse(context.now()) + 1_000).toISOString(),
+        };
+      }
+      const resume = recoverable.resumeContext;
+      if (resume === undefined) {
+        return { type: "fail", errorCode: "invalid_job_version" };
+      }
+      if ((resume as { readonly version?: unknown }).version !== 1) {
+        await this.failInterruptedExecution(
+          recoverable,
+          recoverable.webhookEventId ??
+            deriveExecutionWebhookEventId(
+              payload.projectId,
+              recoverable.record.executionId,
+            ),
+          recoverable.dispatchStartedAt !== undefined,
+        );
+        return { type: "complete" };
+      }
+      const tool = this.catalog.getTool(resume.tool);
+      const manifest = this.catalog.getManifest(resume.toolkitSlug);
+      if (
+        tool === undefined ||
+        manifest === undefined ||
+        tool.version !== resume.toolVersion ||
+        tool.toolkit !== resume.toolkitSlug ||
+        recoverable.record.toolVersion !== resume.toolVersion
+      ) {
+        await this.failInterruptedExecution(
+          recoverable,
+          recoverable.webhookEventId ??
+            deriveExecutionWebhookEventId(
+              payload.projectId,
+              recoverable.record.executionId,
+            ),
+          false,
+        );
+        return { type: "complete" };
+      }
+      const executionTrace = startExecutionTrace(this.telemetry, {
+        projectId: payload.projectId,
+        request: recoverable.request,
+      });
+      if (
+        recoverable.record.status !== "pending" &&
+        recoverable.record.status !== "running"
+      ) {
+        return { type: "complete" };
+      }
+      try {
+        await this.#runAllocated(
+          payload.projectId,
+          recoverable.record,
+          recoverable.request,
+          tool,
+          manifest,
+          resume.requiredScopes,
+          resume.concurrencyBucketKey,
+          resume.concurrencyLimit,
+          executionTrace,
+          true,
+          resume.usageReport,
+          resume.usageReservation,
+          recoverable.webhookEventId,
+        );
+      } catch {
+        const latest = await this.store.getRecoverable(
+          payload.projectId,
+          recoverable.record.executionId,
+        );
+        if (
+          latest?.record.status === "succeeded" ||
+          latest?.record.status === "failed"
+        ) {
+          await this.reconcileTerminalExecution({
+            projectId: payload.projectId,
+            record: latest.record,
+            ...(latest.resumeContext?.usageReport === undefined
+              ? {}
+              : { usageReport: latest.resumeContext.usageReport }),
+            ...(latest.resumeContext?.usageReservation === undefined
+              ? {}
+              : { usageReservation: latest.resumeContext.usageReservation }),
+            ...(latest.webhookEventId === undefined
+              ? {}
+              : { webhookEventId: latest.webhookEventId }),
+            dispatchMayHaveBegun:
+              latest.record.status === "succeeded" ||
+              latest.dispatchStartedAt !== undefined,
+          });
+          return { type: "complete" };
+        }
+        return {
+          type: "reschedule",
+          runAfter: new Date(Date.parse(context.now()) + 1_000).toISOString(),
+        };
+      }
+      return { type: "complete" };
+    } catch {
+      return {
+        type: "reschedule",
+        runAfter: new Date(Date.parse(context.now()) + 1_000).toISOString(),
+      };
+    }
+  }
+
+  /** Reconciles usage and webhook terminal effects before queue acknowledgement. */
+  async reconcileTerminalExecution(input: {
+    readonly projectId: string;
+    readonly record: ExecutionRecord & { status: "succeeded" | "failed" };
+    readonly usageReport?: UsageReportContext;
+    readonly usageReservation?: UsageReservationHandle;
+    readonly webhookEventId?: string;
+    readonly dispatchMayHaveBegun: boolean;
+  }): Promise<void> {
+    const stored = await this.store.getRecoverable(
+      input.projectId,
+      input.record.executionId,
+    );
+    if (stored?.usageFinalizedAt === undefined) {
+      const usageReport =
+        input.usageReport ??
+        stored?.resumeContext?.usageReport ??
+        (input.dispatchMayHaveBegun && input.usageReservation !== undefined
+          ? {
+              projectId: input.usageReservation.projectId,
+              executionId: input.usageReservation.localExecutionId,
+              idempotencyKey: input.usageReservation.idempotencyKey,
+              reservationId: input.usageReservation.reservationId,
+              ...(input.usageReservation.cloudExecutionId === undefined
+                ? {}
+                : {
+                    cloudExecutionId: input.usageReservation.cloudExecutionId,
+                  }),
+              ...(input.usageReservation.reservedAt === undefined
+                ? {}
+                : { reservedAt: input.usageReservation.reservedAt }),
+            }
+          : undefined);
+      const reservation =
+        input.usageReservation ?? stored?.resumeContext?.usageReservation;
+      if (input.dispatchMayHaveBegun && usageReport !== undefined) {
+        await this.usageGate.reportTerminal({
+          context: usageReport,
+          record: input.record,
+        });
+      } else if (!input.dispatchMayHaveBegun && reservation !== undefined) {
+        await this.usageGate.release(reservation);
+      }
+      await this.store.markUsageFinalized(
+        input.projectId,
+        input.record.executionId,
+        this.#now().toISOString(),
+      );
+    }
+
+    const eventId = input.webhookEventId ?? stored?.webhookEventId;
+    if (eventId !== undefined && stored?.webhookPublishedAt === undefined) {
+      await this.webhookDeliverer.enqueueExecution(
+        input.projectId,
+        input.record,
+        eventId,
+      );
+      await this.store.markWebhookPublished(
+        input.projectId,
+        input.record.executionId,
+        this.#now().toISOString(),
+      );
+    }
+  }
+
+  /** Fails ambiguous or unreconstructable work without replaying the provider. */
+  async failInterruptedExecution(
+    recoverable: RecoverableExecution,
+    webhookEventId: string,
+    dispatchMayHaveBegun: boolean,
+  ): Promise<void> {
+    await this.store.setWebhookEventId(
+      recoverable.projectId,
+      recoverable.record.executionId,
+      webhookEventId,
+    );
+    const completedAt = this.#now();
+    const startedAt =
+      recoverable.record.status === "running"
+        ? (recoverable.record.startedAt ?? recoverable.record.createdAt)
+        : recoverable.record.createdAt;
+    const terminal: ExecutionRecord & { status: "failed" } = {
+      executionId: recoverable.record.executionId,
+      tool: recoverable.record.tool,
+      toolVersion: recoverable.record.toolVersion,
+      catalogVersion: recoverable.record.catalogVersion,
+      status: "failed",
+      userId: recoverable.record.userId,
+      createdAt: recoverable.record.createdAt,
+      startedAt,
+      completedAt: completedAt.toISOString(),
+      error: {
+        code: TOOL_ERROR_CODES.EXECUTION_INTERRUPTED,
+        message: dispatchMayHaveBegun
+          ? "Execution was interrupted after provider dispatch may have begun. Its external outcome is unknown and it was not replayed automatically."
+          : "Execution could not be resumed safely after interruption and was not dispatched automatically.",
+        retryable: false,
+      },
+      latencyMs: Math.max(0, completedAt.valueOf() - Date.parse(startedAt)),
+    };
+    await this.store.update(recoverable.projectId, terminal);
+    await this.reconcileTerminalExecution({
+      projectId: recoverable.projectId,
+      record: terminal,
+      ...(recoverable.resumeContext?.usageReport === undefined
+        ? {}
+        : { usageReport: recoverable.resumeContext.usageReport }),
+      ...(recoverable.resumeContext?.usageReservation === undefined
+        ? {}
+        : { usageReservation: recoverable.resumeContext.usageReservation }),
+      webhookEventId,
+      dispatchMayHaveBegun,
+    });
+  }
+
+  #reconstructResumeContext(
+    recoverable: RecoverableExecution,
+  ): ExecutionResumeContext | undefined {
+    const tool = this.catalog.getTool(recoverable.record.tool);
+    const manifest =
+      tool === undefined ? undefined : this.catalog.getManifest(tool.toolkit);
+    const scopes = this.catalog.getEffectiveScopes(recoverable.record.tool);
+    if (
+      tool === undefined ||
+      manifest === undefined ||
+      scopes === undefined ||
+      tool.version !== recoverable.record.toolVersion
+    ) {
+      return undefined;
+    }
+    const concurrencyLimit = manifest.limits?.maxConcurrentExecutionsPerProject;
+    return {
+      version: 1,
+      tool: tool.name,
+      toolVersion: tool.version,
+      toolkitSlug: tool.toolkit,
+      requiredScopes: [...scopes.required],
+      concurrencyBucketKey: `${recoverable.projectId}:${tool.toolkit}`,
+      ...(concurrencyLimit === undefined ? {} : { concurrencyLimit }),
+    };
+  }
+
   #idempotencyReservation(
     request: ExecuteRequest,
     key: string,
@@ -1200,9 +1613,50 @@ export class ExecutionEngine {
     };
   }
 
+  async #submitExecutionJob(
+    projectId: string,
+    executionId: ExecutionId,
+  ): Promise<void> {
+    const submission = this.queue.submit({
+      kind: "execution.run.v1",
+      payload: { projectId, executionId },
+    });
+    void submission.completed.catch(() => {
+      this.#logger.error("queue.execution_job_failed", { executionId });
+    });
+    await submission.accepted;
+  }
+
+  async #reconcileReplayedTerminal(
+    projectId: string,
+    record: ExecutionRecord & { status: "succeeded" | "failed" },
+  ): Promise<void> {
+    const recoverable = await this.store.getRecoverable(
+      projectId,
+      record.executionId,
+    );
+    if (recoverable === undefined) return;
+    await this.reconcileTerminalExecution({
+      projectId,
+      record,
+      ...(recoverable.resumeContext?.usageReport === undefined
+        ? {}
+        : { usageReport: recoverable.resumeContext.usageReport }),
+      ...(recoverable.resumeContext?.usageReservation === undefined
+        ? {}
+        : { usageReservation: recoverable.resumeContext.usageReservation }),
+      ...(recoverable.webhookEventId === undefined
+        ? {}
+        : { webhookEventId: recoverable.webhookEventId }),
+      dispatchMayHaveBegun:
+        record.status === "succeeded" ||
+        recoverable.dispatchStartedAt !== undefined,
+    });
+  }
+
   async #runAllocated(
     projectId: string,
-    pending: ExecutionRecord & { status: "pending" },
+    pending: Extract<ExecutionRecord, { status: "pending" | "running" }>,
     request: ExecuteRequest,
     tool: ToolDefinition,
     manifest: ProviderManifest,
@@ -1212,12 +1666,15 @@ export class ExecutionEngine {
     executionTrace: ExecutionTrace,
     finishTrace: boolean,
     usageReport?: UsageReportContext,
-    usageReservationId?: string,
+    usageReservation?: UsageReservationHandle,
+    webhookEventId?: string,
     reservedPermit?: ConcurrencyPermit,
   ): Promise<void> {
     let concurrencyPermit: ConcurrencyPermit | undefined;
     let dispatchAttempted = false;
+    let dispatchFenced = false;
     let usageFinalized = false;
+    let terminalPersisted = false;
     let terminalStatus: "succeeded" | "failed" | undefined;
     let terminalError: unknown;
     try {
@@ -1229,25 +1686,33 @@ export class ExecutionEngine {
               concurrencyBucketKey,
               concurrencyLimit,
             ));
-      const startedAt = this.#now();
+      const startedAt =
+        pending.status === "running"
+          ? new Date(pending.startedAt ?? pending.createdAt)
+          : this.#now();
       const startedAtIso = startedAt.toISOString();
-      const running: ExecutionRecord & { status: "running" } = {
-        executionId: pending.executionId,
-        tool: pending.tool,
-        toolVersion: pending.toolVersion,
-        catalogVersion: pending.catalogVersion,
-        status: "running",
-        userId: pending.userId,
-        createdAt: pending.createdAt,
-        startedAt: startedAtIso,
-      };
-      await inTelemetrySpan(
-        this.telemetry,
-        "eyeball.execute.store",
-        { "eyeball.store.operation": "mark_running" },
-        async () => this.store.update(projectId, running),
-        executionTrace.context,
-      );
+      const running: ExecutionRecord & { status: "running" } =
+        pending.status === "running"
+          ? { ...pending, status: "running", startedAt: startedAtIso }
+          : {
+              executionId: pending.executionId,
+              tool: pending.tool,
+              toolVersion: pending.toolVersion,
+              catalogVersion: pending.catalogVersion,
+              status: "running",
+              userId: pending.userId,
+              createdAt: pending.createdAt,
+              startedAt: startedAtIso,
+            };
+      if (pending.status === "pending") {
+        await inTelemetrySpan(
+          this.telemetry,
+          "eyeball.execute.store",
+          { "eyeball.store.operation": "mark_running" },
+          async () => this.store.update(projectId, running),
+          executionTrace.context,
+        );
+      }
       try {
         // Preserve the original execution boundary: a materialized toolkit with
         // no adapter is a deterministic runtime capability failure and must not
@@ -1325,6 +1790,16 @@ export class ExecutionEngine {
             "eyeball.toolkit": tool.toolkit,
           },
           async (dispatchContext) => {
+            const dispatchStartedAt = this.#now().toISOString();
+            const marked = await this.store.markDispatchStarted(
+              projectId,
+              pending.executionId,
+              dispatchStartedAt,
+            );
+            if (!marked) {
+              dispatchFenced = true;
+              throw new ExecutionDispatchFencedError();
+            }
             dispatchAttempted = true;
             return adapter.execute({
               projectId,
@@ -1392,13 +1867,16 @@ export class ExecutionEngine {
           async () => this.store.update(projectId, terminal),
           executionTrace.context,
         );
-        if (usageReport !== undefined) {
-          this.usageGate.reportTerminal({
-            context: usageReport,
-            record: terminal,
-          });
-          usageFinalized = true;
-        }
+        terminalPersisted = true;
+        await this.reconcileTerminalExecution({
+          projectId,
+          record: terminal,
+          ...(usageReport === undefined ? {} : { usageReport }),
+          ...(usageReservation === undefined ? {} : { usageReservation }),
+          ...(webhookEventId === undefined ? {} : { webhookEventId }),
+          dispatchMayHaveBegun: true,
+        });
+        usageFinalized = true;
         terminalStatus = "succeeded";
         executionTrace.span?.setAttribute(
           "eyeball.execution.latency_ms",
@@ -1418,8 +1896,9 @@ export class ExecutionEngine {
           outputSizeBytes: jsonByteLength(canonicalOutput),
           outputSchemaValid: true,
         });
-        this.webhookDeliverer.enqueueExecution(projectId, terminal);
       } catch (error) {
+        if (terminalPersisted || error instanceof ExecutionDispatchFencedError)
+          throw error;
         terminalError = error;
         markSpanError(executionTrace.span, error);
         const completedAt = this.#now();
@@ -1444,18 +1923,15 @@ export class ExecutionEngine {
           async () => this.store.update(projectId, terminal),
           executionTrace.context,
         );
-        if (usageReport !== undefined && dispatchAttempted) {
-          this.usageGate.reportTerminal({
-            context: usageReport,
-            record: terminal,
-          });
-          usageFinalized = true;
-        } else if (!dispatchAttempted) {
-          if (usageReservationId !== undefined) {
-            await this.usageGate.release(usageReservationId);
-          }
-          usageFinalized = true;
-        }
+        await this.reconcileTerminalExecution({
+          projectId,
+          record: terminal,
+          ...(usageReport === undefined ? {} : { usageReport }),
+          ...(usageReservation === undefined ? {} : { usageReservation }),
+          ...(webhookEventId === undefined ? {} : { webhookEventId }),
+          dispatchMayHaveBegun: dispatchAttempted,
+        });
+        usageFinalized = true;
         terminalStatus = "failed";
         executionTrace.span?.setAttribute(
           "eyeball.execution.latency_ms",
@@ -1474,17 +1950,17 @@ export class ExecutionEngine {
           status: terminal.status,
           errorKind: normalized.code,
         });
-        this.webhookDeliverer.enqueueExecution(projectId, terminal);
         if (error instanceof UnexpectedCredentialProviderError) throw error;
       }
     } catch (error) {
       terminalError ??= error;
       if (
         !dispatchAttempted &&
+        !dispatchFenced &&
         !usageFinalized &&
-        usageReservationId !== undefined
+        usageReservation !== undefined
       ) {
-        await this.usageGate.release(usageReservationId);
+        await this.usageGate.release(usageReservation);
         usageFinalized = true;
       }
       throw error;

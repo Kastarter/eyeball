@@ -300,12 +300,15 @@ untrusted hosted traffic.
 
 The following are explicit limitations, not implied guarantees:
 
-- The stock rate limiter, concurrency limiter, asynchronous task queue, webhook
-  retry queue, and parts of remote voice-event observation are process-local.
-- Postgres makes execution/idempotency, webhooks, and triggers durable, but does
-  not make process-local schedulers distributed. Trigger polling still needs
-  leases, replay/backfill, provider signature verification, and an atomic
-  claim/outbox.
+- The stock rate limiter, toolkit concurrency limiter, trigger polling scheduler,
+  and parts of remote voice-event observation are process-local.
+- With `EYEBALL_DATABASE_URL`, execution and webhook jobs use durable Postgres
+  leases, deterministic identities, startup recovery, and private immutable
+  webhook work snapshots. The zero-config queue remains in memory, and the
+  Postgres worker has not been load- or chaos-certified as a managed service.
+- Postgres does not make trigger polling distributed. Polling still needs
+  distributed leases, replay/backfill, provider signature verification, and an
+  atomic claim/outbox.
 - Voice agent definitions/bindings and executor-side session pointers remain
   process-local. Live carrier/provider paths are not real-provider certified.
 - MCP sessions and task pollers are process-local; stock SSE replay and executor
@@ -333,7 +336,7 @@ The following are explicit limitations, not implied guarantees:
 | Auditability | Structured redacted executor telemetry and tenant-scoped cloud audit events. | Central immutable retention, administrator/data-access events, clock/ingestion monitoring, alert coverage, review cadence, and evidence exports. |
 | Key management | AES-GCM local/cloud vaults, versioned cloud KEK wrappers, reveal-once keys, secret rotation APIs for webhooks/triggers. | Documented custodians, KMS/HSM integration, rotation cadence/SLOs, automated KEK rewrap job, dual-control, inventory, expiry alerts, and completed rotation evidence. |
 | Vulnerability management | Lockfiles, exact sensitive pins, SHA-pinned actions, offline secret scanner, this register. | Scheduled gitleaks/SCA/pip-audit/SBOM, advisory SLA, signed provenance, dependency update cadence, external penetration test, and remediation evidence. |
-| Availability and recovery | Durable Postgres/PGlite store implementations and encrypted records. | Production backup schedule, encryption/key escrow, restore drills, RPO/RTO, regional/replica strategy, queue recovery, and dependency outage runbooks. |
+| Availability and recovery | Durable Postgres/PGlite records, lease-fenced execution/webhook jobs, startup recovery, and conservative post-dispatch fencing. | Production backup schedule, encryption/key escrow, restore drills, RPO/RTO, regional/replica strategy, multi-replica load/chaos evidence, and dependency outage runbooks. |
 | Incident response | [`INCIDENT-RESPONSE.md`](./INCIDENT-RESPONSE.md) skeleton and revocation order. | Named on-call/incident roles, paging and forensic tooling, tabletop exercise, counsel/insurer contacts, customer status channel, and postmortem evidence. |
 | Change management | Pull-request CI, scoped tests, immutable action pins, release changesets. | Required review/branch protections evidence, production segregation of duties, deployment approvals, rollback evidence, and emergency-change procedure. |
 | Vendor and data governance | Provider manifests and a partial license/provenance review. | Vendor risk register, subprocessors, DPAs, data-flow inventory, retention/deletion policy, data classification, privacy request process, and license sign-off. |
