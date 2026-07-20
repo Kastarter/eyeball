@@ -25,6 +25,10 @@ export interface CloudUsageConfiguration {
   readonly baseUrl: string;
   readonly internalApiSecret: string;
   readonly strict: boolean;
+  readonly strictSource:
+    | "explicit_override"
+    | "hosted_default"
+    | "self_hosted_default";
   readonly timeoutMs: number;
   readonly flushIntervalMs: number;
   readonly drainTimeoutMs: number;
@@ -114,6 +118,30 @@ function environmentInteger(
     throw new TypeError(`${name} must be an integer.`);
   }
   return positiveInteger(Number(raw), name);
+}
+
+function usageStrictness(
+  env: Readonly<Record<string, string | undefined>>,
+): Pick<CloudUsageConfiguration, "strict" | "strictSource"> {
+  const raw = env.EYEBALL_USAGE_STRICT;
+  if (raw === undefined) {
+    const hosted = env.EYEBALL_CREDENTIALS?.trim() === "cloud";
+    return {
+      strict: hosted,
+      strictSource: hosted ? "hosted_default" : "self_hosted_default",
+    };
+  }
+
+  const value = raw.trim();
+  if (value === "1" || value === "true") {
+    return { strict: true, strictSource: "explicit_override" };
+  }
+  if (value === "0" || value === "false") {
+    return { strict: false, strictSource: "explicit_override" };
+  }
+  throw new TypeError(
+    "EYEBALL_USAGE_STRICT must be 1, true, 0, or false when set.",
+  );
 }
 
 function isLoopbackHostname(hostname: string): boolean {
@@ -255,14 +283,11 @@ export function cloudUsageConfiguration(
       "EYEBALL_INTERNAL_API_SECRET is required when EYEBALL_USAGE_URL is configured.",
     );
   }
-  const strictValue = env.EYEBALL_USAGE_STRICT?.trim() ?? "0";
-  if (strictValue !== "0" && strictValue !== "1") {
-    throw new TypeError("EYEBALL_USAGE_STRICT must be 0 or 1.");
-  }
+  const strictness = usageStrictness(env);
   return {
     baseUrl,
     internalApiSecret,
-    strict: strictValue === "1",
+    ...strictness,
     timeoutMs: environmentInteger(
       env,
       "EYEBALL_USAGE_TIMEOUT_MS",

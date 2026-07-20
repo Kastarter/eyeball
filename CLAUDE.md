@@ -105,7 +105,7 @@ Open-core tool and integration platform for AI agents: one typed, authenticated 
 - Catalog `1.1` includes `gmail.email_received` polling and `slack.message_received` push, with executor subscription CRUD and SDK clients.
 - Postgres durable stores are wired behind `EYEBALL_DATABASE_URL`; shared contracts run all stores against both memory and one embedded PGlite database.
 - Project request token buckets, optional UTC daily execution quotas, and manifest-declared toolkit concurrency caps are implemented.
-- `EYEBALL_USAGE_URL` enables Cloud quota admission and terminal billing reports; default transport failures fail open, while `EYEBALL_USAGE_STRICT=1` fails closed.
+- `EYEBALL_USAGE_URL` enables Cloud quota admission and terminal billing reports; unset `EYEBALL_USAGE_STRICT` defaults strict with `EYEBALL_CREDENTIALS=cloud` and fail open otherwise, while explicit `1`/`true` or `0`/`false` overrides either composition.
 - A separately deployed Python voice worker provides versioned remote sessions, SQLite event durability, stable child execution identity, and account-free fake/chat contract suites; Pipecat/Twilio/LiveKit paths are certification scaffolding, not proven live-call capability.
 - Voice agents expose LiveKit web-session activation plus Twilio buy/list/bind/detach/release inventory flows against account-free mocks; reassignment is detach then attach, and bound numbers cannot be released.
 - The security posture pass added product/cloud threat models, an incident-response runbook, SHA-pinned CI actions, trigger-secret rotation, and query/log/redirect hardening.

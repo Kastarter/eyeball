@@ -20,6 +20,7 @@ import {
   AdapterRegistry,
   CloudUsageClient,
   CloudUsageGate,
+  cloudUsageConfiguration,
   createExecutorApp,
   createExecutorRuntime,
   createExecutorTelemetryRuntime,
@@ -136,6 +137,48 @@ function request(mode: "sync" | "async" = "sync"): ExecuteRequest {
     mode,
   };
 }
+
+function runtimeUsageRequest(): ExecuteRequest {
+  return {
+    tool: "voice-agents.list_voice_agents",
+    userId: USER_ID,
+    input: {},
+    mode: "sync",
+  };
+}
+
+function runtimeUsageEnvironment(
+  options: { credentials?: "cloud"; strict?: string } = {},
+): Readonly<Record<string, string | undefined>> {
+  return {
+    EYEBALL_USAGE_URL: "http://localhost",
+    EYEBALL_INTERNAL_API_SECRET: INTERNAL_SECRET,
+    EYEBALL_USAGE_FLUSH_INTERVAL_MS: "60000",
+    EYEBALL_USAGE_DRAIN_TIMEOUT_MS: "100",
+    ...(options.credentials === undefined
+      ? {}
+      : { EYEBALL_CREDENTIALS: options.credentials }),
+    ...(options.strict === undefined
+      ? {}
+      : { EYEBALL_USAGE_STRICT: options.strict }),
+  };
+}
+
+function runtimeCredentialProvider(): MockCredentialProvider {
+  return new MockCredentialProvider([
+    {
+      match: {
+        projectId: PROJECT_ID,
+        userId: USER_ID,
+        toolkitSlug: "voice-agents",
+      },
+      credential: { type: "none" },
+    },
+  ]);
+}
+
+const unavailableUsageFetch = (async () =>
+  new Response(null, { status: 503 })) as typeof fetch;
 
 interface CapturedLog {
   level: "debug" | "info" | "warn" | "error";
@@ -613,6 +656,128 @@ describe("cloud usage admission and reporting", () => {
     } finally {
       await runtime.close();
     }
+  });
+
+  it.each([
+    ["1", true],
+    ["true", true],
+    ["0", false],
+    ["false", false],
+  ] as const)("accepts the explicit EYEBALL_USAGE_STRICT=%s override", (strictValue, strict) => {
+    expect(
+      cloudUsageConfiguration(runtimeUsageEnvironment({ strict: strictValue })),
+    ).toMatchObject({ strict, strictSource: "explicit_override" });
+  });
+
+  it("defaults hosted cloud-credential composition to retryable fail-closed admission", async () => {
+    const logs: CapturedLog[] = [];
+    const runtime = await createExecutorRuntime({
+      env: runtimeUsageEnvironment({ credentials: "cloud" }),
+      credentialProvider: runtimeCredentialProvider(),
+      fetchImpl: unavailableUsageFetch,
+      telemetry: { logger: captureLogger(logs) },
+    });
+    try {
+      const execution = runtime.engine.execute({
+        projectId: PROJECT_ID,
+        request: runtimeUsageRequest(),
+      });
+      await expect(execution).rejects.toMatchObject({
+        httpStatus: 429,
+        code: TOOL_ERROR_CODES.RATE_LIMITED,
+        retryable: true,
+      });
+      expect(logs).toContainEqual(
+        expect.objectContaining({
+          level: "info",
+          message: "usage.enforcement_configured",
+          metadata: expect.objectContaining({
+            enforcementMode: "strict",
+            resolution: "hosted_default",
+            hostedComposition: true,
+            explicitRelaxation: false,
+          }),
+        }),
+      );
+    } finally {
+      await runtime.close();
+    }
+  });
+
+  it("keeps the unset self-hosted composition fail open", async () => {
+    const logs: CapturedLog[] = [];
+    const runtime = await createExecutorRuntime({
+      env: runtimeUsageEnvironment(),
+      credentialProvider: runtimeCredentialProvider(),
+      fetchImpl: unavailableUsageFetch,
+      telemetry: { logger: captureLogger(logs) },
+    });
+    try {
+      await expect(
+        runtime.engine.execute({
+          projectId: PROJECT_ID,
+          request: runtimeUsageRequest(),
+        }),
+      ).resolves.toMatchObject({ response: { status: "succeeded" } });
+      expect(logs).toContainEqual(
+        expect.objectContaining({
+          level: "info",
+          message: "usage.enforcement_configured",
+          metadata: expect.objectContaining({
+            enforcementMode: "fail_open",
+            resolution: "self_hosted_default",
+            hostedComposition: false,
+            explicitRelaxation: false,
+          }),
+        }),
+      );
+    } finally {
+      await runtime.close();
+    }
+  });
+
+  it("honors and warns on an explicit hosted fail-open relaxation", async () => {
+    const logs: CapturedLog[] = [];
+    const runtime = await createExecutorRuntime({
+      env: runtimeUsageEnvironment({ credentials: "cloud", strict: "0" }),
+      credentialProvider: runtimeCredentialProvider(),
+      fetchImpl: unavailableUsageFetch,
+      telemetry: { logger: captureLogger(logs) },
+    });
+    try {
+      await expect(
+        runtime.engine.execute({
+          projectId: PROJECT_ID,
+          request: runtimeUsageRequest(),
+        }),
+      ).resolves.toMatchObject({ response: { status: "succeeded" } });
+      expect(logs).toContainEqual(
+        expect.objectContaining({
+          level: "warn",
+          message: "usage.enforcement_configured",
+          metadata: expect.objectContaining({
+            enforcementMode: "fail_open",
+            resolution: "explicit_override",
+            hostedComposition: true,
+            explicitRelaxation: true,
+          }),
+        }),
+      );
+    } finally {
+      await runtime.close();
+    }
+  });
+
+  it("rejects an invalid explicit usage enforcement value at startup", async () => {
+    await expect(
+      createExecutorRuntime({
+        env: runtimeUsageEnvironment({ strict: "sometimes" }),
+        credentialProvider: runtimeCredentialProvider(),
+        fetchImpl: unavailableUsageFetch,
+      }),
+    ).rejects.toThrow(
+      "EYEBALL_USAGE_STRICT must be 1, true, 0, or false when set.",
+    );
   });
 
   it("survives a PGlite restart and flushes the pending report", async () => {

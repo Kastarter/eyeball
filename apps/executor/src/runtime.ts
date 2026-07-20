@@ -102,16 +102,33 @@ function configuredUsage(
     strict: configuration.strict,
     ...(clock === undefined ? {} : { clock }),
   });
+  const flusher = new UsageOutboxFlusher({
+    client,
+    store,
+    telemetry,
+    intervalMs: configuration.flushIntervalMs,
+    alertAfterAttempts: configuration.alertAfterAttempts,
+    ...(clock === undefined ? {} : { clock }),
+  });
+  const hostedComposition = env.EYEBALL_CREDENTIALS?.trim() === "cloud";
+  const explicitRelaxation =
+    hostedComposition &&
+    configuration.strictSource === "explicit_override" &&
+    !configuration.strict;
+  const enforcementMetadata = {
+    enforcementMode: configuration.strict ? "strict" : "fail_open",
+    resolution: configuration.strictSource,
+    hostedComposition,
+    explicitRelaxation,
+  } as const;
+  if (explicitRelaxation) {
+    telemetry.logger.warn("usage.enforcement_configured", enforcementMetadata);
+  } else {
+    telemetry.logger.info("usage.enforcement_configured", enforcementMetadata);
+  }
   return {
     gate,
-    flusher: new UsageOutboxFlusher({
-      client,
-      store,
-      telemetry,
-      intervalMs: configuration.flushIntervalMs,
-      alertAfterAttempts: configuration.alertAfterAttempts,
-      ...(clock === undefined ? {} : { clock }),
-    }),
+    flusher,
     drainTimeoutMs: configuration.drainTimeoutMs,
   };
 }
