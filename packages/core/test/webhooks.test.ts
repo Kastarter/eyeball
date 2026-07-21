@@ -1,10 +1,33 @@
 import { describe, expect, it } from "vitest";
 import {
   createWebhookSignature,
+  isWebhookSubscriptionEventType,
+  type VoiceObserverFailedWebhookEvent,
   verifyWebhookSignature,
   WEBHOOK_SIGNATURE_HEADER,
   WEBHOOK_TIMESTAMP_HEADER,
 } from "../src/index.js";
+
+const OBSERVER_FAILURE: VoiceObserverFailedWebhookEvent = {
+  id: "voice_observer_failed_session_1",
+  type: "voice.observer.failed",
+  createdAt: "2026-07-21T12:00:00.000Z",
+  projectId: "project_1",
+  data: {
+    sessionId: "session_1",
+    agentId: "agent_1",
+    agentRevision: 1,
+    lastHandledSequence: 7,
+    attempts: 20,
+    reason: "retry_exhausted",
+    operation: "get_events",
+    error: {
+      code: "provider_unavailable",
+      message: "Remote voice worker is unavailable.",
+      retryable: true,
+    },
+  },
+};
 
 const SECRET = "whsec_test_signature_secret";
 const NOW = new Date("2026-07-17T12:00:00.000Z");
@@ -23,6 +46,13 @@ function headers(timestamp = TIMESTAMP, payload = PAYLOAD): Headers {
 }
 
 describe("webhook signature verification", () => {
+  it("accepts the executor-owned observer failure subscription and event", () => {
+    expect(isWebhookSubscriptionEventType("voice.observer.failed")).toBe(true);
+    expect(isWebhookSubscriptionEventType("voice.observer.failure")).toBe(
+      false,
+    );
+    expect(OBSERVER_FAILURE.type).toBe("voice.observer.failed");
+  });
   it("accepts the exact signed raw payload inside the replay window", () => {
     expect(
       verifyWebhookSignature({

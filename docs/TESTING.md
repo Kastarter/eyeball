@@ -266,6 +266,31 @@ plus continued chat turns. Assert:
 Voice tests do not bypass allowlists, add test-only definition fields, or call provider routes directly. Fixture scripts
 and mock behavior stay in `eyeball-mocks`.
 
+### 3.3 Durable remote-observer matrix
+
+Remote-observer tests run the same state machine against memory and PGlite stores and treat the
+worker's durable ordered log as authoritative. The normative matrix requires:
+
+- a cursor acknowledgement boundary proving source persistence, webhook work admission, and
+  terminal grant handling finish before `handled_sequence` advances;
+- expected-cursor and lease-token fencing, one winning claimant, healthy-lease protection, expired
+  takeover, and rejection of stale-owner checkpoints;
+- restart with the same PGlite `dataDir`: runtime A persists sequence `N`, runtime B's first normal
+  event read uses `afterSequence=N`, and its separate transcript-finalization read starts at zero;
+- source/work/delivery identity reuse under replay, durable envelope reconstruction by a new
+  `WebhookDeliverer`, and a recoverable invariant path for legacy work missing a voice source;
+- a session becoming terminal during downtime, idempotent grant revocation, and a final transcript
+  containing turns from both before and after restart;
+- finalization failures consuming the same persisted retry ceiling, 20 transient failures producing
+  one exhausted record/log/failure webhook, immediate exhaustion for invalid responses, and later
+  recovery of an exhausted-but-unsignaled row;
+- driver taxonomy cases for reachability failure, 5xx/429, request timeout/408, malformed or
+  version-incompatible payloads, non-transient 4xx, and caller cancellation, with exact canonical
+  code and retryability assertions; and
+- secret-absence assertions over driver errors and serialized telemetry: no control token, worker
+  URL, authorization header, grant material, webhook URL/secret, transcript, raw response body, or
+  provider payload may appear.
+
 ## 4. CI layout
 
 GitHub Actions separates deterministic gates from credentialed or nondeterministic checks.

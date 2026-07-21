@@ -15,6 +15,7 @@ export * from "./stores/postgres/index.js";
 export * from "./telemetry/index.js";
 export * from "./triggers/index.js";
 export * from "./usage/index.js";
+export * from "./voice/index.js";
 export * from "./voice-session-grants.js";
 export * from "./webhooks/index.js";
 

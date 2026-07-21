@@ -9,6 +9,7 @@ import {
   TwilioAdapter,
   VoiceAgentsAdapter,
   type VoiceSessionGrantIssuer,
+  type VoiceSessionObservationLifecycle,
   voiceWorkerTokenFromEnv,
   voiceWorkerUrlFromEnv,
 } from "@eyeball/toolkits";
@@ -46,10 +47,15 @@ import {
   type UsageOutboxStore,
 } from "./usage/index.js";
 import {
+  InMemoryVoiceSessionObserverStore,
+  RemoteVoiceSessionObserver,
+} from "./voice/index.js";
+import {
   createConfiguredVoiceSessionGrantAuthority,
   type VoiceSessionGrantVerifier,
 } from "./voice-session-grants.js";
 import { WebhookDeliverer } from "./webhooks/deliverer.js";
+import { InMemoryVoiceWebhookSourceStore } from "./webhooks/memory-voice-source-store.js";
 
 export interface CreateExecutorRuntimeOptions {
   env?: Readonly<Record<string, string | undefined>>;
@@ -86,6 +92,7 @@ export interface ExecutorRuntime {
   triggerPollingScheduler: TriggerPollingScheduler;
   persistence?: ExecutorPersistence;
   usageOutboxFlusher?: UsageOutboxFlusher;
+  voiceSessionObserver?: RemoteVoiceSessionObserver;
   close(): Promise<void>;
 }
 
@@ -227,76 +234,23 @@ function configuredUsage(
 }
 
 function configuredVoiceWorker(
-  env: Readonly<Record<string, string | undefined>>,
   catalog: RuntimeCatalog,
   agentStore: AgentStore,
-  clock: Clock,
+  driver: RemoteVoiceSessionDriver | undefined,
+  observationLifecycle: VoiceSessionObservationLifecycle | undefined,
   voiceSessionGrantIssuer?: VoiceSessionGrantIssuer,
-  fetchImpl?: typeof fetch,
 ): {
   adapters: AdapterRegistry;
   driver?: RemoteVoiceSessionDriver;
   bind(engine: ExecutionEngine): void;
 } {
-  const workerUrl = voiceWorkerUrlFromEnv(env);
   let engine: ExecutionEngine | undefined;
-  const token = voiceWorkerTokenFromEnv(env);
-  const driver =
-    workerUrl === undefined
-      ? undefined
-      : new RemoteVoiceSessionDriver({
-          baseUrl: workerUrl,
-          ...(fetchImpl === undefined ? {} : { fetch: fetchImpl }),
-          ...(token === undefined ? {} : { token }),
-          onTerminal: async ({ request }) => {
-            const pointer = await agentStore.getSession(
-              request.scope.projectId,
-              request.scope.userId,
-              request.sessionId,
-            );
-            await agentStore.revokeSessionGrant({
-              projectId: request.scope.projectId,
-              userId: request.scope.userId,
-              sessionId: request.sessionId,
-              ...(pointer.grantId === undefined
-                ? {}
-                : { grantId: pointer.grantId }),
-              revokedAt: clock.now().toISOString(),
-            });
-          },
-          onEvent: ({ request, event }) => {
-            if (!request.agent.webhooks.events.includes(event.data.type))
-              return;
-            const admission = engine?.webhookDeliverer.enqueueVoiceSessionEvent(
-              {
-                projectId: request.scope.projectId,
-                endpointIds: request.agent.webhooks.endpointIds,
-                event,
-              },
-            );
-            void admission?.catch(() => {
-              engine?.telemetry.logger.error("voice.webhook_admission_failed", {
-                kind: "session_event",
-              });
-            });
-          },
-          onTranscript: ({ request, transcript }) => {
-            if (!request.agent.webhooks.transcript) return;
-            const admission = engine?.webhookDeliverer.enqueueVoiceTranscript({
-              projectId: request.scope.projectId,
-              endpointIds: request.agent.webhooks.endpointIds,
-              transcript,
-            });
-            void admission?.catch(() => {
-              engine?.telemetry.logger.error("voice.webhook_admission_failed", {
-                kind: "transcript",
-              });
-            });
-          },
-        });
   const voiceAgents = new VoiceAgentsAdapter({
     store: agentStore,
     ...(driver === undefined ? {} : { sessionDriver: driver }),
+    ...(observationLifecycle === undefined
+      ? {}
+      : { remoteObservationLifecycle: observationLifecycle }),
     resolveTool: (name) => catalog.getTool(name),
     executeProviderTool: async (request) => {
       if (engine === undefined) {
@@ -396,6 +350,7 @@ export async function createExecutorRuntime(
   let usage: ConfiguredUsage | undefined;
   let fileExpirySweeper: FileExpirySweeper | undefined;
   let voiceWorker: ReturnType<typeof configuredVoiceWorker> | undefined;
+  let voiceSessionObserver: RemoteVoiceSessionObserver | undefined;
   try {
     const durable = databaseUrl !== undefined && databaseUrl.length > 0;
     if (durable) {
@@ -421,16 +376,8 @@ export async function createExecutorRuntime(
           ? "static_pinned"
           : "session_grant",
       grantStateDurability: durable ? "postgres" : "process_local",
+      observerStateDurability: durable ? "postgres" : "process_local",
     });
-    const initializedVoiceWorker = configuredVoiceWorker(
-      env,
-      catalog,
-      agentStore,
-      clock,
-      voiceSessionGrantAuthority?.issuer,
-      options.fetchImpl,
-    );
-    voiceWorker = initializedVoiceWorker;
     if (initializedPersistence !== undefined) {
       await sweepExpiredFiles(
         initializedPersistence.fileStore,
@@ -467,6 +414,9 @@ export async function createExecutorRuntime(
     );
     const webhookDeliverer = new WebhookDeliverer({
       queue: taskSystem,
+      voiceSourceStore:
+        initializedPersistence?.voiceWebhookSourceStore ??
+        new InMemoryVoiceWebhookSourceStore(),
       ...(initializedPersistence === undefined
         ? {}
         : {
@@ -481,6 +431,39 @@ export async function createExecutorRuntime(
         : { fetchImpl: options.fetchImpl }),
       ...(options.clock === undefined ? {} : { clock: options.clock }),
     });
+    const workerUrl = voiceWorkerUrlFromEnv(env);
+    const workerToken = voiceWorkerTokenFromEnv(env);
+    const voiceDriver =
+      workerUrl === undefined
+        ? undefined
+        : new RemoteVoiceSessionDriver({
+            baseUrl: workerUrl,
+            ...(options.fetchImpl === undefined
+              ? {}
+              : { fetch: options.fetchImpl }),
+            ...(workerToken === undefined ? {} : { token: workerToken }),
+          });
+    voiceSessionObserver =
+      voiceDriver === undefined
+        ? undefined
+        : new RemoteVoiceSessionObserver({
+            store:
+              initializedPersistence?.voiceObserverStore ??
+              new InMemoryVoiceSessionObserverStore(),
+            agentStore,
+            driver: voiceDriver,
+            webhookDeliverer,
+            logger: telemetry.logger,
+            clock,
+          });
+    const initializedVoiceWorker = configuredVoiceWorker(
+      catalog,
+      agentStore,
+      voiceDriver,
+      voiceSessionObserver,
+      voiceSessionGrantAuthority?.issuer,
+    );
+    voiceWorker = initializedVoiceWorker;
     const triggerService = new TriggerService({
       catalog,
       credentialProvider,
@@ -535,6 +518,7 @@ export async function createExecutorRuntime(
         logger: telemetry.logger,
       });
     }
+    await voiceSessionObserver?.reconcileAtBoot();
     taskSystem.start();
     const runningTaskSystem = taskSystem;
     const triggerPollingScheduler = new TriggerPollingScheduler({
@@ -562,12 +546,14 @@ export async function createExecutorRuntime(
         ? {}
         : { persistence: initializedPersistence }),
       ...(usage === undefined ? {} : { usageOutboxFlusher: usage.flusher }),
+      ...(voiceSessionObserver === undefined ? {} : { voiceSessionObserver }),
       close: async () => {
         fileExpirySweeper?.stop();
         triggerPollingScheduler.stop();
         usage?.flusher.stop();
         try {
           await fileExpirySweeper?.onIdle();
+          await voiceSessionObserver?.close();
           await initializedVoiceWorker.driver?.close();
           await drainRuntime(runningTaskSystem, triggerPollingScheduler);
           await engine.usageGate.onIdle();
@@ -589,6 +575,7 @@ export async function createExecutorRuntime(
     await fileExpirySweeper?.onIdle();
     await taskSystem?.stopClaiming();
     await taskSystem?.drainOwned();
+    await voiceSessionObserver?.close();
     await voiceWorker?.driver?.close();
     await persistence?.close();
     await otel.shutdown();

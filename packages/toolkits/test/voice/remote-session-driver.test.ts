@@ -1,5 +1,4 @@
 import type {
-  TranscriptArtifact,
   VoiceAgentSession,
   VoiceAgentSessionEvent,
   VoiceWorkerStartSessionRequest,
@@ -13,6 +12,7 @@ import {
   voiceWorkerTokenFromEnv,
   voiceWorkerUrlFromEnv,
 } from "../../src/voice/remote-session-driver.js";
+import { VoiceSessionDriverError } from "../../src/voice/session-driver.js";
 
 const PROJECT_ID = "proj_remote_driver";
 const USER_ID = "user_remote_driver";
@@ -147,6 +147,24 @@ function response(body: unknown, status = 200): Response {
   });
 }
 
+function stalledResponse(signal: AbortSignal): Response {
+  return new Response(
+    new ReadableStream<Uint8Array>({
+      start(controller) {
+        signal.addEventListener(
+          "abort",
+          () => controller.error(signal.reason),
+          { once: true },
+        );
+      },
+    }),
+    {
+      status: 200,
+      headers: { [VOICE_WORKER_VERSION_HEADER]: VOICE_WORKER_WIRE_VERSION },
+    },
+  );
+}
+
 function workerFetch(requests: Request[]): typeof globalThis.fetch {
   return (async (input, init) => {
     const incoming = new Request(input, init);
@@ -210,56 +228,27 @@ function workerFetch(requests: Request[]): typeof globalThis.fetch {
 }
 
 describe("remote voice-session driver", () => {
-  it("starts a pinned session and consumes its durable ordered events", async () => {
+  it("acts as a pinned typed client without starting process-local observation", async () => {
     const requests: Request[] = [];
-    const onEvent = vi.fn();
-    const callbackOrder: string[] = [];
-    const observedRequests: unknown[] = [];
-    let transcript: TranscriptArtifact | undefined;
     const driver = new RemoteVoiceSessionDriver({
       baseUrl: "https://voice-worker.test",
       token: WORKER_TOKEN,
       fetch: workerFetch(requests),
-      pollIntervalMs: 1,
-      onTerminal: ({ request: observed, event }) => {
-        observedRequests.push(observed);
-        callbackOrder.push(`terminal:${event.sequence}`);
-      },
-      onEvent: (input) => {
-        observedRequests.push(input.request);
-        callbackOrder.push(`event:${input.event.sequence}`);
-        onEvent(input);
-      },
-      onTranscript: (input) => {
-        observedRequests.push(input.request);
-        callbackOrder.push("transcript");
-        transcript = input.transcript;
-      },
     });
 
     await expect(driver.startSession(request)).resolves.toEqual(createdSession);
-    await vi.waitFor(() => {
-      expect(transcript).toMatchObject({
-        id: `transcript_${SESSION_ID}`,
-        sessionId: SESSION_ID,
-        final: true,
-        turns: [
-          expect.objectContaining({ speaker: "human", text: "Hello." }),
-          expect.objectContaining({ speaker: "agent", text: "Welcome." }),
-        ],
-      });
-    });
-
-    expect(onEvent.mock.calls.map(([input]) => input.event.sequence)).toEqual([
-      1, 2, 3, 4, 5, 6,
-    ]);
-    expect(callbackOrder.indexOf("terminal:6")).toBeLessThan(
-      callbackOrder.indexOf("event:6"),
+    await expect(
+      driver.getEvents(SESSION_ID, { afterSequence: 0 }),
+    ).resolves.toEqual(
+      expect.objectContaining({
+        nextSequence: 6,
+        hasMore: false,
+        events,
+      }),
     );
-    expect(callbackOrder.indexOf("event:6")).toBeLessThan(
-      callbackOrder.indexOf("transcript"),
+    await expect(driver.getSession(SESSION_ID)).resolves.toEqual(
+      expect.objectContaining({ id: SESSION_ID, state: "completed" }),
     );
-    expect(JSON.stringify(observedRequests)).not.toContain(GRANT_TOKEN);
     const startBody = await requests[0]?.clone().json();
     expect(startBody).toEqual(request);
     expect(
@@ -282,11 +271,15 @@ describe("remote voice-session driver", () => {
       ),
     });
 
-    await expect(driver.health()).rejects.toThrow(
-      new VoiceWorkerProtocolError(
-        `The voice worker omitted ${VOICE_WORKER_VERSION_HEADER}.`,
-      ),
-    );
+    const error = await driver.health().catch((caught: unknown) => caught);
+    expect(error).toBeInstanceOf(VoiceWorkerProtocolError);
+    expect(error).toMatchObject({
+      kind: "invalid_response",
+      code: "provider_error",
+      retryable: false,
+      operation: "health",
+    });
+    expect((error as Error).message).toContain(VOICE_WORKER_VERSION_HEADER);
   });
 
   it("sends the complete versioned chat-turn contract", async () => {
@@ -314,31 +307,83 @@ describe("remote voice-session driver", () => {
     await expect(sent.json()).resolves.toEqual(turnRequest);
   });
 
-  it("retries an event when the delivery callback fails", async () => {
-    const attempts: number[] = [];
-    let failedOnce = false;
-    let transcript: TranscriptArtifact | undefined;
+  it("classifies reachability failures without leaking transport details", async () => {
+    const secretDetail = "https://secret.example/token/raw-provider-body";
     const driver = new RemoteVoiceSessionDriver({
-      baseUrl: "https://voice-worker.test",
-      fetch: workerFetch([]),
-      pollIntervalMs: 1,
-      onEvent: ({ event }) => {
-        attempts.push(event.sequence);
-        if (event.sequence === 3 && !failedOnce) {
-          failedOnce = true;
-          throw new Error("transient webhook failure");
-        }
-      },
-      onTranscript: (input) => {
-        transcript = input.transcript;
-      },
+      baseUrl: "https://voice-worker.example.test",
+      token: WORKER_TOKEN,
+      fetch: vi.fn(async () => {
+        throw new TypeError(secretDetail);
+      }),
     });
 
-    await driver.startSession(request);
-    await vi.waitFor(() => expect(transcript?.final).toBe(true));
-    expect(attempts).toEqual([1, 2, 3, 3, 4, 5, 6]);
-    expect(transcript?.turns).toHaveLength(2);
-    await driver.close();
+    const error = await driver
+      .getSession(SESSION_ID)
+      .catch((caught: unknown) => caught);
+    expect(error).toBeInstanceOf(VoiceSessionDriverError);
+    expect(error).toMatchObject({
+      kind: "provider_unavailable",
+      code: "provider_unavailable",
+      retryable: true,
+      operation: "get_session",
+      sessionId: SESSION_ID,
+    });
+    expect((error as Error).message).not.toContain(secretDetail);
+    expect(JSON.stringify(error)).not.toContain(WORKER_TOKEN);
+    expect(JSON.stringify(error)).not.toContain(secretDetail);
+  });
+
+  it.each([
+    [503, "provider_unavailable", "provider_unavailable", true],
+    [429, "provider_unavailable", "provider_unavailable", true],
+    [408, "timeout", "timeout", true],
+    [400, "invalid_response", "provider_error", false],
+  ] as const)("classifies HTTP %i as %s", async (status, kind, code, retryable) => {
+    const driver = new RemoteVoiceSessionDriver({
+      baseUrl: "https://voice-worker.example.test",
+      fetch: vi.fn(async () => new Response("private-body", { status })),
+    });
+
+    const error = await driver
+      .getEvents(SESSION_ID, { afterSequence: 7 })
+      .catch((caught: unknown) => caught);
+    expect(error).toBeInstanceOf(VoiceSessionDriverError);
+    expect(error).toMatchObject({
+      kind,
+      code,
+      retryable,
+      operation: "get_events",
+      status,
+      sessionId: SESSION_ID,
+      afterSequence: 7,
+    });
+    expect((error as Error).message).not.toContain("private-body");
+  });
+
+  it("classifies malformed JSON as a non-retryable invalid response", async () => {
+    const driver = new RemoteVoiceSessionDriver({
+      baseUrl: "https://voice-worker.example.test",
+      fetch: vi.fn(
+        async () =>
+          new Response("private raw response", {
+            status: 200,
+            headers: {
+              [VOICE_WORKER_VERSION_HEADER]: VOICE_WORKER_WIRE_VERSION,
+            },
+          }),
+      ),
+    });
+
+    const error = await driver
+      .getSession(SESSION_ID)
+      .catch((caught: unknown) => caught);
+    expect(error).toMatchObject({
+      kind: "invalid_response",
+      code: "provider_error",
+      retryable: false,
+      operation: "get_session",
+    });
+    expect((error as Error).message).not.toContain("private raw response");
   });
 
   it("rejects malformed event payloads at the trust boundary", async () => {
@@ -421,9 +466,116 @@ describe("remote voice-session driver", () => {
       ) as typeof globalThis.fetch,
     });
 
-    await expect(driver.health()).rejects.toThrow(
-      "Voice-worker request timed out after 5ms.",
-    );
+    const error = await driver.health().catch((caught: unknown) => caught);
+    expect(error).toMatchObject({
+      kind: "timeout",
+      code: "timeout",
+      retryable: true,
+      operation: "health",
+    });
+  });
+
+  it("classifies a post-headers stalled body as a retryable timeout", async () => {
+    const driver = new RemoteVoiceSessionDriver({
+      baseUrl: "https://voice-worker.example.test",
+      requestTimeoutMs: 5,
+      fetch: vi.fn(async (_input, init) => {
+        if (init?.signal === undefined || init.signal === null) {
+          throw new Error("Expected a request signal.");
+        }
+        return stalledResponse(init.signal);
+      }) as typeof globalThis.fetch,
+    });
+
+    const error = await driver
+      .getSession(SESSION_ID)
+      .catch((caught: unknown) => caught);
+    expect(error).toMatchObject({
+      kind: "timeout",
+      code: "timeout",
+      retryable: true,
+      operation: "get_session",
+      sessionId: SESSION_ID,
+    });
+  });
+
+  it("classifies a post-headers body transport failure as unavailable", async () => {
+    const secretDetail = "private response stream failure";
+    const driver = new RemoteVoiceSessionDriver({
+      baseUrl: "https://voice-worker.example.test",
+      fetch: vi.fn(
+        async () =>
+          new Response(
+            new ReadableStream<Uint8Array>({
+              start(controller) {
+                controller.error(new TypeError(secretDetail));
+              },
+            }),
+            {
+              status: 200,
+              headers: {
+                [VOICE_WORKER_VERSION_HEADER]: VOICE_WORKER_WIRE_VERSION,
+              },
+            },
+          ),
+      ),
+    });
+
+    const error = await driver
+      .getSession(SESSION_ID)
+      .catch((caught: unknown) => caught);
+    expect(error).toMatchObject({
+      kind: "provider_unavailable",
+      code: "provider_unavailable",
+      retryable: true,
+      operation: "get_session",
+      sessionId: SESSION_ID,
+    });
+    expect((error as Error).message).not.toContain(secretDetail);
+  });
+
+  it("propagates caller cancellation without classifying an outage", async () => {
+    const controller = new AbortController();
+    const shutdown = new Error("caller shutdown");
+    const driver = new RemoteVoiceSessionDriver({
+      baseUrl: "https://voice-worker.example.test",
+      fetch: vi.fn(
+        (_input, init) =>
+          new Promise<Response>((_resolve, reject) => {
+            init?.signal?.addEventListener(
+              "abort",
+              () => reject(init.signal?.reason),
+              { once: true },
+            );
+          }),
+      ) as typeof globalThis.fetch,
+    });
+
+    const pending = driver.getSession(SESSION_ID, {
+      signal: controller.signal,
+    });
+    controller.abort(shutdown);
+    await expect(pending).rejects.toBe(shutdown);
+  });
+
+  it("propagates caller cancellation while reading a response body", async () => {
+    const controller = new AbortController();
+    const shutdown = new Error("caller shutdown after headers");
+    const driver = new RemoteVoiceSessionDriver({
+      baseUrl: "https://voice-worker.example.test",
+      fetch: vi.fn(async (_input, init) => {
+        if (init?.signal === undefined || init.signal === null) {
+          throw new Error("Expected a request signal.");
+        }
+        return stalledResponse(init.signal);
+      }) as typeof globalThis.fetch,
+    });
+
+    const pending = driver.getSession(SESSION_ID, {
+      signal: controller.signal,
+    });
+    controller.abort(shutdown);
+    await expect(pending).rejects.toBe(shutdown);
   });
 
   it("requires secure worker URLs and strong non-empty tokens", () => {

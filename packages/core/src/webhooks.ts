@@ -1,4 +1,5 @@
 import { createHmac, timingSafeEqual } from "node:crypto";
+import type { NormalizedToolError } from "./errors.js";
 import type {
   TriggerWebhookEvent,
   TriggerWebhookEventType,
@@ -30,6 +31,7 @@ export const WEBHOOK_SUBSCRIPTION_EVENT_TYPES = [
   "execution.failed",
   "voice.session.event",
   "voice.transcript.ready",
+  "voice.observer.failed",
   "trigger.*",
 ] as const;
 
@@ -41,6 +43,7 @@ export type WebhookEventType =
   | TerminalEventType
   | "voice.session.event"
   | "voice.transcript.ready"
+  | "voice.observer.failed"
   | TriggerWebhookEventType;
 
 const TRIGGER_WEBHOOK_EVENT_TYPE_PATTERN =
@@ -105,10 +108,40 @@ export interface VoiceTranscriptWebhookEvent {
   data: TranscriptArtifact;
 }
 
+export type VoiceObserverFailureReason = "retry_exhausted" | "non_retryable";
+
+export type VoiceObserverFailureOperation =
+  | "get_events"
+  | "get_session"
+  | "publish_event"
+  | "publish_transcript"
+  | "publish_failure";
+
+export interface VoiceObserverFailedWebhookData {
+  sessionId: string;
+  agentId: string;
+  agentRevision: number;
+  lastHandledSequence: number;
+  attempts: number;
+  reason: VoiceObserverFailureReason;
+  operation: VoiceObserverFailureOperation;
+  error: NormalizedToolError;
+}
+
+/** Executor-owned failure signal; it is not part of the worker event sequence. */
+export interface VoiceObserverFailedWebhookEvent {
+  id: string;
+  type: "voice.observer.failed";
+  createdAt: string;
+  projectId: string;
+  data: VoiceObserverFailedWebhookData;
+}
+
 export type WebhookEvent =
   | ExecutionWebhookEvent
   | VoiceSessionWebhookEvent
   | VoiceTranscriptWebhookEvent
+  | VoiceObserverFailedWebhookEvent
   | TriggerWebhookEvent;
 
 export type WebhookDeliveryStatus =

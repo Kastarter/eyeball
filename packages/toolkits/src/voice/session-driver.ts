@@ -42,10 +42,17 @@ export interface VoiceSessionDriver {
     sessionId: string,
     request: VoiceWorkerStopSessionRequest,
   ): Promise<VoiceAgentSession>;
-  getSession(sessionId: string): Promise<VoiceAgentSession>;
+  getSession(
+    sessionId: string,
+    options?: { signal?: AbortSignal },
+  ): Promise<VoiceAgentSession>;
   getEvents(
     sessionId: string,
-    options?: { afterSequence?: number; limit?: number },
+    options?: {
+      afterSequence?: number;
+      limit?: number;
+      signal?: AbortSignal;
+    },
   ): Promise<VoiceWorkerEventPage>;
   sendTurn?(
     sessionId: string,
@@ -235,24 +242,98 @@ interface PipecatEventPage {
   hasMore: boolean;
 }
 
-export class VoiceSessionDriverError extends Error {
-  constructor(message: string) {
-    super(message);
+export type VoiceSessionDriverErrorKind =
+  | "provider_unavailable"
+  | "timeout"
+  | "invalid_response";
+
+export type VoiceSessionDriverOperation =
+  | "start_session"
+  | "stop_session"
+  | "get_session"
+  | "get_events"
+  | "send_turn"
+  | "health"
+  | "local_driver";
+
+export interface VoiceSessionDriverErrorOptions {
+  message: string;
+  kind: VoiceSessionDriverErrorKind;
+  operation: VoiceSessionDriverOperation;
+  retryable?: boolean;
+  status?: number;
+  retryAfter?: number;
+  sessionId?: string;
+  afterSequence?: number;
+  cause?: unknown;
+}
+
+/** Structured, credential-safe worker failure with canonical public taxonomy. */
+export class VoiceSessionDriverError extends EyeballError {
+  readonly kind: VoiceSessionDriverErrorKind;
+  readonly operation: VoiceSessionDriverOperation;
+  readonly status?: number;
+  readonly sessionId?: string;
+  readonly afterSequence?: number;
+
+  constructor(messageOrOptions: string | VoiceSessionDriverErrorOptions) {
+    const options: VoiceSessionDriverErrorOptions =
+      typeof messageOrOptions === "string"
+        ? {
+            message: messageOrOptions,
+            kind: "invalid_response",
+            operation: "local_driver",
+          }
+        : messageOrOptions;
+    const code =
+      options.kind === "provider_unavailable"
+        ? TOOL_ERROR_CODES.PROVIDER_UNAVAILABLE
+        : options.kind === "timeout"
+          ? TOOL_ERROR_CODES.TIMEOUT
+          : TOOL_ERROR_CODES.PROVIDER_ERROR;
+    super({
+      code,
+      message: options.message,
+      retryable: options.retryable ?? options.kind === "provider_unavailable",
+      ...(options.retryAfter === undefined
+        ? {}
+        : { retryAfter: options.retryAfter }),
+      ...(options.cause === undefined ? {} : { cause: options.cause }),
+    });
     this.name = "VoiceSessionDriverError";
+    this.kind = options.kind;
+    this.operation = options.operation;
+    if (options.status !== undefined) this.status = options.status;
+    if (options.sessionId !== undefined) this.sessionId = options.sessionId;
+    if (options.afterSequence !== undefined) {
+      this.afterSequence = options.afterSequence;
+    }
   }
 }
 
 export class VoiceSessionDriverTimeoutError extends VoiceSessionDriverError {
-  readonly sessionId: string;
-  readonly afterSequence: number;
-
-  constructor(sessionId: string, afterSequence: number) {
-    super(
-      `Voice session ${sessionId} did not reach a terminal state before the driver timeout.`,
-    );
+  constructor(
+    sessionId: string,
+    afterSequence: number,
+    options: {
+      operation?: VoiceSessionDriverOperation;
+      retryable?: boolean;
+      message?: string;
+      cause?: unknown;
+    } = {},
+  ) {
+    super({
+      kind: "timeout",
+      operation: options.operation ?? "local_driver",
+      retryable: options.retryable ?? false,
+      message:
+        options.message ??
+        `Voice session ${sessionId} did not reach a terminal state before the driver timeout.`,
+      sessionId,
+      afterSequence,
+      ...(options.cause === undefined ? {} : { cause: options.cause }),
+    });
     this.name = "VoiceSessionDriverTimeoutError";
-    this.sessionId = sessionId;
-    this.afterSequence = afterSequence;
   }
 }
 

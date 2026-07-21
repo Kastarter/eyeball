@@ -8,6 +8,8 @@ import {
   type TriggerEventData,
   type TriggerWebhookEvent,
   type VoiceAgentSessionEvent,
+  type VoiceObserverFailedWebhookData,
+  type VoiceObserverFailedWebhookEvent,
   type VoiceSessionWebhookEvent,
   type VoiceTranscriptWebhookEvent,
   WEBHOOK_ID_HEADER,
@@ -47,7 +49,9 @@ import {
   type StoredWebhookEndpoint,
   type WebhookEndpointStore,
 } from "./endpoint-store.js";
+import { InMemoryVoiceWebhookSourceStore } from "./memory-voice-source-store.js";
 import { InMemoryWebhookWorkStore } from "./memory-work-store.js";
+import type { VoiceWebhookSourceStore } from "./voice-source-store.js";
 import type {
   WebhookEventSourceKind,
   WebhookEventWork,
@@ -70,6 +74,7 @@ export interface WebhookDelivererOptions {
   endpointStore?: WebhookEndpointStore;
   deliveryStore?: WebhookDeliveryStore;
   workStore?: WebhookWorkStore;
+  voiceSourceStore?: VoiceWebhookSourceStore;
   executionStore?: ExecutionStore;
   queue?: TaskQueue;
   fetchImpl?: typeof globalThis.fetch;
@@ -95,6 +100,13 @@ export interface EnqueueVoiceTranscriptInput {
   projectId: string;
   endpointIds: readonly string[];
   transcript: TranscriptArtifact;
+  createdAt?: string;
+}
+
+export interface EnqueueVoiceObserverFailureInput {
+  projectId: string;
+  endpointIds: readonly string[];
+  data: VoiceObserverFailedWebhookData;
   createdAt?: string;
 }
 
@@ -179,6 +191,7 @@ export class WebhookDeliverer {
   readonly endpointStore: WebhookEndpointStore;
   readonly deliveryStore: WebhookDeliveryStore;
   readonly workStore: WebhookWorkStore;
+  readonly voiceSourceStore: VoiceWebhookSourceStore;
   readonly retryDelaysMs: readonly number[];
   readonly queue: TaskQueue;
   readonly #fetchImpl: typeof globalThis.fetch;
@@ -229,6 +242,8 @@ export class WebhookDeliverer {
     this.workStore =
       options.workStore ??
       new InMemoryWebhookWorkStore(this.deliveryStore, this.queue.jobStore);
+    this.voiceSourceStore =
+      options.voiceSourceStore ?? new InMemoryVoiceWebhookSourceStore();
     if (ownedQueue !== undefined) {
       ownedQueue.bindHandlers({
         "execution.run.v1": async () => ({ type: "complete" }),
@@ -283,6 +298,15 @@ export class WebhookDeliverer {
       projectId: snapshot.projectId,
       data: snapshot.event,
     };
+    await this.voiceSourceStore.ensureSource({
+      projectId: event.projectId,
+      eventId: event.id,
+      sessionId: event.data.sessionId,
+      eventType: event.type,
+      sourceKind: "session_event",
+      workerSequence: event.data.sequence,
+      envelope: event,
+    });
     await this.#admit(
       event,
       snapshot.endpointIds,
@@ -303,11 +327,47 @@ export class WebhookDeliverer {
       projectId: snapshot.projectId,
       data: snapshot.transcript,
     };
+    await this.voiceSourceStore.ensureSource({
+      projectId: event.projectId,
+      eventId: event.id,
+      sessionId: event.data.sessionId,
+      eventType: event.type,
+      sourceKind: "transcript",
+      envelope: event,
+    });
     await this.#admit(
       event,
       snapshot.endpointIds,
       "voice-transcript",
       snapshot.transcript.id,
+    );
+  }
+
+  /** Durably admits the deterministic executor-owned observer failure signal. */
+  async enqueueVoiceObserverFailure(
+    input: EnqueueVoiceObserverFailureInput,
+  ): Promise<void> {
+    const snapshot = structuredClone(input);
+    const event: VoiceObserverFailedWebhookEvent = {
+      id: `voice_observer_failed_${snapshot.data.sessionId}`,
+      type: "voice.observer.failed",
+      createdAt: snapshot.createdAt ?? this.#now().toISOString(),
+      projectId: snapshot.projectId,
+      data: snapshot.data,
+    };
+    await this.voiceSourceStore.ensureSource({
+      projectId: event.projectId,
+      eventId: event.id,
+      sessionId: event.data.sessionId,
+      eventType: event.type,
+      sourceKind: "observer_failure",
+      envelope: event,
+    });
+    await this.#admit(
+      event,
+      snapshot.endpointIds,
+      "voice-observer-failure",
+      event.data.sessionId,
     );
   }
 
@@ -440,6 +500,23 @@ export class WebhookDeliverer {
       payload.projectId,
       delivery.endpointId,
     );
+    if (
+      eventWork !== undefined &&
+      event === undefined &&
+      (eventWork.sourceKind === "voice-session-event" ||
+        eventWork.sourceKind === "voice-transcript" ||
+        eventWork.sourceKind === "voice-observer-failure")
+    ) {
+      this.#logger.warn("voice.webhook_source_missing", {
+        projectId: payload.projectId,
+        eventId: delivery.eventId,
+        sourceKind: eventWork.sourceKind,
+      });
+      return {
+        type: "reschedule",
+        runAfter: new Date(this.#now().valueOf() + 1_000).toISOString(),
+      };
+    }
     if (eventWork === undefined || event === undefined || !endpoint?.active) {
       await this.deliveryStore.markRecoveryFailed(
         payload.projectId,
@@ -581,7 +658,9 @@ export class WebhookDeliverer {
     const retainedVolatileEvent =
       sourceKind === "execution" && this.#executionStore !== undefined
         ? false
-        : this.#rememberEvent(event);
+        : sourceKind === "trigger" || sourceKind === "execution"
+          ? this.#rememberEvent(event)
+          : false;
     const selectionRunAfter = this.#now().toISOString();
     const admission = this.workStore
       .ensureEvent({
@@ -698,6 +777,25 @@ export class WebhookDeliverer {
         projectId: eventWork.projectId,
         data: structuredClone(record),
       };
+    }
+    if (
+      eventWork.sourceKind === "voice-session-event" ||
+      eventWork.sourceKind === "voice-transcript" ||
+      eventWork.sourceKind === "voice-observer-failure"
+    ) {
+      const source = await this.voiceSourceStore.getSource(
+        eventWork.projectId,
+        eventWork.eventId,
+      );
+      if (
+        source === undefined ||
+        source.eventType !== eventWork.eventType ||
+        source.envelope.type !== eventWork.eventType ||
+        source.envelope.createdAt !== eventWork.createdAt
+      ) {
+        return undefined;
+      }
+      return structuredClone(source.envelope);
     }
     const event = this.#volatileEvents.get(
       this.#eventKey(eventWork.projectId, eventWork.eventId),

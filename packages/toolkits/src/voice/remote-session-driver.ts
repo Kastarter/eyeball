@@ -3,8 +3,6 @@ import {
   isExecutionId,
   type NormalizedToolError,
   TOOL_ERROR_CODES,
-  type TranscriptArtifact,
-  type TranscriptTurn,
   VOICE_WORKER_CONTRACT_VERSION,
   type VoiceAgentSession,
   type VoiceAgentSessionEvent,
@@ -18,12 +16,13 @@ import {
 import {
   type VoiceSessionDriver,
   VoiceSessionDriverError,
+  type VoiceSessionDriverOperation,
+  VoiceSessionDriverTimeoutError,
 } from "./session-driver.js";
 
 export const VOICE_WORKER_WIRE_VERSION = VOICE_WORKER_CONTRACT_VERSION;
 export const VOICE_WORKER_VERSION_HEADER = "X-Eyeball-Voice-Worker-Version";
 
-const TERMINAL_STATES = new Set(["completed", "failed", "abandoned"]);
 const SESSION_STATES = new Set<VoiceAgentSessionState>([
   "created",
   "connecting",
@@ -34,11 +33,6 @@ const SESSION_STATES = new Set<VoiceAgentSessionState>([
   "abandoned",
 ]);
 const TOOL_ERROR_CODE_VALUES = new Set<string>(Object.values(TOOL_ERROR_CODES));
-
-export type VoiceWorkerObservationRequest = Omit<
-  VoiceWorkerStartSessionRequest,
-  "executorGrant"
->;
 
 function isLoopbackHostname(hostname: string): boolean {
   return (
@@ -54,19 +48,6 @@ export interface RemoteVoiceSessionDriverOptions {
   fetch?: typeof globalThis.fetch;
   /** Shared control-plane token. Required by provider-backed worker mode. */
   token?: string;
-  onEvent?: (input: {
-    request: VoiceWorkerObservationRequest;
-    event: VoiceAgentSessionEvent;
-  }) => void | Promise<void>;
-  onTranscript?: (input: {
-    request: VoiceWorkerObservationRequest;
-    transcript: TranscriptArtifact;
-  }) => void | Promise<void>;
-  onTerminal?: (input: {
-    request: VoiceWorkerObservationRequest;
-    event: VoiceAgentSessionEvent;
-  }) => void | Promise<void>;
-  pollIntervalMs?: number;
   requestTimeoutMs?: number;
 }
 
@@ -84,8 +65,30 @@ export interface VoiceWorkerHealth {
 }
 
 export class VoiceWorkerProtocolError extends VoiceSessionDriverError {
-  constructor(message: string) {
-    super(message);
+  constructor(
+    message: string,
+    context: {
+      operation?: VoiceSessionDriverOperation;
+      status?: number;
+      sessionId?: string;
+      afterSequence?: number;
+      cause?: unknown;
+    } = {},
+  ) {
+    super({
+      message,
+      kind: "invalid_response",
+      operation: context.operation ?? "local_driver",
+      retryable: false,
+      ...(context.status === undefined ? {} : { status: context.status }),
+      ...(context.sessionId === undefined
+        ? {}
+        : { sessionId: context.sessionId }),
+      ...(context.afterSequence === undefined
+        ? {}
+        : { afterSequence: context.afterSequence }),
+      ...(context.cause === undefined ? {} : { cause: context.cause }),
+    });
     this.name = "VoiceWorkerProtocolError";
   }
 }
@@ -360,108 +363,30 @@ function parseEvent(value: unknown): VoiceAgentSessionEvent {
   return structuredClone(value) as unknown as VoiceAgentSessionEvent;
 }
 
-function transcriptTurn(
-  event: VoiceAgentSessionEvent,
-  previousEndMs: number,
-): TranscriptTurn | undefined {
-  const data = event.data;
-  if (data.type === "turn.transcript") {
-    return {
-      id: data.turnId,
-      speaker: data.speaker,
-      startMs: data.startMs,
-      endMs: data.endMs,
-      text: data.text,
-    };
-  }
-  if (data.type === "tool_call") {
-    return {
-      id: `tool_${event.id}`,
-      speaker: "tool",
-      startMs: previousEndMs,
-      endMs: previousEndMs,
-      text: JSON.stringify({ type: "tool_call", input: data.input }),
-      executionId: data.executionId,
-      tool: data.tool,
-    };
-  }
-  if (data.type === "tool_result") {
-    return {
-      id: `tool_result_${event.id}`,
-      speaker: "tool",
-      startMs: previousEndMs,
-      endMs: previousEndMs,
-      text: JSON.stringify({
-        type: "tool_result",
-        ...(data.error === undefined
-          ? { output: data.output }
-          : { error: data.error }),
-      }),
-      executionId: data.executionId,
-      tool: data.tool,
-    };
-  }
-  return undefined;
+interface RequestContext {
+  readonly operation: VoiceSessionDriverOperation;
+  readonly sessionId?: string;
+  readonly afterSequence?: number;
 }
 
-function transcriptFromEvents(
-  request: VoiceWorkerObservationRequest,
-  session: VoiceAgentSession,
-  events: readonly VoiceAgentSessionEvent[],
-): TranscriptArtifact {
-  const turns: TranscriptTurn[] = [];
-  let previousEndMs = 0;
-  for (const event of events) {
-    const turn = transcriptTurn(event, previousEndMs);
-    if (turn !== undefined) {
-      turns.push(turn);
-      previousEndMs = Math.max(previousEndMs, turn.endMs);
-    }
-  }
-  return {
-    id: `transcript_${session.id}`,
-    sessionId: session.id,
-    agentId: session.agentId,
-    agentRevision: session.agentRevision,
-    transport: session.transport,
-    final: TERMINAL_STATES.has(session.state),
-    ...(request.agent.voice.stt.language === undefined
-      ? {}
-      : { language: request.agent.voice.stt.language }),
-    startedAt: session.startedAt ?? session.createdAt,
-    ...(session.completedAt === undefined
-      ? {}
-      : { endedAt: session.completedAt }),
-    turns,
-  };
+function retryAfterSeconds(response: Response): number | undefined {
+  const value = response.headers.get("retry-after");
+  if (value === null) return undefined;
+  const numeric = Number(value);
+  if (Number.isFinite(numeric) && numeric >= 0) return numeric;
+  const date = Date.parse(value);
+  return Number.isNaN(date)
+    ? undefined
+    : Math.max(0, Math.ceil((date - Date.now()) / 1_000));
 }
 
-function wait(milliseconds: number, signal: AbortSignal): Promise<void> {
-  return new Promise((resolve) => {
-    if (signal.aborted) return resolve();
-    const finish = () => {
-      clearTimeout(timeout);
-      signal.removeEventListener("abort", finish);
-      resolve();
-    };
-    const timeout = setTimeout(finish, milliseconds);
-    signal.addEventListener("abort", finish, { once: true });
-  });
-}
-
-/** Trusted TypeScript proxy for `eyeball.voice-worker.v2`. */
+/** Trusted typed HTTP client for `eyeball.voice-worker.v2`. */
 export class RemoteVoiceSessionDriver implements VoiceSessionDriver {
   readonly baseUrl: string;
   readonly expectedWireVersion = VOICE_WORKER_WIRE_VERSION;
   readonly #fetchImpl: typeof globalThis.fetch;
   readonly #token: string | undefined;
-  readonly #onEvent: RemoteVoiceSessionDriverOptions["onEvent"];
-  readonly #onTranscript: RemoteVoiceSessionDriverOptions["onTranscript"];
-  readonly #onTerminal: RemoteVoiceSessionDriverOptions["onTerminal"];
-  readonly #pollIntervalMs: number;
   readonly #requestTimeoutMs: number;
-  readonly #streams = new Map<string, AbortController>();
-  readonly #streamTasks = new Set<Promise<void>>();
 
   constructor(options: RemoteVoiceSessionDriverOptions) {
     this.baseUrl = normalizedBaseUrl(options.baseUrl);
@@ -473,13 +398,6 @@ export class RemoteVoiceSessionDriver implements VoiceSessionDriver {
       );
     }
     this.#token = token === undefined || token.length === 0 ? undefined : token;
-    this.#onEvent = options.onEvent;
-    this.#onTranscript = options.onTranscript;
-    this.#onTerminal = options.onTerminal;
-    this.#pollIntervalMs = positiveInteger(
-      options.pollIntervalMs ?? 250,
-      "pollIntervalMs",
-    );
     this.#requestTimeoutMs = positiveInteger(
       options.requestTimeoutMs ?? 10_000,
       "requestTimeoutMs",
@@ -489,13 +407,18 @@ export class RemoteVoiceSessionDriver implements VoiceSessionDriver {
   async startSession(
     request: VoiceWorkerStartSessionRequest,
   ): Promise<VoiceAgentSession> {
-    const body = this.#versionedObject(
-      await this.#json("v1/sessions", {
+    const context = {
+      operation: "start_session",
+      sessionId: request.sessionId,
+    } as const;
+    const body = this.#object(
+      await this.#json("v1/sessions", context, {
         method: "POST",
         body: JSON.stringify(request),
       }),
+      context,
     );
-    const created = parseSession(body.session);
+    const created = this.#validated(context, () => parseSession(body.session));
     if (
       created.projectId !== request.scope.projectId ||
       created.userId !== request.scope.userId ||
@@ -503,13 +426,11 @@ export class RemoteVoiceSessionDriver implements VoiceSessionDriver {
       created.agentId !== request.agent.id ||
       created.agentRevision !== request.agent.revision
     ) {
-      throw new VoiceWorkerProtocolError(
+      throw this.#protocol(
         "The voice worker returned a session outside the pinned scope.",
+        context,
       );
     }
-    const { executorGrant: _executorGrant, ...observationRequest } =
-      structuredClone(request);
-    this.#observe(created.id, observationRequest);
     return created;
   }
 
@@ -517,308 +438,372 @@ export class RemoteVoiceSessionDriver implements VoiceSessionDriver {
     sessionId: string,
     request: VoiceWorkerStopSessionRequest,
   ): Promise<VoiceAgentSession> {
-    const body = this.#versionedObject(
-      await this.#json(`v1/sessions/${encodeURIComponent(sessionId)}/stop`, {
-        method: "POST",
-        body: JSON.stringify(request),
-      }),
+    const context = { operation: "stop_session", sessionId } as const;
+    const body = this.#object(
+      await this.#json(
+        `v1/sessions/${encodeURIComponent(sessionId)}/stop`,
+        context,
+        { method: "POST", body: JSON.stringify(request) },
+      ),
+      context,
     );
-    return parseSessionForId(body.session, sessionId);
+    return this.#validated(context, () =>
+      parseSessionForId(body.session, sessionId),
+    );
   }
 
-  async getSession(sessionId: string): Promise<VoiceAgentSession> {
-    return this.#getSession(sessionId);
-  }
-
-  async #getSession(
+  async getSession(
     sessionId: string,
-    signal?: AbortSignal,
+    options: { signal?: AbortSignal } = {},
   ): Promise<VoiceAgentSession> {
-    const body = this.#versionedObject(
+    const context = { operation: "get_session", sessionId } as const;
+    const body = this.#object(
       await this.#json(
         `v1/sessions/${encodeURIComponent(sessionId)}`,
-        signal === undefined ? undefined : { signal },
+        context,
+        options.signal === undefined ? undefined : { signal: options.signal },
       ),
+      context,
     );
-    return parseSessionForId(body.session, sessionId);
+    return this.#validated(context, () =>
+      parseSessionForId(body.session, sessionId),
+    );
   }
 
   async getEvents(
     sessionId: string,
-    options: { afterSequence?: number; limit?: number } = {},
-  ): Promise<VoiceWorkerEventPage> {
-    return this.#getEvents(sessionId, options);
-  }
-
-  async #getEvents(
-    sessionId: string,
-    options: { afterSequence?: number; limit?: number } = {},
-    signal?: AbortSignal,
+    options: {
+      afterSequence?: number;
+      limit?: number;
+      signal?: AbortSignal;
+    } = {},
   ): Promise<VoiceWorkerEventPage> {
     const afterSequence = options.afterSequence ?? 0;
+    const context = {
+      operation: "get_events",
+      sessionId,
+      afterSequence,
+    } as const;
     if (!Number.isSafeInteger(afterSequence) || afterSequence < 0) {
-      throw new VoiceWorkerProtocolError(
+      throw this.#protocol(
         "afterSequence must be a non-negative integer.",
+        context,
       );
+    }
+    let limit: number;
+    try {
+      limit = eventPageLimit(options.limit ?? 50);
+    } catch (error) {
+      throw this.#contextualize(error, context);
     }
     const query = new URLSearchParams({
       afterSequence: String(afterSequence),
-      limit: String(eventPageLimit(options.limit ?? 50)),
+      limit: String(limit),
     });
-    const body = this.#versionedObject(
+    const body = this.#object(
       await this.#json(
         `v1/sessions/${encodeURIComponent(sessionId)}/events?${query.toString()}`,
-        signal === undefined ? undefined : { signal },
+        context,
+        options.signal === undefined ? undefined : { signal: options.signal },
       ),
+      context,
     );
-    if (!Array.isArray(body.events) || typeof body.hasMore !== "boolean") {
-      throw new VoiceWorkerProtocolError(
-        "The voice worker returned an invalid event page.",
-      );
-    }
-    const events = body.events.map(parseEvent);
-    if (body.hasMore && events.length === 0) {
-      throw new VoiceWorkerProtocolError(
-        "The voice worker returned an empty event page with hasMore set.",
-      );
-    }
-    let expected = afterSequence + 1;
-    for (const item of events) {
-      if (item.sessionId !== sessionId || item.sequence !== expected) {
+    return this.#validated(context, () => {
+      if (!Array.isArray(body.events) || typeof body.hasMore !== "boolean") {
         throw new VoiceWorkerProtocolError(
-          "The voice worker returned a non-contiguous event page.",
+          "The voice worker returned an invalid event page.",
         );
       }
-      expected += 1;
-    }
-    const nextSequence = events.at(-1)?.sequence ?? afterSequence;
-    if (body.nextSequence !== nextSequence) {
-      throw new VoiceWorkerProtocolError(
-        "The voice worker returned an inconsistent event cursor.",
-      );
-    }
-    return {
-      contractVersion: VOICE_WORKER_CONTRACT_VERSION,
-      events,
-      nextSequence,
-      hasMore: body.hasMore,
-    };
+      const events = body.events.map(parseEvent);
+      if (body.hasMore && events.length === 0) {
+        throw new VoiceWorkerProtocolError(
+          "The voice worker returned an empty event page with hasMore set.",
+        );
+      }
+      let expected = afterSequence + 1;
+      for (const item of events) {
+        if (item.sessionId !== sessionId || item.sequence !== expected) {
+          throw new VoiceWorkerProtocolError(
+            "The voice worker returned a non-contiguous event page.",
+          );
+        }
+        expected += 1;
+      }
+      const nextSequence = events.at(-1)?.sequence ?? afterSequence;
+      if (body.nextSequence !== nextSequence) {
+        throw new VoiceWorkerProtocolError(
+          "The voice worker returned an inconsistent event cursor.",
+        );
+      }
+      return {
+        contractVersion: VOICE_WORKER_CONTRACT_VERSION,
+        events,
+        nextSequence,
+        hasMore: body.hasMore,
+      };
+    });
   }
 
   async sendTurn(
     sessionId: string,
     request: VoiceWorkerChatTurnRequest,
   ): Promise<Omit<VoiceWorkerChatTurnResponse, "contractVersion">> {
-    const body = this.#versionedObject(
-      await this.#json(`v1/sessions/${encodeURIComponent(sessionId)}/turns`, {
-        method: "POST",
-        body: JSON.stringify(request),
-      }),
+    const context = { operation: "send_turn", sessionId } as const;
+    const body = this.#object(
+      await this.#json(
+        `v1/sessions/${encodeURIComponent(sessionId)}/turns`,
+        context,
+        { method: "POST", body: JSON.stringify(request) },
+      ),
+      context,
     );
-    if (
-      typeof body.turnId !== "string" ||
-      body.turnId.length === 0 ||
-      typeof body.assistantMessage !== "string"
-    ) {
-      throw new VoiceWorkerProtocolError(
-        "The voice worker returned an invalid turn response.",
-      );
-    }
-    return {
-      session: parseSessionForId(body.session, sessionId),
-      turnId: body.turnId,
-      assistantMessage: body.assistantMessage,
-    };
+    return this.#validated(context, () => {
+      if (
+        typeof body.turnId !== "string" ||
+        body.turnId.length === 0 ||
+        typeof body.assistantMessage !== "string"
+      ) {
+        throw new VoiceWorkerProtocolError(
+          "The voice worker returned an invalid turn response.",
+        );
+      }
+      return {
+        session: parseSessionForId(body.session, sessionId),
+        turnId: body.turnId,
+        assistantMessage: body.assistantMessage,
+      };
+    });
   }
 
   async health(): Promise<VoiceWorkerHealth> {
-    const body = this.#versionedObject(await this.#json("health"));
-    if (
-      (body.status !== "ok" && body.status !== "draining") ||
-      body.service !== "voice-worker" ||
-      typeof body.acceptingSessions !== "boolean" ||
-      !Number.isSafeInteger(body.activeSessions) ||
-      Number(body.activeSessions) < 0 ||
-      !isRecord(body.media) ||
-      (body.media.mode !== "fake" && body.media.mode !== "pipecat") ||
-      typeof body.media.pipecatInstalled !== "boolean" ||
-      typeof body.media.liveReady !== "boolean"
-    ) {
-      throw new VoiceWorkerProtocolError(
-        "The voice-worker health response is invalid.",
-      );
-    }
-    return body as unknown as VoiceWorkerHealth;
+    const context = { operation: "health" } as const;
+    const body = this.#object(await this.#json("health", context), context);
+    return this.#validated(context, () => {
+      if (
+        (body.status !== "ok" && body.status !== "draining") ||
+        body.service !== "voice-worker" ||
+        typeof body.acceptingSessions !== "boolean" ||
+        !Number.isSafeInteger(body.activeSessions) ||
+        Number(body.activeSessions) < 0 ||
+        !isRecord(body.media) ||
+        (body.media.mode !== "fake" && body.media.mode !== "pipecat") ||
+        typeof body.media.pipecatInstalled !== "boolean" ||
+        typeof body.media.liveReady !== "boolean"
+      ) {
+        throw new VoiceWorkerProtocolError(
+          "The voice-worker health response is invalid.",
+        );
+      }
+      return body as unknown as VoiceWorkerHealth;
+    });
   }
 
-  async close(): Promise<void> {
-    for (const controller of this.#streams.values()) controller.abort();
-    this.#streams.clear();
-    await Promise.allSettled([...this.#streamTasks]);
-  }
+  async close(): Promise<void> {}
 
-  #versionedObject(value: unknown): Readonly<Record<string, unknown>> {
+  #object(
+    value: unknown,
+    context: RequestContext,
+  ): Readonly<Record<string, unknown>> {
     if (!isRecord(value)) {
-      throw new VoiceWorkerProtocolError(
+      throw this.#protocol(
         "The voice worker returned non-object JSON.",
+        context,
       );
     }
     if (value.contractVersion !== this.expectedWireVersion) {
-      throw new VoiceWorkerProtocolError(
-        `Voice-worker contract ${String(value.contractVersion)} does not match ${this.expectedWireVersion}.`,
+      throw this.#protocol(
+        "The voice-worker response contract is incompatible.",
+        context,
       );
     }
     return value;
   }
 
-  async #json(path: string, init?: RequestInit): Promise<unknown> {
+  #validated<T>(context: RequestContext, parse: () => T): T {
+    try {
+      return parse();
+    } catch (error) {
+      throw this.#contextualize(error, context);
+    }
+  }
+
+  #contextualize(
+    error: unknown,
+    context: RequestContext,
+  ): VoiceSessionDriverError {
+    if (error instanceof VoiceSessionDriverError) {
+      return this.#protocol(error.message, context, error);
+    }
+    return this.#protocol(
+      "The voice worker returned an invalid response.",
+      context,
+      error,
+    );
+  }
+
+  #protocol(
+    message: string,
+    context: RequestContext,
+    cause?: unknown,
+  ): VoiceWorkerProtocolError {
+    return new VoiceWorkerProtocolError(message, {
+      operation: context.operation,
+      ...(context.sessionId === undefined
+        ? {}
+        : { sessionId: context.sessionId }),
+      ...(context.afterSequence === undefined
+        ? {}
+        : { afterSequence: context.afterSequence }),
+      ...(cause === undefined ? {} : { cause }),
+    });
+  }
+
+  #throwTransportFailure(
+    error: unknown,
+    context: RequestContext,
+    upstreamSignal: AbortSignal | null | undefined,
+    timeoutSignal: AbortSignal,
+  ): never {
+    if (upstreamSignal?.aborted === true) throw error;
+    if (timeoutSignal.aborted) {
+      throw new VoiceSessionDriverTimeoutError(
+        context.sessionId ?? "voice-worker",
+        context.afterSequence ?? 0,
+        {
+          operation: context.operation,
+          retryable: true,
+          message: "The voice-worker request timed out.",
+          cause: error,
+        },
+      );
+    }
+    throw new VoiceSessionDriverError({
+      kind: "provider_unavailable",
+      operation: context.operation,
+      message: "The voice-worker request could not be completed.",
+      retryable: true,
+      ...(context.sessionId === undefined
+        ? {}
+        : { sessionId: context.sessionId }),
+      ...(context.afterSequence === undefined
+        ? {}
+        : { afterSequence: context.afterSequence }),
+      cause: error,
+    });
+  }
+
+  async #json(
+    path: string,
+    context: RequestContext,
+    init?: RequestInit,
+  ): Promise<unknown> {
     const timeoutSignal = AbortSignal.timeout(this.#requestTimeoutMs);
     const upstreamSignal = init?.signal;
     const signal =
       upstreamSignal === undefined || upstreamSignal === null
         ? timeoutSignal
         : AbortSignal.any([upstreamSignal, timeoutSignal]);
+    const headers = new Headers(init?.headers);
+    headers.set("Accept", "application/json");
+    headers.set(VOICE_WORKER_VERSION_HEADER, this.expectedWireVersion);
+    if (init?.body !== undefined)
+      headers.set("Content-Type", "application/json");
+    if (this.#token !== undefined) {
+      headers.set("Authorization", `Bearer ${this.#token}`);
+    }
     let response: Response;
     try {
-      response = await this.#versionedFetch(new URL(path, this.baseUrl), {
+      response = await this.#fetchImpl(new URL(path, this.baseUrl), {
         ...init,
         signal,
-        headers: {
-          ...(init?.body === undefined
-            ? {}
-            : { "Content-Type": "application/json" }),
-          ...init?.headers,
-        },
+        headers,
+        redirect: "manual",
       });
     } catch (error) {
-      if (error instanceof VoiceWorkerProtocolError) throw error;
-      throw new VoiceWorkerProtocolError(
-        timeoutSignal.aborted
-          ? `Voice-worker request timed out after ${this.#requestTimeoutMs}ms.`
-          : "The voice worker could not be reached.",
+      this.#throwTransportFailure(
+        error,
+        context,
+        upstreamSignal,
+        timeoutSignal,
       );
     }
     if (!response.ok) {
+      const status = response.status;
+      if (status === 408) {
+        throw new VoiceSessionDriverError({
+          kind: "timeout",
+          operation: context.operation,
+          message: "The voice-worker request timed out.",
+          retryable: true,
+          status,
+          ...(context.sessionId === undefined
+            ? {}
+            : { sessionId: context.sessionId }),
+          ...(context.afterSequence === undefined
+            ? {}
+            : { afterSequence: context.afterSequence }),
+        });
+      }
+      if (status === 429 || status >= 500) {
+        const retryAfter = retryAfterSeconds(response);
+        throw new VoiceSessionDriverError({
+          kind: "provider_unavailable",
+          operation: context.operation,
+          message: "The voice worker is temporarily unavailable.",
+          retryable: true,
+          status,
+          ...(retryAfter === undefined ? {} : { retryAfter }),
+          ...(context.sessionId === undefined
+            ? {}
+            : { sessionId: context.sessionId }),
+          ...(context.afterSequence === undefined
+            ? {}
+            : { afterSequence: context.afterSequence }),
+        });
+      }
       throw new VoiceWorkerProtocolError(
-        `Voice-worker request failed with HTTP ${response.status}.`,
+        "The voice worker rejected the request.",
+        {
+          operation: context.operation,
+          status,
+          ...(context.sessionId === undefined
+            ? {}
+            : { sessionId: context.sessionId }),
+          ...(context.afterSequence === undefined
+            ? {}
+            : { afterSequence: context.afterSequence }),
+        },
+      );
+    }
+    const actualVersion = response.headers.get(VOICE_WORKER_VERSION_HEADER);
+    if (actualVersion !== this.expectedWireVersion) {
+      throw this.#protocol(
+        actualVersion === null
+          ? `The voice worker omitted ${VOICE_WORKER_VERSION_HEADER}.`
+          : "The voice-worker response contract is incompatible.",
+        context,
       );
     }
     try {
       return await response.json();
-    } catch {
-      throw new VoiceWorkerProtocolError(
+    } catch (error) {
+      if (
+        upstreamSignal?.aborted === true ||
+        timeoutSignal.aborted ||
+        !(error instanceof SyntaxError)
+      ) {
+        this.#throwTransportFailure(
+          error,
+          context,
+          upstreamSignal,
+          timeoutSignal,
+        );
+      }
+      throw this.#protocol(
         "The voice worker returned non-JSON data.",
+        context,
+        error,
       );
-    }
-  }
-
-  readonly #versionedFetch: typeof globalThis.fetch = async (input, init) => {
-    const headers = new Headers(init?.headers);
-    headers.set("Accept", "application/json");
-    headers.set(VOICE_WORKER_VERSION_HEADER, this.expectedWireVersion);
-    if (this.#token !== undefined) {
-      headers.set("Authorization", `Bearer ${this.#token}`);
-    }
-    const response = await this.#fetchImpl(input, {
-      ...init,
-      headers,
-      redirect: "manual",
-    });
-    const actualVersion = response.headers.get(VOICE_WORKER_VERSION_HEADER);
-    if (actualVersion !== this.expectedWireVersion) {
-      throw new VoiceWorkerProtocolError(
-        actualVersion === null
-          ? `The voice worker omitted ${VOICE_WORKER_VERSION_HEADER}.`
-          : `Voice-worker contract ${actualVersion} does not match ${this.expectedWireVersion}.`,
-      );
-    }
-    return response;
-  };
-
-  #observe(sessionId: string, request: VoiceWorkerObservationRequest): void {
-    if (
-      this.#onEvent === undefined &&
-      this.#onTranscript === undefined &&
-      this.#onTerminal === undefined
-    )
-      return;
-    this.#streams.get(sessionId)?.abort();
-    const controller = new AbortController();
-    this.#streams.set(sessionId, controller);
-    const task = this.#consumeEvents(
-      sessionId,
-      request,
-      controller.signal,
-    ).finally(() => {
-      if (this.#streams.get(sessionId) === controller) {
-        this.#streams.delete(sessionId);
-      }
-      this.#streamTasks.delete(task);
-    });
-    this.#streamTasks.add(task);
-  }
-
-  async #consumeEvents(
-    sessionId: string,
-    request: VoiceWorkerObservationRequest,
-    signal: AbortSignal,
-  ): Promise<void> {
-    const events: VoiceAgentSessionEvent[] = [];
-    let cursor = 0;
-    let consecutiveFailures = 0;
-    let terminalObserved = false;
-    while (!signal.aborted) {
-      try {
-        let page = await this.#getEvents(
-          sessionId,
-          {
-            afterSequence: cursor,
-            limit: 200,
-          },
-          signal,
-        );
-        for (;;) {
-          for (const event of page.events) {
-            const terminal =
-              event.data.type === "session.lifecycle" &&
-              TERMINAL_STATES.has(event.data.to);
-            if (terminal && !terminalObserved) {
-              await this.#onTerminal?.({ request, event });
-              terminalObserved = true;
-            }
-            await this.#onEvent?.({ request, event });
-            cursor = event.sequence;
-            events.push(event);
-          }
-          if (!page.hasMore) break;
-          page = await this.#getEvents(
-            sessionId,
-            {
-              afterSequence: cursor,
-              limit: 200,
-            },
-            signal,
-          );
-        }
-        consecutiveFailures = 0;
-        const terminalEvent = events.findLast(
-          (event) =>
-            event.data.type === "session.lifecycle" &&
-            TERMINAL_STATES.has(event.data.to),
-        );
-        if (terminalEvent !== undefined) {
-          const session = await this.#getSession(sessionId, signal);
-          await this.#onTranscript?.({
-            request,
-            transcript: transcriptFromEvents(request, session, events),
-          });
-          return;
-        }
-      } catch {
-        consecutiveFailures += 1;
-        if (consecutiveFailures >= 20) return;
-      }
-      await wait(this.#pollIntervalMs, signal);
     }
   }
 }

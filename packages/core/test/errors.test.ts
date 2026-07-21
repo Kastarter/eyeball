@@ -17,6 +17,19 @@ describe("error taxonomy", () => {
     expect(error.retryable).toBe(false);
   });
 
+  it("keeps timeout non-retryable by default while allowing a seam override", () => {
+    expect(
+      new EyeballError({ code: "timeout", message: "default" }).retryable,
+    ).toBe(false);
+    expect(
+      new EyeballError({
+        code: "timeout",
+        message: "remote read",
+        retryable: true,
+      }).retryable,
+    ).toBe(true);
+  });
+
   it.each([
     [400, "invalid_input", false, {}],
     [401, "auth_missing", false, {}],

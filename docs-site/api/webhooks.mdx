@@ -19,7 +19,9 @@ All routes require `Authorization: Bearer <project-api-key>`. Because endpoints 
 
 The `201` response includes `endpointId`, normalized `url`, `events`, `active`, `createdAt`, `updatedAt`, `secretPrefix`, and the complete `secret`. The complete secret appears only in this response.
 
-Supported subscriptions are `execution.completed`, `execution.succeeded`, `execution.failed`, `voice.session.event`, `voice.transcript.ready`, `trigger.*`, and exact canonical trigger event types such as `trigger.slack.message_received`.
+Supported subscriptions are `execution.completed`, `execution.succeeded`, `execution.failed`, `voice.session.event`, `voice.transcript.ready`, `voice.observer.failed`, `trigger.*`, and exact canonical trigger event types such as `trigger.slack.message_received`.
+
+`voice.observer.failed` is an executor-owned terminal observation signal, not a worker-sequenced lifecycle event. Its data contains `sessionId`, pinned `agentId`/`agentRevision`, `lastHandledSequence`, `attempts`, `reason` (`retry_exhausted` or `non_retryable`), a safe observer `operation`, and a normalized public `error`. It does not alter the worker-owned session state; use the stable webhook event ID for receiver deduplication.
 
 ## List and get endpoints
 

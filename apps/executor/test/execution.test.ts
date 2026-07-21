@@ -16,6 +16,7 @@ import {
   TOOL_ERROR_CODES,
   VOICE_WORKER_EXECUTION_ID_HEADER,
 } from "@eyeball/core";
+import { VoiceSessionDriverError } from "@eyeball/toolkits";
 import { Hono } from "hono";
 import { describe, expect, it, vi } from "vitest";
 import {
@@ -1119,6 +1120,35 @@ describe("RFC 001 execution API", () => {
         retryable: false,
       },
       requestId: "req_test",
+    });
+  });
+
+  it.each([
+    ["provider_unavailable", "provider_unavailable", true],
+    ["timeout", "timeout", true],
+    ["invalid_response", "provider_error", false],
+  ] as const)("preserves typed voice-driver %s errors through execution normalization", async (kind, code, retryable) => {
+    const harness = createHarness({
+      beforeAdapterExecute: async () => {
+        throw new VoiceSessionDriverError({
+          message: "Safe voice worker failure.",
+          kind,
+          operation: "get_session",
+          ...(kind === "timeout" ? { retryable: true } : {}),
+        });
+      },
+    });
+
+    const response = await postExecute(harness.app, executeRequest("voice"));
+
+    expect(response.status).toBe(200);
+    expect(await response.json()).toMatchObject({
+      status: "failed",
+      error: {
+        code,
+        message: "Safe voice worker failure.",
+        retryable,
+      },
     });
   });
 

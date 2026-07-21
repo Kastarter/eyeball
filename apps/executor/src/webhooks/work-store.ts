@@ -19,7 +19,8 @@ export type WebhookEventSourceKind =
   | "execution"
   | "trigger"
   | "voice-session-event"
-  | "voice-transcript";
+  | "voice-transcript"
+  | "voice-observer-failure";
 
 export interface WebhookEventAdmission
   extends Omit<WebhookEventWork, "sequence" | "materializedAt"> {

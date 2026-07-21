@@ -26,6 +26,9 @@ The main event names and fields are:
 | `webhook.delivery_attempt` | `endpointId`, `attempt`, `status`, optional HTTP `statusCode` |
 | `trigger.ingest` | `subscriptionId`, `trigger`, status or accepted/duplicate counts, `deduped` |
 | `trigger.poll` | `subscriptionId`, `trigger`, status, emitted/duplicate counts, `deduped` |
+| `voice.observer_reconciled` | bounded `backfilled` and `claimed` counts from the startup pass |
+| `voice.observer_retry_scheduled` | `projectId`, `sessionId`, `attempts`, `failureKind`, safe `operation`, `nextAttemptAt` |
+| `voice.observer_exhausted` | `projectId`, `sessionId`, `agentId`, `agentRevision`, `handledSequence`, `attempts`, `failureKind`, safe `operation`, `reason`, `exhaustedAt` |
 | `rate_limit.rejected` | `projectId`, safe bucket name, and `tool` when applicable |
 | `credential.resolution_failed` | execution or subscription identity, toolkit/tool context, and failure `kind` only |
 
@@ -106,6 +109,8 @@ This is also the test seam: use in-memory span exporters and metric readers, not
 
 Provider HTTP spans never include the full URL, path, query, headers, request body, response body, or credential. Error spans contain an error class/code only, not a message or stack.
 
+Voice-observer logs are intentionally narrower than arbitrary exceptions. They may contain only the bounded identities, counters, timestamps, normalized failure kind, safe operation, and reason listed above. They must never contain the worker URL or bearer token, authorization headers, session-grant material, webhook URL or signing secret, transcript text, raw response body, provider payload, or an arbitrary exception message/cause.
+
 ## Metric reference
 
 | Metric | Type | Labels | Meaning |
@@ -124,6 +129,6 @@ Label values are deliberately bounded operational identifiers. Never add project
 
 ## Graceful shutdown
 
-The stock server handles `SIGINT` and `SIGTERM`. It stops accepting requests, trigger polling, and new job claims; drains jobs owned by the process; hands still-pending durable jobs back to Postgres; performs the bounded usage-outbox drain; closes persistence; and then shuts down OpenTelemetry so buffered spans and metrics can flush. The zero-config in-memory queue waits until its locally admitted work is idle because it has nowhere durable to hand off.
+The stock server handles `SIGINT` and `SIGTERM`. It stops accepting requests, trigger polling, new observer tasks, and new job claims; aborts observer poll waits, releases owned observer leases without changing cursor/retry state, drains jobs owned by the process, hands still-pending durable jobs back to Postgres, performs the bounded usage-outbox drain, closes persistence, and then shuts down OpenTelemetry so buffered spans and metrics can flush. The zero-config in-memory queue and observer wait until locally admitted work is idle because they have nowhere durable to hand off.
 
 Custom server entry points should stop their HTTP listener and call `ExecutorRuntime.close()` before exiting. Collectors, retention, dashboards, alerts, and telemetry-backend access control remain deployment responsibilities.

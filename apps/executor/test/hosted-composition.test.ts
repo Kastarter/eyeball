@@ -7,6 +7,7 @@ import {
   createExecutorApp,
   createExecutorRuntime,
   createJsonLineLogger,
+  createPgliteStoreBundle,
   RemoteKeyAuthenticator,
 } from "../src/index.js";
 
@@ -270,6 +271,7 @@ describe("stock hosted runtime composition", () => {
         '"voiceWorkerExecutionAuthMode":"session_grant"',
       );
       expect(serialized).toContain('"grantStateDurability":"process_local"');
+      expect(serialized).toContain('"observerStateDurability":"process_local"');
       expect(serialized).not.toContain(VOICE_GRANT_SECRET);
     } finally {
       await runtime.close();
@@ -280,6 +282,37 @@ describe("stock hosted runtime composition", () => {
     const runtime = await createExecutorRuntime({ env: {} });
     try {
       expect(runtime.voiceSessionGrantVerifier).toBeUndefined();
+    } finally {
+      await runtime.close();
+    }
+  });
+
+  it("reports Postgres observer durability without logging voice secrets", async () => {
+    const lines: string[] = [];
+    const bundle = await createPgliteStoreBundle();
+    const workerUrl = "https://voice-worker.private.example.test";
+    const workerToken = "voice-worker-control-test-token-at-least-32-bytes";
+    const webhookSecret = "whsec_private_observer_fixture";
+    const runtime = await createExecutorRuntime({
+      env: {
+        EYEBALL_DATABASE_URL: "postgresql://hosted.invalid/eyeball",
+        EYEBALL_VOICE_WORKER_URL: workerUrl,
+        EYEBALL_VOICE_WORKER_TOKEN: workerToken,
+        EYEBALL_VOICE_SESSION_GRANT_SECRET: VOICE_GRANT_SECRET,
+      },
+      persistenceFactory: async () => bundle,
+      telemetry: {
+        logger: createJsonLineLogger({ sink: (line) => lines.push(line) }),
+      },
+    });
+
+    try {
+      const serialized = lines.join("\n");
+      expect(serialized).toContain('"observerStateDurability":"postgres"');
+      expect(serialized).not.toContain(workerUrl);
+      expect(serialized).not.toContain(workerToken);
+      expect(serialized).not.toContain(VOICE_GRANT_SECRET);
+      expect(serialized).not.toContain(webhookSecret);
     } finally {
       await runtime.close();
     }

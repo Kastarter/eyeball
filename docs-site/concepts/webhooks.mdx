@@ -35,12 +35,13 @@ The creation response contains a `whsec_...` signing secret. It is returned exac
 | `execution.failed` | `execution.failed` | Emitted after a failed execution record is durable. |
 | `voice.session.event` | `voice.session.event` | Carries a selected durable `VoiceAgentSessionEvent`. Both the scripted development driver and configured remote worker feed this delivery seam. |
 | `voice.transcript.ready` | `voice.transcript.ready` | Emitted after a configured remote worker observes a terminal session and materializes its normalized transcript. |
+| `voice.observer.failed` | `voice.observer.failed` | Executor-owned terminal signal that durable observation exhausted its retry budget or rejected a non-retryable worker response. It reports the pinned agent, last handled sequence, attempts, safe operation/reason, and normalized error without changing worker session state. |
 | `trigger.*` | Any `trigger.<toolkit>.<name>` | Wildcard selector for every trigger directed to the endpoint. |
 | `trigger.<toolkit>.<name>` | The same exact event type | Selects one canonical trigger, such as `trigger.gmail.email_received`. |
 
 Voice-agent definitions still select granular session events such as `session.lifecycle`, `tool_call`, and `tool_result`, and reference one or more project endpoint IDs. The endpoint itself subscribes to the outer `voice.session.event` class.
 
-Remote-worker events are durable in the worker, while the executor-side polling observer is currently process-local. If the executor restarts during a remote session, query the durable event stream and transcript after recovery; do not rely on webhook delivery as the only record of the session.
+Remote-worker events remain authoritative in the worker. With Postgres, the executor persists a lease-fenced observer cursor/retry state and source-first voice envelopes, then reconciles unfinished sessions at startup. The normal poll resumes after the last durably handled sequence, while terminal transcript finalization rereads the complete worker history. Without Postgres, the observer and voice sources remain process-local.
 
 Every request body uses this envelope:
 
@@ -52,6 +53,7 @@ type WebhookEvent = {
     | "execution.failed"
     | "voice.session.event"
     | "voice.transcript.ready"
+    | "voice.observer.failed"
     | `trigger.${string}.${string}`;
   createdAt: string;
   projectId: string;
@@ -119,6 +121,6 @@ Delivery is at least once. Store processed event IDs and make handlers idempoten
 
 Eyeball processes one delivery at a time per endpoint. Retries for an earlier event finish or exhaust before a later event is attempted on that same endpoint. This is best-effort per-endpoint order, not global order: different endpoints progress independently, and duplicate delivery remains possible.
 
-Without `EYEBALL_DATABASE_URL`, the stock endpoint, delivery, work, and job stores are process-local and a restart loses pending deliveries. With Postgres, Eyeball persists the exact raw body and selected endpoint URL/secret, admits deterministic ID-only jobs, retains retry deadlines, and restores unfinished selection and delivery work before workers begin claiming after restart. Production self-hosters still need delivery metrics, exhausted-attempt alerts, backups, restore drills, and receiver-side event-ID deduplication.
+Without `EYEBALL_DATABASE_URL`, the stock endpoint, delivery, work, job, voice-observer, and voice-source stores are process-local and a restart loses pending work. With Postgres, execution envelopes reconstruct from durable execution records and voice envelopes reconstruct from `voice_webhook_sources`; trigger payloads remain process-local until their own durable source work ships. Deterministic ID-only jobs retain retry deadlines and restore unfinished selection/delivery before task workers claim after restart. Actual HTTP delivery remains at least once, so production self-hosters still need delivery metrics, exhausted-attempt alerts, backups, restore drills, and receiver-side event-ID deduplication.
 
 See the [webhook API reference](/api/webhooks) for route shapes and [Triggers](/concepts/triggers) for subscription and payload semantics.

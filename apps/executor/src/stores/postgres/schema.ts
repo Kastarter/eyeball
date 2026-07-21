@@ -32,6 +32,16 @@ import type {
   UsageOutboxState,
   UsageReportPayload,
 } from "../../usage/outbox.js";
+import type {
+  VoiceObserverFailureKind,
+  VoiceObserverOperation,
+  VoiceObserverStatus,
+  VoiceObserverTranscriptStatus,
+} from "../../voice/observer-store.js";
+import type {
+  VoiceWebhookEvent,
+  VoiceWebhookSourceKind,
+} from "../../webhooks/voice-source-store.js";
 import type { WebhookEventSourceKind } from "../../webhooks/work-store.js";
 
 const timestampColumn = (name: string) =>
@@ -183,6 +193,117 @@ export const voiceAgentSessionPointers = pgTable(
     uniqueIndex("voice_agent_session_pointers_grant_id_unique")
       .on(table.grantId)
       .where(sql`${table.grantId} IS NOT NULL`),
+  ],
+);
+
+export const voiceAgentSessionObservers = pgTable(
+  "voice_agent_session_observers",
+  {
+    sessionId: text("session_id").primaryKey(),
+    handledSequence: integer("handled_sequence").default(0).notNull(),
+    status: text("status").$type<VoiceObserverStatus>().notNull(),
+    terminalSequence: integer("terminal_sequence"),
+    terminalHandledAt: timestampColumn("terminal_handled_at"),
+    transcriptStatus: text("transcript_status")
+      .$type<VoiceObserverTranscriptStatus>()
+      .notNull(),
+    transcriptHandledAt: timestampColumn("transcript_handled_at"),
+    consecutiveFailures: integer("consecutive_failures").default(0).notNull(),
+    lastFailureKind:
+      text("last_failure_kind").$type<VoiceObserverFailureKind>(),
+    lastFailureOperation: text(
+      "last_failure_operation",
+    ).$type<VoiceObserverOperation>(),
+    lastFailureAt: timestampColumn("last_failure_at"),
+    nextAttemptAt: timestampColumn("next_attempt_at"),
+    exhaustedAt: timestampColumn("exhausted_at"),
+    exhaustionSignaledAt: timestampColumn("exhaustion_signaled_at"),
+    leaseOwner: text("lease_owner"),
+    leaseToken: text("lease_token"),
+    leaseExpiresAt: timestampColumn("lease_expires_at"),
+    createdAt: timestampColumn("created_at").notNull(),
+    updatedAt: timestampColumn("updated_at").notNull(),
+  },
+  (table) => [
+    foreignKey({
+      columns: [table.sessionId],
+      foreignColumns: [voiceAgentSessionPointers.sessionId],
+      name: "voice_agent_session_observers_pointer_fk",
+    }).onDelete("cascade"),
+    index("voice_agent_session_observers_recovery_idx").on(
+      table.status,
+      table.nextAttemptAt,
+      table.leaseExpiresAt,
+      table.sessionId,
+    ),
+    check(
+      "voice_agent_session_observers_handled_nonnegative",
+      sql`${table.handledSequence} >= 0`,
+    ),
+    check(
+      "voice_agent_session_observers_failures_nonnegative",
+      sql`${table.consecutiveFailures} >= 0`,
+    ),
+    check(
+      "voice_agent_session_observers_status_check",
+      sql`${table.status} IN ('prepared', 'observing', 'finalizing', 'completed', 'exhausted', 'cancelled')`,
+    ),
+    check(
+      "voice_agent_session_observers_transcript_check",
+      sql`${table.transcriptStatus} IN ('pending', 'admitted', 'skipped')`,
+    ),
+    check(
+      "voice_agent_session_observers_terminal_sequence_positive",
+      sql`${table.terminalSequence} IS NULL OR ${table.terminalSequence} >= 1`,
+    ),
+    check(
+      "voice_agent_session_observers_terminal_handling_check",
+      sql`${table.terminalHandledAt} IS NULL OR ${table.terminalSequence} IS NOT NULL`,
+    ),
+    check(
+      "voice_agent_session_observers_transcript_handling_check",
+      sql`(${table.transcriptStatus} = 'pending' AND ${table.transcriptHandledAt} IS NULL) OR (${table.transcriptStatus} IN ('admitted', 'skipped') AND ${table.transcriptHandledAt} IS NOT NULL)`,
+    ),
+    check(
+      "voice_agent_session_observers_failure_metadata_check",
+      sql`(${table.consecutiveFailures} = 0 AND ${table.lastFailureKind} IS NULL AND ${table.lastFailureOperation} IS NULL AND ${table.lastFailureAt} IS NULL) OR (${table.consecutiveFailures} > 0 AND ${table.lastFailureKind} IS NOT NULL AND ${table.lastFailureOperation} IS NOT NULL AND ${table.lastFailureAt} IS NOT NULL)`,
+    ),
+    check(
+      "voice_agent_session_observers_failure_kind_check",
+      sql`${table.lastFailureKind} IS NULL OR ${table.lastFailureKind} IN ('provider_unavailable', 'timeout', 'invalid_response', 'publication_error', 'internal_error')`,
+    ),
+    check(
+      "voice_agent_session_observers_failure_operation_check",
+      sql`${table.lastFailureOperation} IS NULL OR ${table.lastFailureOperation} IN ('get_events', 'get_session', 'publish_event', 'publish_transcript', 'publish_failure')`,
+    ),
+    check(
+      "voice_agent_session_observers_lease_complete",
+      sql`(${table.leaseOwner} IS NULL AND ${table.leaseToken} IS NULL AND ${table.leaseExpiresAt} IS NULL) OR (${table.leaseOwner} IS NOT NULL AND ${table.leaseToken} IS NOT NULL AND ${table.leaseExpiresAt} IS NOT NULL)`,
+    ),
+    check(
+      "voice_agent_session_observers_exhaustion_check",
+      sql`(${table.status} = 'exhausted' AND ${table.exhaustedAt} IS NOT NULL) OR (${table.status} <> 'exhausted' AND ${table.exhaustedAt} IS NULL)`,
+    ),
+    check(
+      "voice_agent_session_observers_signal_check",
+      sql`${table.exhaustionSignaledAt} IS NULL OR ${table.exhaustedAt} IS NOT NULL`,
+    ),
+    check(
+      "voice_agent_session_observers_finalization_check",
+      sql`${table.status} NOT IN ('finalizing', 'completed') OR (${table.terminalSequence} IS NOT NULL AND ${table.terminalHandledAt} IS NOT NULL)`,
+    ),
+    check(
+      "voice_agent_session_observers_completion_check",
+      sql`${table.status} <> 'completed' OR ${table.transcriptStatus} IN ('admitted', 'skipped')`,
+    ),
+    check(
+      "voice_agent_session_observers_terminal_lease_check",
+      sql`(${table.status} NOT IN ('completed', 'cancelled') OR ${table.leaseOwner} IS NULL) AND (${table.status} <> 'exhausted' OR ${table.exhaustionSignaledAt} IS NULL OR ${table.leaseOwner} IS NULL)`,
+    ),
+    check(
+      "voice_agent_session_observers_terminal_schedule_check",
+      sql`${table.status} NOT IN ('completed', 'exhausted', 'cancelled') OR ${table.nextAttemptAt} IS NULL`,
+    ),
   ],
 );
 
@@ -532,7 +653,49 @@ export const webhookEvents = pgTable(
     ),
     check(
       "webhook_events_source_kind_check",
-      sql`${table.sourceKind} IN ('execution', 'trigger', 'voice-session-event', 'voice-transcript')`,
+      sql`${table.sourceKind} IN ('execution', 'trigger', 'voice-session-event', 'voice-transcript', 'voice-observer-failure')`,
+    ),
+  ],
+);
+
+export const voiceWebhookSources = pgTable(
+  "voice_webhook_sources",
+  {
+    projectId: text("project_id").notNull(),
+    eventId: text("event_id").notNull(),
+    sessionId: text("session_id").notNull(),
+    eventType: text("event_type").$type<VoiceWebhookEvent["type"]>().notNull(),
+    sourceKind: text("source_kind").$type<VoiceWebhookSourceKind>().notNull(),
+    workerSequence: integer("worker_sequence"),
+    envelope: jsonb("envelope").$type<VoiceWebhookEvent>().notNull(),
+    createdAt: timestampColumn("created_at").notNull(),
+  },
+  (table) => [
+    primaryKey({ columns: [table.projectId, table.eventId] }),
+    foreignKey({
+      columns: [table.sessionId],
+      foreignColumns: [voiceAgentSessionPointers.sessionId],
+      name: "voice_webhook_sources_session_fk",
+    }).onDelete("cascade"),
+    uniqueIndex("voice_webhook_sources_worker_sequence_uidx")
+      .on(table.sessionId, table.workerSequence)
+      .where(sql`${table.workerSequence} IS NOT NULL`),
+    index("voice_webhook_sources_session_created_idx").on(
+      table.sessionId,
+      table.createdAt,
+      table.eventId,
+    ),
+    check(
+      "voice_webhook_sources_sequence_check",
+      sql`(${table.sourceKind} = 'session_event' AND ${table.workerSequence} IS NOT NULL AND ${table.workerSequence} >= 1) OR (${table.sourceKind} IN ('transcript', 'observer_failure') AND ${table.workerSequence} IS NULL)`,
+    ),
+    check(
+      "voice_webhook_sources_type_check",
+      sql`(${table.sourceKind} = 'session_event' AND ${table.eventType} = 'voice.session.event') OR (${table.sourceKind} = 'transcript' AND ${table.eventType} = 'voice.transcript.ready') OR (${table.sourceKind} = 'observer_failure' AND ${table.eventType} = 'voice.observer.failed')`,
+    ),
+    check(
+      "voice_webhook_sources_envelope_identity_check",
+      sql`${table.envelope}->>'id' = ${table.eventId} AND ${table.envelope}->>'type' = ${table.eventType} AND ${table.envelope}->>'projectId' = ${table.projectId} AND ${table.envelope}->'data'->>'sessionId' = ${table.sessionId}`,
     ),
   ],
 );
@@ -597,6 +760,7 @@ export const postgresSchema = {
   voiceAgentRevisions,
   voiceAgentNumberBindings,
   voiceAgentSessionPointers,
+  voiceAgentSessionObservers,
   voiceAgentMessageReceipts,
   stagedFiles,
   executions,
@@ -607,6 +771,7 @@ export const postgresSchema = {
   webhookDeliveries,
   webhookDeliveryAttempts,
   webhookEvents,
+  voiceWebhookSources,
   triggerSubscriptions,
   triggerStates,
   triggerDedupClaims,

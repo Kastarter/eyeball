@@ -254,7 +254,9 @@ it("migrates the durable voice-agent aggregate with exact revision constraints",
     "voice_agent_revisions",
     "voice_agent_number_bindings",
     "voice_agent_session_pointers",
+    "voice_agent_session_observers",
     "voice_agent_message_receipts",
+    "voice_webhook_sources",
   ];
   const columns = await bundle.client.query<{
     table_name: string;
@@ -291,6 +293,8 @@ it("migrates the durable voice-agent aggregate with exact revision constraints",
   expect(names.has("voice_agent_revisions_agent_fk")).toBe(true);
   expect(names.has("voice_agent_number_bindings_revision_fk")).toBe(true);
   expect(names.has("voice_agent_session_pointers_revision_fk")).toBe(true);
+  expect(names.has("voice_agent_session_observers_pointer_fk")).toBe(true);
+  expect(names.has("voice_webhook_sources_session_fk")).toBe(true);
   expect(
     [...names].some((name) =>
       name.startsWith(
@@ -315,6 +319,12 @@ it("migrates the durable voice-agent aggregate with exact revision constraints",
     true,
   );
   expect(indexNames.has("voice_agent_session_pointers_grant_id_unique")).toBe(
+    true,
+  );
+  expect(indexNames.has("voice_agent_session_observers_recovery_idx")).toBe(
+    true,
+  );
+  expect(indexNames.has("voice_webhook_sources_worker_sequence_uidx")).toBe(
     true,
   );
   expect(
@@ -1032,4 +1042,212 @@ it("leaves a webhook delivery owned by a healthy replica untouched during recove
     state: "running",
     claimedBy: "healthy-worker",
   });
+});
+
+it("persists observer checkpoints, lease fencing, backfill, and voice sources across restart", async () => {
+  const directory = await mkdtemp(join(tmpdir(), "eyeball-observer-restart-"));
+  const projectId = "project_observer_restart";
+  const userId = "user_observer_restart";
+  const sessionId = "session_observer_restart";
+  const now = "2026-07-21T11:00:00.000Z";
+  const event = {
+    id: "voice_event_observer_restart_1",
+    type: "voice.session.event" as const,
+    createdAt: now,
+    projectId,
+    data: {
+      id: "voice_event_observer_restart_1",
+      sessionId,
+      sequence: 1,
+      createdAt: now,
+      data: { type: "session.lifecycle" as const, to: "created" as const },
+    },
+  };
+  let first: PgliteStoreBundle | undefined;
+  try {
+    first = await createPgliteStoreBundle({ dataDir: directory });
+    const agent = await first.agentStore.createAgent(
+      projectId,
+      contractAgentDraft,
+      now,
+    );
+    const pointer = {
+      sessionId,
+      projectId,
+      userId,
+      agentId: agent.id,
+      agentRevision: agent.revision,
+      callId: `call_${sessionId}`,
+      createdAt: now,
+    };
+    await first.agentStore.rememberSession(pointer);
+    await first.voiceObserverStore.ensurePrepared(
+      pointer,
+      now,
+      "2026-07-21T11:01:00.000Z",
+    );
+    await expect(
+      first.voiceObserverStore.claim({
+        leaseOwner: "observer-before-start-resolves",
+        now,
+        leaseExpiresAt: "2026-07-21T11:01:00.000Z",
+        limit: 1,
+      }),
+    ).resolves.toEqual([]);
+    await first.voiceObserverStore.activatePrepared(sessionId, now);
+    const [claim] = await first.voiceObserverStore.claim({
+      leaseOwner: "observer-a",
+      now,
+      leaseExpiresAt: "2026-07-21T11:01:00.000Z",
+      limit: 1,
+    });
+    if (claim === undefined) throw new Error("Expected an observer claim.");
+    await expect(
+      first.voiceObserverStore.advanceSequence({
+        sessionId,
+        leaseOwner: claim.leaseOwner,
+        leaseToken: claim.leaseToken,
+        now,
+        expectedSequence: 0,
+        handledSequence: 1,
+      }),
+    ).resolves.toBe(true);
+    await expect(
+      first.voiceObserverStore.advanceSequence({
+        sessionId,
+        leaseOwner: claim.leaseOwner,
+        leaseToken: claim.leaseToken,
+        now,
+        expectedSequence: 0,
+        handledSequence: 1,
+      }),
+    ).resolves.toBe(false);
+    await first.voiceObserverStore.recordFailure({
+      sessionId,
+      leaseOwner: claim.leaseOwner,
+      leaseToken: claim.leaseToken,
+      now,
+      kind: "timeout",
+      operation: "get_events",
+      failedAt: now,
+      nextAttemptAt: "2026-07-21T11:02:00.000Z",
+    });
+    await first.voiceObserverStore.release({
+      sessionId,
+      leaseOwner: claim.leaseOwner,
+      leaseToken: claim.leaseToken,
+      now,
+    });
+    await first.voiceWebhookSourceStore.ensureSource({
+      projectId,
+      eventId: event.id,
+      sessionId,
+      eventType: event.type,
+      sourceKind: "session_event",
+      workerSequence: 1,
+      envelope: event,
+      createdAt: now,
+    });
+
+    const backfillSessionId = "session_observer_backfill";
+    await first.agentStore.rememberSession({
+      ...pointer,
+      sessionId: backfillSessionId,
+      callId: `call_${backfillSessionId}`,
+    });
+    await expect(
+      first.voiceObserverStore.backfillMissing({ now, limit: 10 }),
+    ).resolves.toBe(1);
+    await expect(
+      first.voiceObserverStore.backfillMissing({ now, limit: 10 }),
+    ).resolves.toBe(0);
+    await first.close();
+    first = undefined;
+
+    const restored = await createPgliteStoreBundle({ dataDir: directory });
+    try {
+      await expect(
+        restored.voiceObserverStore.get(sessionId),
+      ).resolves.toMatchObject({
+        status: "observing",
+        handledSequence: 1,
+        consecutiveFailures: 1,
+        lastFailureKind: "timeout",
+        nextAttemptAt: "2026-07-21T11:02:00.000Z",
+      });
+      await expect(
+        restored.voiceObserverStore.claim({
+          leaseOwner: "observer-too-early",
+          now: "2026-07-21T11:01:59.000Z",
+          leaseExpiresAt: "2026-07-21T11:02:59.000Z",
+          limit: 1,
+        }),
+      ).resolves.toEqual([
+        expect.objectContaining({ sessionId: "session_observer_backfill" }),
+      ]);
+      const [restoredClaim] = await restored.voiceObserverStore.claim({
+        leaseOwner: "observer-b",
+        now: "2026-07-21T11:02:00.000Z",
+        leaseExpiresAt: "2026-07-21T11:03:00.000Z",
+        limit: 10,
+      });
+      if (restoredClaim === undefined) {
+        throw new Error("Expected restored observer claim.");
+      }
+      await expect(
+        restored.voiceObserverStore.claim({
+          leaseOwner: "observer-c",
+          now: "2026-07-21T11:02:30.000Z",
+          leaseExpiresAt: "2026-07-21T11:03:30.000Z",
+          limit: 10,
+        }),
+      ).resolves.toEqual([]);
+      await expect(
+        restored.voiceObserverStore.advanceSequence({
+          sessionId,
+          leaseOwner: "observer-a",
+          leaseToken: "stale-token",
+          now: "2026-07-21T11:02:30.000Z",
+          expectedSequence: 1,
+          handledSequence: 2,
+        }),
+      ).resolves.toBe(false);
+      await expect(
+        restored.voiceWebhookSourceStore.getSource(projectId, event.id),
+      ).resolves.toMatchObject({
+        sourceKind: "session_event",
+        workerSequence: 1,
+        envelope: event,
+      });
+      await expect(
+        restored.voiceWebhookSourceStore.ensureSource({
+          projectId,
+          eventId: event.id,
+          sessionId,
+          eventType: event.type,
+          sourceKind: "session_event",
+          workerSequence: 1,
+          envelope: event,
+          createdAt: now,
+        }),
+      ).resolves.toBe("existing");
+      await expect(
+        restored.voiceWebhookSourceStore.ensureSource({
+          projectId,
+          eventId: event.id,
+          sessionId,
+          eventType: event.type,
+          sourceKind: "session_event",
+          workerSequence: 1,
+          envelope: { ...event, createdAt: "2026-07-21T11:00:01.000Z" },
+          createdAt: now,
+        }),
+      ).rejects.toThrow("reused with different content");
+    } finally {
+      await restored.close();
+    }
+  } finally {
+    await first?.close();
+    await rm(directory, { recursive: true, force: true });
+  }
 });

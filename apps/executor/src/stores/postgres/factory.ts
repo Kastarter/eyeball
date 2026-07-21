@@ -16,8 +16,10 @@ import type { ExecutionStore } from "../../store.js";
 import type { TriggerStateStore } from "../../triggers/state-store.js";
 import type { TriggerSubscriptionStore } from "../../triggers/subscription-store.js";
 import type { UsageOutboxStore } from "../../usage/outbox.js";
+import type { VoiceSessionObserverStore } from "../../voice/observer-store.js";
 import type { WebhookDeliveryStore } from "../../webhooks/delivery-store.js";
 import type { WebhookEndpointStore } from "../../webhooks/endpoint-store.js";
+import type { VoiceWebhookSourceStore } from "../../webhooks/voice-source-store.js";
 import type { WebhookWorkStore } from "../../webhooks/work-store.js";
 import { PostgresAgentStore } from "./agent-store.js";
 import type { EyeballPostgresDatabase } from "./database.js";
@@ -29,6 +31,8 @@ import { type PostgresSchema, postgresSchema } from "./schema.js";
 import { PostgresTriggerStateStore } from "./trigger-state-store.js";
 import { PostgresTriggerSubscriptionStore } from "./trigger-subscription-store.js";
 import { PostgresUsageOutboxStore } from "./usage-outbox-store.js";
+import { PostgresVoiceSessionObserverStore } from "./voice-observer-store.js";
+import { PostgresVoiceWebhookSourceStore } from "./voice-source-store.js";
 import { PostgresWebhookDeliveryStore } from "./webhook-delivery-store.js";
 import { PostgresWebhookEndpointStore } from "./webhook-endpoint-store.js";
 import { PostgresWebhookWorkStore } from "./webhook-work-store.js";
@@ -44,6 +48,8 @@ export interface PostgresStoreSet {
   usageOutboxStore: UsageOutboxStore;
   jobStore: JobStore;
   webhookWorkStore: WebhookWorkStore;
+  voiceObserverStore: VoiceSessionObserverStore;
+  voiceWebhookSourceStore: VoiceWebhookSourceStore;
 }
 
 export interface PgStoreBundle extends PostgresStoreSet {
@@ -87,6 +93,8 @@ function stores<TQueryResult extends PgQueryResultHKT>(
     usageOutboxStore: new PostgresUsageOutboxStore(database),
     jobStore: new PostgresJobStore(database),
     webhookWorkStore: new PostgresWebhookWorkStore(database),
+    voiceObserverStore: new PostgresVoiceSessionObserverStore(database),
+    voiceWebhookSourceStore: new PostgresVoiceWebhookSourceStore(database),
   };
 }
 

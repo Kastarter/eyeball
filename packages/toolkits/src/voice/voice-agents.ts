@@ -7,8 +7,6 @@ import {
   TOOL_ERROR_CODES,
   type ToolDefinition,
   type ToolkitAdapter,
-  type TranscriptArtifact,
-  type TranscriptTurn,
   VOICE_WORKER_CONTRACT_VERSION,
   type VoiceAgentDefinition,
   type VoiceAgentDraft,
@@ -38,6 +36,7 @@ import {
   unsupportedTool,
 } from "../messaging/common.js";
 import type { VoiceSessionDriver } from "./session-driver.js";
+import { voiceTranscriptFromEvents } from "./transcript.js";
 import { resolveOutboundTransport } from "./transport-resolver.js";
 
 export interface VoiceAgentBinding {
@@ -76,6 +75,17 @@ export interface VoiceSessionGrantIssuer {
     grantId: string;
     expiresAt: string;
   }>;
+}
+
+/** Executor-owned lifecycle seam that makes remote starts restart-recoverable. */
+export interface VoiceSessionObservationLifecycle {
+  prepare(pointer: VoiceAgentSessionPointer): Promise<void>;
+  activate(pointer: VoiceAgentSessionPointer): Promise<void>;
+  /** Returns the authoritative session when an ambiguous start was reconciled. */
+  handleStartFailure(input: {
+    pointer: VoiceAgentSessionPointer;
+    error: unknown;
+  }): Promise<VoiceAgentSession | undefined>;
 }
 
 export interface VoiceAgentMessageReceipt {
@@ -779,50 +789,6 @@ async function allEvents(
   }
 }
 
-function transcriptTurn(
-  event: VoiceAgentSessionEvent,
-  previousEndMs: number,
-): TranscriptTurn | undefined {
-  const data = event.data;
-  if (data.type === "turn.transcript") {
-    return {
-      id: data.turnId,
-      speaker: data.speaker,
-      startMs: data.startMs,
-      endMs: data.endMs,
-      text: data.text,
-    };
-  }
-  if (data.type === "tool_call") {
-    return {
-      id: `tool_${event.id}`,
-      speaker: "tool",
-      startMs: previousEndMs,
-      endMs: previousEndMs,
-      text: JSON.stringify({ type: "tool_call", input: data.input }),
-      executionId: data.executionId,
-      tool: data.tool,
-    };
-  }
-  if (data.type === "tool_result") {
-    return {
-      id: `tool_result_${event.id}`,
-      speaker: "tool",
-      startMs: previousEndMs,
-      endMs: previousEndMs,
-      text: JSON.stringify({
-        type: "tool_result",
-        ...(data.error === undefined
-          ? { output: data.output }
-          : { error: data.error }),
-      }),
-      executionId: data.executionId,
-      tool: data.tool,
-    };
-  }
-  return undefined;
-}
-
 function cursorOffset(
   context: AdapterContext,
   cursor: string | undefined,
@@ -860,6 +826,7 @@ export interface VoiceAgentsAdapterOptions {
   resolveTool?: (name: QualifiedToolName) => ToolDefinition | undefined;
   executeProviderTool?: VoiceProviderToolExecutor;
   voiceSessionGrantIssuer?: VoiceSessionGrantIssuer;
+  remoteObservationLifecycle?: VoiceSessionObservationLifecycle;
 }
 
 /** Native RFC 002 adapter backed by an injectable revision store and Pipecat. */
@@ -873,6 +840,9 @@ export class VoiceAgentsAdapter implements ToolkitAdapter {
     | undefined;
   readonly #executeProviderTool: VoiceProviderToolExecutor | undefined;
   readonly #voiceSessionGrantIssuer: VoiceSessionGrantIssuer | undefined;
+  readonly #remoteObservationLifecycle:
+    | VoiceSessionObservationLifecycle
+    | undefined;
   #webSessionSequence = 0;
 
   constructor(options: VoiceAgentsAdapterOptions = {}) {
@@ -882,6 +852,7 @@ export class VoiceAgentsAdapter implements ToolkitAdapter {
     this.#resolveTool = options.resolveTool;
     this.#executeProviderTool = options.executeProviderTool;
     this.#voiceSessionGrantIssuer = options.voiceSessionGrantIssuer;
+    this.#remoteObservationLifecycle = options.remoteObservationLifecycle;
   }
 
   private sessionRuntimeContext(context: AdapterContext): AdapterContext {
@@ -1247,8 +1218,18 @@ export class VoiceAgentsAdapter implements ToolkitAdapter {
         ? {}
         : { grantId: issued.grantId, grantExpiresAt: issued.expiresAt }),
     };
-    if (issued !== undefined) {
-      await this.store.rememberSession(pointer);
+    await this.store.rememberSession(pointer);
+    try {
+      await this.#remoteObservationLifecycle?.prepare(pointer);
+    } catch (error) {
+      await this.store.revokeSessionGrant({
+        projectId: context.projectId,
+        userId: context.userId,
+        sessionId,
+        ...(issued === undefined ? {} : { grantId: issued.grantId }),
+        revokedAt: context.clock.now().toISOString(),
+      });
+      throw error;
     }
     try {
       const session = await this.#sessionDriver.startSession({
@@ -1269,8 +1250,28 @@ export class VoiceAgentsAdapter implements ToolkitAdapter {
         createdAt: session.createdAt,
       };
       await this.store.rememberSession(updated);
+      await this.#remoteObservationLifecycle?.activate(updated);
       return { pointer: updated, session };
     } catch (error) {
+      if (this.#remoteObservationLifecycle !== undefined) {
+        const reconciled =
+          await this.#remoteObservationLifecycle.handleStartFailure({
+            pointer,
+            error,
+          });
+        if (reconciled !== undefined) {
+          assertTrustedSession(context, reconciled, pointer);
+          const updated = {
+            ...pointer,
+            callId: `call_${reconciled.id}`,
+            createdAt: reconciled.createdAt,
+          };
+          await this.store.rememberSession(updated);
+          await this.#remoteObservationLifecycle.activate(updated);
+          return { pointer: updated, session: reconciled };
+        }
+        throw error;
+      }
       await this.store.revokeSessionGrant({
         projectId: context.projectId,
         userId: context.userId,
@@ -1688,35 +1689,7 @@ export class VoiceAgentsAdapter implements ToolkitAdapter {
       session.agentRevision,
     );
     const events = await this.remoteAllEvents(context, sessionId);
-    const turns: TranscriptTurn[] = [];
-    let previousEndMs = 0;
-    for (const event of events) {
-      const turn = transcriptTurn(event, previousEndMs);
-      if (turn !== undefined) {
-        turns.push(turn);
-        previousEndMs = Math.max(previousEndMs, turn.endMs);
-      }
-    }
-    const final =
-      session.state === "completed" ||
-      session.state === "failed" ||
-      session.state === "abandoned";
-    const artifact: TranscriptArtifact = {
-      id: `transcript_${session.id}`,
-      sessionId: session.id,
-      agentId: session.agentId,
-      agentRevision: session.agentRevision,
-      transport: session.transport,
-      final,
-      ...(agent.voice.stt.language === undefined
-        ? {}
-        : { language: agent.voice.stt.language }),
-      startedAt: session.startedAt ?? session.createdAt,
-      ...(session.completedAt === undefined
-        ? {}
-        : { endedAt: session.completedAt }),
-      turns,
-    };
+    const artifact = voiceTranscriptFromEvents(agent, session, events);
     return asJson({ artifact });
   }
 

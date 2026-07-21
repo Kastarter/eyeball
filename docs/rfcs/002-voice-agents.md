@@ -590,8 +590,46 @@ aliases, accept any 2xx, and retry other outcomes with the fixed bounded schedul
 Execution-terminal webhooks remain the RFC 001 event types. The request-driven development
 session driver publishes selected session events through this path today. The production Python
 worker persists sessions, ordered events, and transcript artifacts in SQLite and exposes its
-event stream to the executor. Executor-side remote-event observation and webhook publication
-remain process-local, however, so a restart-safe observer or outbox is still required.
+event stream to the executor.
+
+When Postgres is configured, the executor maintains one lease-fenced
+`voice_agent_session_observers` record per remote session. `handled_sequence` means the greatest
+worker sequence whose required executor effects have completed durably; it is not the greatest
+sequence fetched. For each selected worker event the observer first stores the complete canonical
+envelope in `voice_webhook_sources`, then admits deterministic RFC 001 work, then advances the
+cursor with the expected previous sequence and current lease token. Terminal grant revocation and
+its durable marker also precede the terminal cursor checkpoint. A crash before the checkpoint
+replays the same stable event/source/work identity; a crash after it can reconstruct the body on
+another executor replica from the shared source row.
+
+At startup, ordinary job recovery runs first, then observer reconciliation backfills any missing
+observer row, claims only expired or unowned work, and resumes normal polling after the durable
+cursor. A session that became terminal while the executor was down is drained through the worker's
+authoritative `lastEventSequence`, its grant is revoked idempotently, and finalization fetches the
+complete ordered history from sequence zero to rebuild the normalized transcript. That full-history
+read is separate from cursor resumption and does not re-admit session-event webhooks. Without
+Postgres, observer records and voice source envelopes use process-local memory and do not survive
+restart.
+
+The observer persists capped exponential retries and a 20-consecutive-failure ceiling. Exhaustion
+emits one redacted `voice.observer_exhausted` log and admits one deterministic
+`voice.observer.failed` webhook containing the pinned agent identity, last handled sequence,
+attempt count, safe operation, reason, and normalized error. This event is executor-owned: it is
+outside `VoiceAgentSessionEventData`, has no worker sequence, does not synthesize a lifecycle
+event, and does not alter the worker-owned session state. An exhausted row whose failure webhook
+has not yet been admitted remains eligible for startup reconciliation.
+
+The remote driver classifies failures without parsing message text:
+
+| Driver kind | Public error | Retryable at the remote worker seam |
+| --- | --- | --- |
+| `provider_unavailable` | `provider_unavailable` | yes |
+| `timeout` | `timeout` | yes |
+| `invalid_response` | `provider_error` | no |
+
+`invalid_response` remains an internal driver kind and does not extend the public
+`ToolErrorCode` registry. Caller shutdown cancellation is control flow rather than a transport
+failure and does not consume the durable observer retry budget.
 
 In the restaurant transcript, the tool turns reference the child execution IDs for
 `google-calendar.create_event` and `gmail.send_email`. Sensitive provider detail is absent,

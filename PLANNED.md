@@ -3,7 +3,8 @@
 State as of 2026-07-21. The 0.2.0 source cut is complete, and two audit sweeps
 (cross-feature wiring; dashboard/SDK/docs parity) produced a milestone-ordered
 gap ledger. Milestones **M1 (hosted execution slice)**, **M2 (billing as a
-product)**, and **M3 (restart-state durability)** are DONE. This file lists what
+product)**, **M3 (restart-state durability)**, and **M4 (voice hardening)** are
+DONE. This file lists what
 remains, in the intended order. Each item was scoped from audit findings with `file:line` evidence — search the
 audit IDs (A-xx, SEC-xxx, CLOUD-xxx) in `docs/SECURITY.md`, `cloud/SECURITY.md`,
 and the git history for full context.
@@ -36,22 +37,22 @@ change. Never bind ports in tests; use in-process apps (`app.request`, PGlite).
   sessions/tasks; and zero-database memory fallbacks. Audit finding 7 tail.
   M3 closes restart-state loss for these records, not general multi-replica
   certification: distributed trigger polling, global rate/concurrency limits,
-  remote voice observation, backup/restore, and load/chaos evidence remain open.
+  backup/restore, and load/chaos evidence remain open.
 - M4.1 Per-session executor grants: v2 worker contract; executor-owned session
   IDs; short-lived HMAC capabilities scoped to audience/project/user/session/
   expiry/tool allowlist; durable grant identity and revocation; terminal worker
   bearer erasure; static pinned-key fallback; and two-user isolation coverage.
   SEC-004 / audit finding 5.
-
-## M4 — Voice hardening (multi-tenant + observability)
-
-5. **M4.2 Observer durability + transport error taxonomy.** Remote voice event
-   forwarding can silently stop after 20 retries and never survives executor
-   restart (`remote-session-driver.ts:724,742`); worker outages surface as
-   non-retryable `provider_error` (`engine.ts:359`). Persist observer cursors,
-   reconcile at boot, surface retry exhaustion; split driver error kinds into
-   `provider_unavailable`/`timeout` (retryable) vs `invalid_response`.
-   Audit findings 9–10.
+- M4.2 Observer durability + transport error taxonomy: durable lease-fenced
+  observer cursor/phase/retry records; source-first durable voice webhook
+  envelopes; cursor checkpoints only after durable publication and terminal
+  handling; boot reconciliation; terminal grant and complete-history transcript
+  recovery; redacted deterministic exhaustion signaling; and structured driver
+  kinds for retryable `provider_unavailable`/`timeout` versus non-retryable
+  `invalid_response`. This closes cross-feature audit ordinals 9–10, which are
+  not the unrelated `SEC-009` and `SEC-010` entries in `docs/SECURITY.md`. M4
+  closes the defined hardening item, not live-provider certification,
+  production backup/restore drills, or managed multi-replica load/chaos proof.
 
 ## M5 — Local dashboard surfaces (demo mode; executor APIs mostly exist)
 

@@ -43,6 +43,13 @@
       "when": 1784611919590,
       "tag": "0005_voice_session_grants",
       "breakpoints": true
+    },
+    {
+      "idx": 6,
+      "version": "7",
+      "when": 1784625706537,
+      "tag": "0006_durable_voice_observers",
+      "breakpoints": true
     }
   ]
 }

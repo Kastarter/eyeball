@@ -18,8 +18,12 @@ import {
   AdapterRegistry,
   createExecutorApp,
   ExecutionEngine,
+  InMemoryJobStore,
+  InMemoryTaskQueue,
+  InMemoryVoiceWebhookSourceStore,
   InMemoryWebhookDeliveryStore,
   InMemoryWebhookEndpointStore,
+  InMemoryWebhookWorkStore,
   type ToolkitAdapter,
   WebhookDeliverer,
 } from "../src/index.js";
@@ -215,6 +219,8 @@ async function createEndpoint(
     | "execution.completed"
     | "execution.failed"
     | "voice.session.event"
+    | "voice.transcript.ready"
+    | "voice.observer.failed"
   )[] = ["execution.completed"],
 ) {
   return harness.endpointStore.create(PROJECT_ID, {
@@ -642,5 +648,193 @@ describe("signed webhook delivery", () => {
       outcome.response.executionId,
     );
     expect(execution.status).toBe("succeeded");
+  });
+});
+
+describe("durable voice webhook sources", () => {
+  it("reconstructs session, transcript, and observer-failure bodies on a new deliverer", async () => {
+    const received: string[] = [];
+    const receiver = new Hono();
+    receiver.post("/hook", async (context) => {
+      const body = (await context.req.json()) as { type: string };
+      received.push(body.type);
+      return context.body(null, 204);
+    });
+    const clock = new ManualWebhookClock();
+    const endpointStore = new InMemoryWebhookEndpointStore();
+    const deliveryStore = new InMemoryWebhookDeliveryStore();
+    const jobStore = new InMemoryJobStore();
+    const workStore = new InMemoryWebhookWorkStore(deliveryStore, jobStore);
+    const sourceStore = new InMemoryVoiceWebhookSourceStore();
+    const dormantQueue = new InMemoryTaskQueue({ jobStore, clock });
+    const first = new WebhookDeliverer({
+      endpointStore,
+      deliveryStore,
+      workStore,
+      voiceSourceStore: sourceStore,
+      queue: dormantQueue,
+      fetchImpl: inProcessFetch(receiver),
+      clock,
+    });
+    const endpoint = await endpointStore.create(PROJECT_ID, {
+      url: "https://receiver.example.test/hook",
+      events: [
+        "voice.session.event",
+        "voice.transcript.ready",
+        "voice.observer.failed",
+      ],
+      active: true,
+      createdAt: START,
+    });
+    const sessionId = "session_durable_voice_source";
+    await first.enqueueVoiceSessionEvent({
+      projectId: PROJECT_ID,
+      endpointIds: [endpoint.endpointId],
+      event: {
+        id: "voice_event_durable_source",
+        sessionId,
+        sequence: 1,
+        createdAt: START,
+        data: { type: "session.lifecycle", to: "created" },
+      },
+    });
+    await first.enqueueVoiceTranscript({
+      projectId: PROJECT_ID,
+      endpointIds: [endpoint.endpointId],
+      createdAt: START,
+      transcript: {
+        id: `transcript_${sessionId}`,
+        sessionId,
+        agentId: "va_durable_source",
+        agentRevision: 1,
+        transport: "chat",
+        final: true,
+        startedAt: START,
+        turns: [],
+      },
+    });
+    const failure = {
+      sessionId,
+      agentId: "va_durable_source",
+      agentRevision: 1,
+      lastHandledSequence: 1,
+      attempts: 20,
+      reason: "retry_exhausted" as const,
+      operation: "get_events" as const,
+      error: {
+        code: "provider_unavailable" as const,
+        message: "The remote voice worker is unavailable.",
+        retryable: true,
+      },
+    };
+    await first.enqueueVoiceObserverFailure({
+      projectId: PROJECT_ID,
+      endpointIds: [endpoint.endpointId],
+      createdAt: START,
+      data: failure,
+    });
+    await first.enqueueVoiceObserverFailure({
+      projectId: PROJECT_ID,
+      endpointIds: [endpoint.endpointId],
+      createdAt: START,
+      data: failure,
+    });
+
+    const resumedQueue = new InMemoryTaskQueue({ jobStore, clock });
+    const resumed = new WebhookDeliverer({
+      endpointStore,
+      deliveryStore,
+      workStore,
+      voiceSourceStore: sourceStore,
+      queue: resumedQueue,
+      fetchImpl: inProcessFetch(receiver),
+      clock,
+    });
+    resumedQueue.bindHandlers({
+      "execution.run.v1": async () => ({ type: "complete" }),
+      "webhook.select.v1": (payload, context) =>
+        resumed.handleWebhookSelectJob(payload, context),
+      "webhook.deliver.v1": (payload, context) =>
+        resumed.handleWebhookDeliverJob(payload, context),
+    });
+    resumedQueue.start();
+    await until(async () => {
+      await resumedQueue.runOnce();
+      return received.length === 3;
+    }, "Reconstructed voice webhook jobs did not run.");
+    await resumed.onIdle();
+
+    expect(received.sort()).toEqual([
+      "voice.observer.failed",
+      "voice.session.event",
+      "voice.transcript.ready",
+    ]);
+    const page = await deliveryStore.list(PROJECT_ID, endpoint.endpointId, {
+      limit: 100,
+    });
+    expect(page.deliveries).toHaveLength(3);
+    await resumedQueue.stopClaiming();
+    await resumedQueue.drainOwned();
+  });
+
+  it("defers legacy voice work whose durable source has not been rehydrated", async () => {
+    const clock = new ManualWebhookClock();
+    const endpointStore = new InMemoryWebhookEndpointStore();
+    const deliveryStore = new InMemoryWebhookDeliveryStore();
+    const jobStore = new InMemoryJobStore();
+    const workStore = new InMemoryWebhookWorkStore(deliveryStore, jobStore);
+    const endpoint = await endpointStore.create(PROJECT_ID, {
+      url: "https://receiver.example.test/hook",
+      events: ["voice.session.event"],
+      active: true,
+      createdAt: START,
+    });
+    await workStore.ensureEvent({
+      projectId: PROJECT_ID,
+      eventId: "legacy_voice_event",
+      eventType: "voice.session.event",
+      sourceKind: "voice-session-event",
+      sourceId: "legacy_voice_event",
+      endpointIds: [endpoint.endpointId],
+      createdAt: START,
+      selectionRunAfter: START,
+    });
+    const [materialized] = await workStore.materializeEvent({
+      projectId: PROJECT_ID,
+      eventId: "legacy_voice_event",
+      endpointIds: [endpoint.endpointId],
+      materializedAt: START,
+    });
+    if (materialized === undefined)
+      throw new Error("Expected delivery materialization.");
+    const deliverer = new WebhookDeliverer({
+      endpointStore,
+      deliveryStore,
+      workStore,
+      voiceSourceStore: new InMemoryVoiceWebhookSourceStore(),
+      queue: new InMemoryTaskQueue({ jobStore, clock }),
+      clock,
+    });
+    const result = await deliverer.handleWebhookDeliverJob(
+      {
+        projectId: PROJECT_ID,
+        deliveryId: materialized.delivery.deliveryId,
+      },
+      {
+        jobId: "job_missing_voice_source",
+        queueName: "webhook-delivery",
+        leaseAttempt: 1,
+        signal: new AbortController().signal,
+        now: () => clock.now().toISOString(),
+      },
+    );
+
+    expect(result).toEqual({
+      type: "reschedule",
+      runAfter: "2026-07-17T12:00:01.000Z",
+    });
+    await expect(
+      deliveryStore.get(PROJECT_ID, materialized.delivery.deliveryId),
+    ).resolves.toMatchObject({ status: "pending" });
   });
 });

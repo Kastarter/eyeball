@@ -11,6 +11,9 @@ import {
   TwilioAdapter,
   VoiceAgentsAdapter,
   type VoiceSessionDriver,
+  VoiceSessionDriverError,
+  VoiceSessionDriverTimeoutError,
+  type VoiceSessionObservationLifecycle,
 } from "@eyeball/toolkits";
 import { describe, expect, it, vi } from "vitest";
 import {
@@ -19,6 +22,10 @@ import {
   createTwilioMock,
 } from "../../../../mocks/packages/mocks-voice/dist/index.js";
 import { createVoiceSessionGrantAuthority } from "../../src/index.js";
+import { InMemoryVoiceSessionObserverStore } from "../../src/voice/memory-observer-store.js";
+import { RemoteVoiceSessionObserver } from "../../src/voice/remote-session-observer.js";
+import { WebhookDeliverer } from "../../src/webhooks/deliverer.js";
+import { InMemoryVoiceWebhookSourceStore } from "../../src/webhooks/memory-voice-source-store.js";
 import { createVoiceMockHarness, output } from "./helpers.js";
 
 const agentDraft = {
@@ -80,10 +87,14 @@ class RecordingRemoteDriver implements VoiceSessionDriver {
   readonly starts: VoiceWorkerStartSessionRequest[] = [];
   readonly stops: string[] = [];
   readonly sessions = new Map<string, VoiceAgentSession>();
+  readonly terminalSessions = new Set<string>();
+  readonly getSessionCalls: string[] = [];
   beforeStart?: (request: VoiceWorkerStartSessionRequest) => Promise<void>;
   beforeStop?: (sessionId: string) => Promise<void>;
   replaceSessionId = false;
   failStart = false;
+  startError?: unknown;
+  commitTerminalBeforeStartError = false;
   failGet = false;
 
   async startSession(
@@ -91,7 +102,12 @@ class RecordingRemoteDriver implements VoiceSessionDriver {
   ): Promise<VoiceAgentSession> {
     this.starts.push(structuredClone(request));
     await this.beforeStart?.(request);
+    if (this.startError !== undefined && !this.commitTerminalBeforeStartError) {
+      throw this.startError;
+    }
     if (this.failStart) throw new Error("worker start failed");
+    const terminal =
+      this.startError !== undefined && this.commitTerminalBeforeStartError;
     const session: VoiceAgentSession = {
       id: this.replaceSessionId
         ? "session_ffffffffffffffffffffffffffffffff"
@@ -101,11 +117,19 @@ class RecordingRemoteDriver implements VoiceSessionDriver {
       agentId: request.agent.id,
       agentRevision: request.agent.revision,
       transport: request.transport.kind === "twilio" ? "pstn:twilio" : "chat",
-      state: "created",
+      state: terminal ? "completed" : "created",
       createdAt: "2026-07-21T10:00:00.000Z",
+      ...(terminal
+        ? {
+            startedAt: "2026-07-21T10:00:00.000Z",
+            completedAt: "2026-07-21T10:00:01.000Z",
+          }
+        : {}),
       lastEventSequence: 1,
     };
     this.sessions.set(session.id, session);
+    if (terminal) this.terminalSessions.add(session.id);
+    if (this.startError !== undefined) throw this.startError;
     return session;
   }
 
@@ -119,19 +143,73 @@ class RecordingRemoteDriver implements VoiceSessionDriver {
   }
 
   async getSession(sessionId: string): Promise<VoiceAgentSession> {
+    this.getSessionCalls.push(sessionId);
     if (this.failGet) throw new Error("worker get failed");
     return this.requireSession(sessionId);
   }
 
-  async getEvents(): Promise<VoiceWorkerEventPage> {
-    return { events: [], nextSequence: 0, hasMore: false };
+  async getEvents(
+    sessionId: string,
+    options: { afterSequence?: number; limit?: number } = {},
+  ): Promise<VoiceWorkerEventPage> {
+    const afterSequence = options.afterSequence ?? 0;
+    const events = this.terminalSessions.has(sessionId)
+      ? [
+          {
+            id: `event_${sessionId}_terminal`,
+            sessionId,
+            sequence: 1,
+            createdAt: "2026-07-21T10:00:01.000Z",
+            data: {
+              type: "session.lifecycle" as const,
+              to: "completed" as const,
+            },
+          },
+        ].filter((event) => event.sequence > afterSequence)
+      : [];
+    return {
+      events,
+      nextSequence: events.at(-1)?.sequence ?? afterSequence,
+      hasMore: false,
+    };
   }
 
   private requireSession(sessionId: string): VoiceAgentSession {
     const session = this.sessions.get(sessionId);
-    if (session === undefined) throw new Error("session missing");
+    if (session === undefined) {
+      throw new VoiceSessionDriverError({
+        message: "The voice worker rejected the request.",
+        kind: "invalid_response",
+        operation: "get_session",
+        retryable: false,
+        status: 404,
+        sessionId,
+      });
+    }
     return structuredClone(session);
   }
+}
+
+function createObservationLifecycle(
+  agentStore: InMemoryAgentStore,
+  driver: VoiceSessionDriver,
+): {
+  observer: RemoteVoiceSessionObserver;
+  store: InMemoryVoiceSessionObserverStore;
+} {
+  const store = new InMemoryVoiceSessionObserverStore();
+  return {
+    store,
+    observer: new RemoteVoiceSessionObserver({
+      store,
+      agentStore,
+      driver,
+      webhookDeliverer: new WebhookDeliverer({
+        voiceSourceStore: new InMemoryVoiceWebhookSourceStore(),
+      }),
+      automaticScheduling: false,
+    }),
+  };
 }
 
 describe("native voice-agents toolkit", () => {
@@ -406,7 +484,228 @@ describe("native voice-agents toolkit", () => {
     expect(failedStatic.terminal.status).toBe("failed");
     await expect(
       failedStaticStore.listSessions("proj_voice_mocks", "user_voice_mocks"),
-    ).resolves.toEqual([]);
+    ).resolves.toEqual([
+      expect.objectContaining({
+        projectId: "proj_voice_mocks",
+        userId: "user_voice_mocks",
+      }),
+    ]);
+  });
+
+  it("prepares static pointers before dispatch and retains ambiguous starts", async () => {
+    const store = new InMemoryAgentStore();
+    const driver = new RecordingRemoteDriver();
+    driver.startError = new VoiceSessionDriverTimeoutError("pending", 0, {
+      operation: "start_session",
+      retryable: true,
+    });
+    const calls: string[] = [];
+    const lifecycle: VoiceSessionObservationLifecycle = {
+      prepare: async (pointer) => {
+        calls.push("prepare");
+        await expect(
+          store.getSession(
+            pointer.projectId,
+            pointer.userId,
+            pointer.sessionId,
+          ),
+        ).resolves.toMatchObject({ sessionId: pointer.sessionId });
+      },
+      activate: async () => {
+        calls.push("activate");
+      },
+      handleStartFailure: async ({ pointer, error }) => {
+        calls.push("reconcile");
+        expect(error).toMatchObject({
+          kind: "timeout",
+          retryable: true,
+          operation: "start_session",
+        });
+        await expect(
+          store.getSession(
+            pointer.projectId,
+            pointer.userId,
+            pointer.sessionId,
+          ),
+        ).resolves.toMatchObject({ sessionId: pointer.sessionId });
+        return undefined;
+      },
+    };
+    driver.beforeStart = async () => {
+      calls.push("start");
+    };
+    const harness = createVoiceMockHarness(
+      createPipecatMock(),
+      { type: "none" },
+      {
+        toolkitSlug: "voice-agents",
+        adapter: new VoiceAgentsAdapter({
+          store,
+          sessionDriver: driver,
+          remoteObservationLifecycle: lifecycle,
+          resolveTool: (name) => defaultCatalog.getTool(name),
+        }),
+      },
+    );
+    const agent = object(
+      output(
+        await harness.execute("voice-agents.create_voice_agent", {
+          agent: remoteAgentDraft,
+        }),
+      ).agent,
+    );
+
+    const result = await harness.execute(
+      "voice-agents.start_agent_call",
+      {
+        agentId: String(agent.id),
+        revision: 1,
+        to: "+15550001111",
+        from: "+15550002222",
+        transportConnectionId: "conn_voice_test",
+      },
+      "async",
+    );
+
+    expect(result.terminal.status).toBe("failed");
+    expect(calls).toEqual(["prepare", "start", "reconcile"]);
+    const pointers = await store.listSessions(
+      "proj_voice_mocks",
+      "user_voice_mocks",
+    );
+    expect(pointers).toHaveLength(1);
+    expect(pointers[0]).not.toHaveProperty("grantId");
+  });
+
+  it("activates an ambiguously committed terminal session exactly once", async () => {
+    const store = new InMemoryAgentStore();
+    const driver = new RecordingRemoteDriver();
+    driver.commitTerminalBeforeStartError = true;
+    driver.startError = new VoiceSessionDriverTimeoutError("pending", 0, {
+      operation: "start_session",
+      retryable: true,
+    });
+    const observation = createObservationLifecycle(store, driver);
+    const harness = createVoiceMockHarness(
+      createPipecatMock(),
+      { type: "none" },
+      {
+        toolkitSlug: "voice-agents",
+        adapter: new VoiceAgentsAdapter({
+          store,
+          sessionDriver: driver,
+          remoteObservationLifecycle: observation.observer,
+          resolveTool: (name) => defaultCatalog.getTool(name),
+        }),
+      },
+    );
+    const agent = object(
+      output(
+        await harness.execute("voice-agents.create_voice_agent", {
+          agent: remoteAgentDraft,
+        }),
+      ).agent,
+    );
+
+    const result = await harness.execute(
+      "voice-agents.start_agent_call",
+      {
+        agentId: String(agent.id),
+        revision: 1,
+        to: "+15550001111",
+        from: "+15550002222",
+        transportConnectionId: "conn_voice_test",
+      },
+      "async",
+    );
+
+    expect(result.terminal.status).toBe("succeeded");
+    const sessionId = String(object(output(result).session).id);
+    await expect(observation.store.get(sessionId)).resolves.toMatchObject({
+      status: "completed",
+      handledSequence: 1,
+      terminalSequence: 1,
+    });
+    await observation.observer.close();
+  });
+
+  it("keeps a fresh prepared observer out of claims until delayed start succeeds", async () => {
+    const store = new InMemoryAgentStore();
+    const driver = new RecordingRemoteDriver();
+    let releaseStart = () => {};
+    const startGate = new Promise<void>((resolve) => {
+      releaseStart = resolve;
+    });
+    let markStartEntered = () => {};
+    const startEntered = new Promise<void>((resolve) => {
+      markStartEntered = resolve;
+    });
+    driver.beforeStart = async () => {
+      markStartEntered();
+      await startGate;
+    };
+    const observation = createObservationLifecycle(store, driver);
+    const harness = createVoiceMockHarness(
+      createPipecatMock(),
+      { type: "none" },
+      {
+        toolkitSlug: "voice-agents",
+        adapter: new VoiceAgentsAdapter({
+          store,
+          sessionDriver: driver,
+          remoteObservationLifecycle: observation.observer,
+          resolveTool: (name) => defaultCatalog.getTool(name),
+        }),
+      },
+    );
+    const agent = object(
+      output(
+        await harness.execute("voice-agents.create_voice_agent", {
+          agent: remoteAgentDraft,
+        }),
+      ).agent,
+    );
+
+    const pending = harness.execute(
+      "voice-agents.start_agent_call",
+      {
+        agentId: String(agent.id),
+        revision: 1,
+        to: "+15550001111",
+        from: "+15550002222",
+        transportConnectionId: "conn_voice_test",
+      },
+      "async",
+    );
+    await startEntered;
+
+    await expect(observation.observer.runOnce()).resolves.toBe(0);
+    expect(driver.getSessionCalls).toEqual([]);
+    const [prepared] = await store.listSessions(
+      "proj_voice_mocks",
+      "user_voice_mocks",
+    );
+    if (prepared === undefined) throw new Error("Expected a prepared pointer.");
+    await expect(
+      observation.store.get(prepared.sessionId),
+    ).resolves.toMatchObject({
+      status: "prepared",
+      consecutiveFailures: 0,
+      nextAttemptAt: expect.any(String),
+    });
+
+    releaseStart();
+    const result = await pending;
+    expect(result.terminal.status).toBe("succeeded");
+    const sessionId = String(object(output(result).session).id);
+    await expect(observation.store.get(sessionId)).resolves.toMatchObject({
+      status: "observing",
+      consecutiveFailures: 0,
+    });
+    await expect(
+      store.getSession("proj_voice_mocks", "user_voice_mocks", sessionId),
+    ).resolves.not.toHaveProperty("grantRevokedAt");
+    await observation.observer.close();
   });
 
   it("runs the full immutable-agent and Pipecat session lifecycle", async () => {
