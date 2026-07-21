@@ -184,6 +184,54 @@ export interface ListWebhookDeliveriesParams {
   limit?: number;
 }
 
+export type TriggerSubscriptionStatus = "active" | "paused";
+
+export interface TriggerSubscription {
+  subscriptionId: string;
+  userId: string;
+  trigger: string;
+  connectionId?: string;
+  webhookEndpointIds: readonly string[];
+  filters?: Readonly<Record<string, JsonValue>>;
+  /** Polling triggers only; omitted for push subscriptions. */
+  pollIntervalSeconds?: number;
+  status: TriggerSubscriptionStatus;
+  createdAt: string;
+  updatedAt: string;
+}
+
+/** Push subscriptions reveal their unguessable ingest URL only in the create response. */
+export interface CreatedTriggerSubscription extends TriggerSubscription {
+  ingestUrl?: string;
+}
+
+/** Push ingest URL returned only when its secret is rotated. */
+export interface RotatedTriggerIngestSecret {
+  subscriptionId: string;
+  ingestUrl: string;
+  rotatedAt: string;
+}
+
+export interface TriggerSubscriptionPage {
+  subscriptions: readonly TriggerSubscription[];
+  nextCursor?: string;
+}
+
+export interface CreateTriggerSubscriptionRequest {
+  trigger: string;
+  userId: string;
+  connectionId?: string;
+  webhookEndpointIds: readonly string[];
+  filters?: Readonly<Record<string, JsonValue>>;
+  pollIntervalSeconds?: number;
+}
+
+export interface ListTriggerSubscriptionsParams {
+  cursor?: string;
+  limit?: number;
+  userId?: string;
+}
+
 export interface ExecuteToolRequest {
   connectionId?: `conn_${string}`;
   input: Readonly<Record<string, JsonValue>>;
@@ -484,6 +532,134 @@ export function projectWebhookDeliveryPage(
   };
 }
 
+export function projectTriggerSubscription(
+  value: unknown,
+): TriggerSubscription {
+  const subscription = metadataRecord(value, "trigger subscription");
+  const endpointIds = subscription.webhookEndpointIds;
+  if (
+    !Array.isArray(endpointIds) ||
+    endpointIds.some((endpointId) => typeof endpointId !== "string") ||
+    (subscription.status !== "active" && subscription.status !== "paused")
+  ) {
+    throw new ExecutorApiError(
+      "Executor returned invalid trigger subscription metadata.",
+      502,
+    );
+  }
+  const connectionId = optionalMetadataString(
+    subscription,
+    "connectionId",
+    "trigger subscription",
+  );
+  const filters = subscription.filters;
+  if (
+    filters !== undefined &&
+    (typeof filters !== "object" || filters === null || Array.isArray(filters))
+  ) {
+    throw new ExecutorApiError(
+      "Executor returned invalid trigger subscription metadata.",
+      502,
+    );
+  }
+  const pollIntervalSeconds = subscription.pollIntervalSeconds;
+  if (
+    pollIntervalSeconds !== undefined &&
+    typeof pollIntervalSeconds !== "number"
+  ) {
+    throw new ExecutorApiError(
+      "Executor returned invalid trigger subscription metadata.",
+      502,
+    );
+  }
+  return {
+    subscriptionId: metadataString(
+      subscription,
+      "subscriptionId",
+      "trigger subscription",
+    ),
+    userId: metadataString(subscription, "userId", "trigger subscription"),
+    trigger: metadataString(subscription, "trigger", "trigger subscription"),
+    ...(connectionId === undefined ? {} : { connectionId }),
+    webhookEndpointIds: endpointIds as string[],
+    ...(filters === undefined
+      ? {}
+      : { filters: filters as Readonly<Record<string, JsonValue>> }),
+    ...(pollIntervalSeconds === undefined ? {} : { pollIntervalSeconds }),
+    status: subscription.status,
+    createdAt: metadataString(
+      subscription,
+      "createdAt",
+      "trigger subscription",
+    ),
+    updatedAt: metadataString(
+      subscription,
+      "updatedAt",
+      "trigger subscription",
+    ),
+  };
+}
+
+function projectCreatedTriggerSubscription(
+  value: unknown,
+): CreatedTriggerSubscription {
+  const record = metadataRecord(value, "created trigger subscription");
+  const subscription = projectTriggerSubscription(record);
+  const ingestUrl = optionalMetadataString(
+    record,
+    "ingestUrl",
+    "created trigger subscription",
+  );
+  return {
+    ...subscription,
+    ...(ingestUrl === undefined ? {} : { ingestUrl }),
+  };
+}
+
+function projectRotatedTriggerIngestSecret(
+  value: unknown,
+): RotatedTriggerIngestSecret {
+  const rotated = metadataRecord(value, "rotated trigger ingest secret");
+  return {
+    subscriptionId: metadataString(
+      rotated,
+      "subscriptionId",
+      "rotated trigger ingest secret",
+    ),
+    ingestUrl: metadataString(
+      rotated,
+      "ingestUrl",
+      "rotated trigger ingest secret",
+    ),
+    rotatedAt: metadataString(
+      rotated,
+      "rotatedAt",
+      "rotated trigger ingest secret",
+    ),
+  };
+}
+
+export function projectTriggerSubscriptionPage(
+  value: unknown,
+): TriggerSubscriptionPage {
+  const page = metadataRecord(value, "trigger subscription page");
+  if (!Array.isArray(page.subscriptions)) {
+    throw new ExecutorApiError(
+      "Executor returned invalid trigger subscription page metadata.",
+      502,
+    );
+  }
+  const nextCursor = optionalMetadataString(
+    page,
+    "nextCursor",
+    "trigger subscription page",
+  );
+  return {
+    subscriptions: page.subscriptions.map(projectTriggerSubscription),
+    ...(nextCursor === undefined ? {} : { nextCursor }),
+  };
+}
+
 export const DEFAULT_EXECUTOR_BASE_URL = "http://127.0.0.1:8787";
 export const DASHBOARD_EXECUTOR_PROXY_BASE_URL = "/api/executor";
 
@@ -682,6 +858,72 @@ export class ExecutorClient {
   ): Promise<void> {
     await this.#request<void>(
       `/v1/webhooks/${encodeURIComponent(endpointId)}`,
+      {
+        method: "DELETE",
+        ...(signal === undefined ? {} : { signal }),
+      },
+    );
+  }
+
+  async listTriggerSubscriptions(
+    params: ListTriggerSubscriptionsParams = {},
+    signal?: AbortSignal,
+  ): Promise<TriggerSubscriptionPage> {
+    const query = new URLSearchParams();
+    if (params.limit !== undefined) query.set("limit", String(params.limit));
+    if (params.cursor !== undefined) query.set("cursor", params.cursor);
+    if (params.userId !== undefined) query.set("userId", params.userId);
+    const suffix = query.size > 0 ? `?${query.toString()}` : "";
+    const value = await this.#request<unknown>(`/v1/subscriptions${suffix}`, {
+      ...(signal === undefined ? {} : { signal }),
+    });
+    return projectTriggerSubscriptionPage(value);
+  }
+
+  async createTriggerSubscription(
+    request: CreateTriggerSubscriptionRequest,
+    signal?: AbortSignal,
+  ): Promise<CreatedTriggerSubscription> {
+    const value = await this.#request<unknown>("/v1/subscriptions", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(request),
+      ...(signal === undefined ? {} : { signal }),
+    });
+    return projectCreatedTriggerSubscription(value);
+  }
+
+  async getTriggerSubscription(
+    subscriptionId: string,
+    signal?: AbortSignal,
+  ): Promise<TriggerSubscription> {
+    const value = await this.#request<unknown>(
+      `/v1/subscriptions/${encodeURIComponent(subscriptionId)}`,
+      signal === undefined ? {} : { signal },
+    );
+    return projectTriggerSubscription(value);
+  }
+
+  async rotateTriggerIngestSecret(
+    subscriptionId: string,
+    signal?: AbortSignal,
+  ): Promise<RotatedTriggerIngestSecret> {
+    const value = await this.#request<unknown>(
+      `/v1/subscriptions/${encodeURIComponent(subscriptionId)}/rotate-secret`,
+      {
+        method: "POST",
+        ...(signal === undefined ? {} : { signal }),
+      },
+    );
+    return projectRotatedTriggerIngestSecret(value);
+  }
+
+  async deleteTriggerSubscription(
+    subscriptionId: string,
+    signal?: AbortSignal,
+  ): Promise<void> {
+    await this.#request<void>(
+      `/v1/subscriptions/${encodeURIComponent(subscriptionId)}`,
       {
         method: "DELETE",
         ...(signal === undefined ? {} : { signal }),

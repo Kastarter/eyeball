@@ -117,6 +117,42 @@ export function getCatalogWebhookTriggerOptions(): readonly CatalogWebhookTrigge
   }));
 }
 
+export type CatalogTriggerSubscriptionOption =
+  | {
+      defaultIntervalSeconds: number;
+      description: string;
+      minimumIntervalSeconds: number;
+      mode: "polling";
+      toolkit: string;
+      trigger: string;
+    }
+  | {
+      description: string;
+      mode: "push";
+      toolkit: string;
+      trigger: string;
+    };
+
+export function getCatalogTriggerSubscriptionOptions(): readonly CatalogTriggerSubscriptionOption[] {
+  return defaultCatalog.listTriggers().map((trigger) =>
+    trigger.annotations.deliveryMode === "polling"
+      ? {
+          defaultIntervalSeconds: trigger.annotations.defaultIntervalSeconds,
+          description: trigger.description,
+          minimumIntervalSeconds: trigger.annotations.minimumIntervalSeconds,
+          mode: "polling",
+          toolkit: trigger.toolkit,
+          trigger: trigger.name,
+        }
+      : {
+          description: trigger.description,
+          mode: "push",
+          toolkit: trigger.toolkit,
+          trigger: trigger.name,
+        },
+  );
+}
+
 function sourceLabel(source: string): CatalogToolkitView["sourceLabel"] {
   if (source === "native") return "native";
   if (source === "scrapecreators") return "scrapecreators";

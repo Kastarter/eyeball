@@ -1,7 +1,7 @@
 # eyeball — Planned work
 
 State as of 2026-07-21. The 0.2.0 source cut is complete, M5 is underway with
-M5.1 complete, and two audit sweeps
+M5.2 complete, and two audit sweeps
 (cross-feature wiring; dashboard/SDK/docs parity) produced a milestone-ordered
 gap ledger. Milestones **M1 (hosted execution slice)**, **M2 (billing as a
 product)**, **M3 (restart-state durability)**, and **M4 (voice hardening)** are
@@ -58,11 +58,14 @@ change. Never bind ports in tests; use in-process apps (`app.request`, PGlite).
   ephemeral reveal-once create/rotation secrets, confirmed rotation/deletion,
   metadata-only paginated delivery attempts, and a dashboard executor proxy
   `PATCH` allowlist restricted to endpoint updates. A-01 closed.
+- M5.2 Triggers page: subscription create/manage/delete with catalog-derived
+  trigger and delivery-mode selection, minimum-validated polling cadence,
+  webhook endpoint targeting, reveal-once create/rotation push ingest URLs,
+  and confirmed destructive actions. Subscription projections and screen state
+  never retain ingest URLs after acknowledgement. A-02 closed.
 
 ## M5 — Local dashboard surfaces (demo mode; executor APIs mostly exist)
 
-7. **M5.2 Triggers page.** Subscription CRUD, mode-specific forms, reveal-once
-   push ingest URL, rotate, delete. A-02.
 8. **M5.3 Files page + Try-It attachment picker.** Uses the completed M3.2
    file-list API.
    A-04.

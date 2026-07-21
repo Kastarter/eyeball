@@ -467,4 +467,134 @@ describe("ExecutorClient", () => {
     expect(requests[0]?.headers.get("Content-Type")).toBe("application/json");
     expect(requests[3]?.headers.get("Content-Type")).toBe("application/json");
   });
+  it("projects the trigger subscription lifecycle onto metadata-only public state", async () => {
+    const requests: Request[] = [];
+    const subscriptionId = "trgsub fixture/one";
+    const createdIngestUrl =
+      "https://executor.example/v1/ingest/trgsub_fixture/created_reveal_once";
+    const rotatedIngestUrl =
+      "https://executor.example/v1/ingest/trgsub_fixture/rotated_reveal_once";
+    const createdAt = "2026-07-21T11:00:00.000Z";
+    const subscription = {
+      subscriptionId,
+      projectId: "proj_fixture",
+      userId: "demo_user",
+      trigger: "slack.message_received",
+      connectionId: "conn_slack_fixture",
+      webhookEndpointIds: ["whe_fixture"],
+      status: "active",
+      createdAt,
+      updatedAt: createdAt,
+    };
+    const fetch: typeof globalThis.fetch = async (input, init) => {
+      const request = new Request(input, init);
+      requests.push(request);
+      const url = new URL(request.url);
+      if (request.method === "POST" && url.pathname === "/v1/subscriptions") {
+        return Response.json(
+          {
+            ...subscription,
+            ingestUrl: createdIngestUrl,
+            providerCursor: "provider-cursor-sentinel",
+          },
+          { status: 201 },
+        );
+      }
+      if (request.method === "GET" && url.pathname === "/v1/subscriptions") {
+        return Response.json({
+          subscriptions: [
+            {
+              ...subscription,
+              ingestUrl: rotatedIngestUrl,
+              ingestSecret: "list-ingest-secret-sentinel",
+            },
+          ],
+          nextCursor: "subscription_cursor_2",
+        });
+      }
+      if (
+        request.method === "POST" &&
+        url.pathname.endsWith("/rotate-secret")
+      ) {
+        return Response.json({
+          subscriptionId,
+          ingestUrl: rotatedIngestUrl,
+          rotatedAt: "2026-07-21T11:05:00.000Z",
+          ingestSecret: "rotate-ingest-secret-sentinel",
+        });
+      }
+      if (request.method === "GET") {
+        return Response.json({
+          ...subscription,
+          ingestUrl: rotatedIngestUrl,
+        });
+      }
+      if (request.method === "DELETE")
+        return new Response(null, { status: 204 });
+      return Response.json({ error: "unexpected request" }, { status: 500 });
+    };
+    const client = new ExecutorClient({
+      baseUrl: "https://executor.example",
+      fetch,
+      projectId: "proj_fixture",
+    });
+
+    const created = await client.createTriggerSubscription({
+      trigger: subscription.trigger,
+      userId: subscription.userId,
+      connectionId: subscription.connectionId,
+      webhookEndpointIds: subscription.webhookEndpointIds,
+    });
+    expect(created.ingestUrl).toBe(createdIngestUrl);
+
+    const list = await client.listTriggerSubscriptions({
+      limit: 25,
+      cursor: "subscription cursor/1",
+      userId: "demo_user",
+    });
+    const detail = await client.getTriggerSubscription(subscriptionId);
+    const listedAndDetail = JSON.stringify([list, detail]);
+    expect(listedAndDetail).not.toContain(createdIngestUrl);
+    expect(listedAndDetail).not.toContain(rotatedIngestUrl);
+    expect(listedAndDetail).not.toContain("list-ingest-secret-sentinel");
+    expect(listedAndDetail).not.toContain("provider-cursor-sentinel");
+    expect(list.nextCursor).toBe("subscription_cursor_2");
+
+    const rotated = await client.rotateTriggerIngestSecret(subscriptionId);
+    expect(rotated.ingestUrl).toBe(rotatedIngestUrl);
+    expect(JSON.stringify(rotated)).not.toContain(
+      "rotate-ingest-secret-sentinel",
+    );
+
+    await expect(
+      client.deleteTriggerSubscription(subscriptionId),
+    ).resolves.toBeUndefined();
+
+    expect(requests.map(({ method, url }) => ({ method, url }))).toEqual([
+      { method: "POST", url: "https://executor.example/v1/subscriptions" },
+      {
+        method: "GET",
+        url: "https://executor.example/v1/subscriptions?limit=25&cursor=subscription+cursor%2F1&userId=demo_user",
+      },
+      {
+        method: "GET",
+        url: "https://executor.example/v1/subscriptions/trgsub%20fixture%2Fone",
+      },
+      {
+        method: "POST",
+        url: "https://executor.example/v1/subscriptions/trgsub%20fixture%2Fone/rotate-secret",
+      },
+      {
+        method: "DELETE",
+        url: "https://executor.example/v1/subscriptions/trgsub%20fixture%2Fone",
+      },
+    ]);
+    await expect(requests[0]?.clone().json()).resolves.toEqual({
+      trigger: "slack.message_received",
+      userId: "demo_user",
+      connectionId: "conn_slack_fixture",
+      webhookEndpointIds: ["whe_fixture"],
+    });
+    expect(requests[0]?.headers.get("Content-Type")).toBe("application/json");
+  });
 });

@@ -6408,3 +6408,134 @@ select.field__control {
     animation: none;
   }
 }
+
+/* Trigger subscriptions page (M5.2) — siblings of the webhook drawer styles. */
+
+.trigger-subscription-form,
+.trigger-subscription-detail {
+  display: grid;
+  align-content: start;
+  gap: var(--space-5);
+  padding: var(--space-5);
+}
+
+.trigger-mode-note {
+  display: flex;
+  align-items: flex-start;
+  gap: var(--space-3);
+  padding: var(--space-3) var(--space-4);
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--radius-md);
+  background: var(--bg-subtle);
+  color: var(--text-secondary);
+  font-size: 11px;
+  line-height: 1.5;
+}
+
+.trigger-mode-note svg {
+  flex: none;
+  margin-top: 1px;
+  color: var(--accent);
+}
+
+.trigger-mode-chip {
+  padding: 1px 6px;
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--radius-sm);
+  background: var(--bg-subtle);
+  color: var(--text-secondary);
+  font-family: var(--font-code);
+  font-size: 10px;
+}
+
+.trigger-endpoint-field {
+  display: grid;
+  gap: var(--space-2);
+  padding: var(--space-3) var(--space-4);
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--radius-md);
+  margin: 0;
+}
+
+.trigger-endpoint-field > legend {
+  padding: 0 var(--space-1);
+  color: var(--text-secondary);
+  font-size: 11px;
+  font-weight: 600;
+}
+
+.trigger-endpoint-field__option {
+  display: flex;
+  align-items: flex-start;
+  gap: var(--space-3);
+  cursor: pointer;
+}
+
+.trigger-endpoint-field__option > input {
+  width: 15px;
+  height: 15px;
+  flex: none;
+  margin: 2px 0 0;
+  accent-color: var(--accent);
+}
+
+.trigger-endpoint-field__option > span {
+  display: grid;
+  min-width: 0;
+  gap: 2px;
+}
+
+.trigger-endpoint-field__option strong {
+  overflow: hidden;
+  color: var(--text-primary);
+  font-size: 12px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.trigger-endpoint-field__option code {
+  color: var(--text-secondary);
+  font-family: var(--font-code);
+  font-size: 10px;
+}
+
+.trigger-endpoint-field__empty {
+  color: var(--text-secondary);
+  font-size: 11px;
+  line-height: 1.5;
+}
+
+.trigger-endpoint-summary {
+  display: grid;
+  gap: var(--space-2);
+}
+
+.trigger-endpoint-summary h3 {
+  color: var(--text-primary);
+  font-size: 12px;
+}
+
+.trigger-endpoint-summary p {
+  color: var(--text-secondary);
+  font-size: 11px;
+}
+
+.trigger-endpoint-summary ul {
+  display: grid;
+  gap: var(--space-1);
+  padding: 0;
+  margin: 0;
+  list-style: none;
+}
+
+.trigger-endpoint-summary li {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+}
+
+.trigger-endpoint-summary code {
+  color: var(--text-primary);
+  font-family: var(--font-code);
+  font-size: 11px;
+}

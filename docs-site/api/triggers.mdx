@@ -149,4 +149,6 @@ The response acknowledges ingestion into the asynchronous signed webhook pipelin
 | `404` | Subscription is missing, cross-project, inactive for ingestion, or has a wrong ingest secret. |
 | `422` | Invalid trigger, connection, scope, endpoint, filter, polling cadence, or provider callback body. |
 
+The project **Triggers** screen in the dashboard exposes subscription creation with catalog-backed trigger selection and mode-specific polling cadence, the reveal-once push ingest URL on create and rotation, confirmed rotation and deletion, and metadata-only subscription listings. It uses the selected project's executor path in both demo and cloud mode.
+
 Read [Triggers](/concepts/triggers) for payloads and dedup semantics, and [Webhooks API](/api/webhooks) for endpoint management and delivery logs.
