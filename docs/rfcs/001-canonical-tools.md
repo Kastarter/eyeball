@@ -489,18 +489,28 @@ Content-Type: application/json
 {"fileId":"file_01JZ7F4Y8E7H48H3Y2NQ4J5H8P","name":"receipt.pdf","mimeType":"application/pdf","size":18422,"expiresAt":"2026-07-17T14:00:00.000Z"}
 ```
 
-`GET /v1/files/:id` returns that metadata only. There is no public content-download route:
-adapter execution resolves bytes through the project-bound `AdapterContext.files` resolver.
-The `FileStore` lookup key includes the authenticated project, and a missing, expired, or
-cross-project identifier returns the same `not_found` response. The API uses the same API-key
-and pinned-user middleware as every `/v1/*` route. Files are not independently user-owned:
-any caller authorized for the same project, including a different pinned user who learns the
-high-entropy file ID, may retrieve its metadata or reference its bytes during the file's TTL.
+`GET /v1/files?limit=100&cursor=...` returns newest-first metadata as
+`{ files: StagedFileMetadata[], nextCursor? }`. The default limit is 100 and the accepted range
+is 1–100. Cursors are opaque; malformed, unknown, reclaimed, or cross-project anchors return
+HTTP 422 `invalid_input`. Expired files are omitted. A cursor anchor that expires between pages
+remains usable until physical reclamation removes its row, after which the caller restarts
+pagination. Because the collection is project-wide, this route requires an unpinned
+project-authority key; user-pinned credentials receive `auth_insufficient_scope`.
 
-The process-local defaults are a 25 MiB decoded-byte limit and a one-hour TTL. Operators may
-set `EYEBALL_FILE_MAX_BYTES` and `EYEBALL_FILE_TTL_MS`; durable disk/object-store implementations
-replace `InMemoryFileStore` behind the same `FileStore` interface. Expiry is evaluated against
-the injected executor clock. Canonical email attachments use `{ fileId, name?, mimeType? }`.
+`GET /v1/files/:id` returns metadata only. There is no public content-download route: adapter
+execution resolves bytes through the project-bound `AdapterContext.files` resolver. The
+`FileStore` lookup key includes the authenticated project, and a missing, expired, or
+cross-project identifier returns the same `not_found` response. Upload and single-file metadata
+use the normal project/pinned middleware. Files are not independently user-owned: any caller
+authorized for the same project, including a different pinned user who learns the high-entropy
+file ID, may retrieve its metadata or reference its bytes during the file's TTL.
+
+The zero-config in-memory defaults are a 25 MiB decoded-byte limit and a one-hour TTL. Operators
+may set `EYEBALL_FILE_MAX_BYTES` and `EYEBALL_FILE_TTL_MS`. `EYEBALL_DATABASE_URL` activates the
+Postgres FileStore, which persists metadata plus `bytea` content across executor restart only
+until TTL expiry. The `FileStore` seam can later place content in an object store without
+changing the engine, routes, or adapter resolver. Expiry is evaluated against the injected
+executor clock. Canonical email attachments use `{ fileId, name?, mimeType? }`.
 `file_storage_docs.upload_file` accepts `fileId` instead of inline `content`, with exactly one
 content source per call.
 

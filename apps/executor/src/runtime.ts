@@ -24,6 +24,7 @@ import {
   type JobStore,
   recoverExecutorJobs,
 } from "./queue.js";
+import type { FileStore } from "./staged-files.js";
 import {
   createPgStoreBundle,
   type PostgresStoreSet,
@@ -64,6 +65,8 @@ export interface CreateExecutorRuntimeOptions {
     readonly telemetry: ReturnType<typeof createExecutorTelemetryRuntime>;
     readonly durable: boolean;
   }) => ExecutorTaskSystem;
+  /** Test/deployment seam; durable file cleanup defaults to once per minute. */
+  fileSweepIntervalMs?: number;
 }
 
 export interface ExecutorPersistence extends PostgresStoreSet {
@@ -83,6 +86,73 @@ interface ConfiguredUsage {
   readonly gate: CloudUsageGate;
   readonly flusher: UsageOutboxFlusher;
   readonly drainTimeoutMs: number;
+}
+
+const FILE_SWEEP_BATCH_SIZE = 100;
+const DEFAULT_FILE_SWEEP_INTERVAL_MS = 60_000;
+
+interface FileExpirySweeper {
+  stop(): void;
+  onIdle(): Promise<void>;
+}
+
+function fileSweepNow(clock: Clock): string {
+  const now = clock.now();
+  if (Number.isNaN(now.valueOf())) {
+    throw new Error("Executor clock returned an invalid date.");
+  }
+  return now.toISOString();
+}
+
+async function sweepExpiredFiles(
+  fileStore: FileStore,
+  now: string,
+  drain: boolean,
+): Promise<void> {
+  for (;;) {
+    const deleted = await fileStore.sweepExpired({
+      now,
+      limit: FILE_SWEEP_BATCH_SIZE,
+    });
+    if (!drain || deleted < FILE_SWEEP_BATCH_SIZE) return;
+  }
+}
+
+function startFileExpirySweeper(input: {
+  fileStore: FileStore;
+  clock: Clock;
+  intervalMs: number;
+  logger: ReturnType<typeof createExecutorTelemetryRuntime>["logger"];
+}): FileExpirySweeper {
+  if (!Number.isSafeInteger(input.intervalMs) || input.intervalMs < 1) {
+    throw new RangeError(
+      "File expiry sweep interval must be a positive safe integer.",
+    );
+  }
+  let active: Promise<void> | undefined;
+  const timer = setInterval(() => {
+    if (active !== undefined) return;
+    const pending = Promise.resolve()
+      .then(() =>
+        sweepExpiredFiles(input.fileStore, fileSweepNow(input.clock), false),
+      )
+      .catch((error: unknown) => {
+        input.logger.error("file.expiry_sweep_failed", {
+          errorName: error instanceof Error ? error.name : "unknown",
+        });
+      })
+      .finally(() => {
+        if (active === pending) active = undefined;
+      });
+    active = pending;
+  }, input.intervalMs);
+  timer.unref?.();
+  return {
+    stop: () => clearInterval(timer),
+    onIdle: async () => {
+      await active;
+    },
+  };
 }
 
 async function drainRuntime(
@@ -297,6 +367,7 @@ export async function createExecutorRuntime(
   let persistence: ExecutorPersistence | undefined;
   let taskSystem: ExecutorTaskSystem | undefined;
   let usage: ConfiguredUsage | undefined;
+  let fileExpirySweeper: FileExpirySweeper | undefined;
   try {
     const durable = databaseUrl !== undefined && databaseUrl.length > 0;
     if (durable) {
@@ -308,6 +379,13 @@ export async function createExecutorRuntime(
     }
     const initializedPersistence = persistence;
     const clock = options.clock ?? systemClock;
+    if (initializedPersistence !== undefined) {
+      await sweepExpiredFiles(
+        initializedPersistence.fileStore,
+        fileSweepNow(clock),
+        true,
+      );
+    }
     const jobStore = initializedPersistence?.jobStore ?? new InMemoryJobStore();
     taskSystem =
       options.taskQueueFactory?.({
@@ -378,7 +456,10 @@ export async function createExecutorRuntime(
       queue: taskSystem,
       ...(initializedPersistence === undefined
         ? {}
-        : { store: initializedPersistence.executionStore }),
+        : {
+            store: initializedPersistence.executionStore,
+            fileStore: initializedPersistence.fileStore,
+          }),
       webhookDeliverer,
       triggerService,
       telemetryRuntime: telemetry,
@@ -409,6 +490,15 @@ export async function createExecutorRuntime(
       logger: telemetry.logger,
     });
     usage?.flusher.start();
+    if (initializedPersistence !== undefined) {
+      fileExpirySweeper = startFileExpirySweeper({
+        fileStore: initializedPersistence.fileStore,
+        clock,
+        intervalMs:
+          options.fileSweepIntervalMs ?? DEFAULT_FILE_SWEEP_INTERVAL_MS,
+        logger: telemetry.logger,
+      });
+    }
     return {
       engine,
       apiKeyAuthenticator,
@@ -418,9 +508,11 @@ export async function createExecutorRuntime(
         : { persistence: initializedPersistence }),
       ...(usage === undefined ? {} : { usageOutboxFlusher: usage.flusher }),
       close: async () => {
+        fileExpirySweeper?.stop();
         triggerPollingScheduler.stop();
         usage?.flusher.stop();
         try {
+          await fileExpirySweeper?.onIdle();
           await voiceWorker.driver?.close();
           await drainRuntime(runningTaskSystem, triggerPollingScheduler);
           await engine.usageGate.onIdle();
@@ -437,7 +529,9 @@ export async function createExecutorRuntime(
       },
     };
   } catch (error) {
+    fileExpirySweeper?.stop();
     usage?.flusher.stop();
+    await fileExpirySweeper?.onIdle();
     await taskSystem?.stopClaiming();
     await taskSystem?.drainOwned();
     await voiceWorker.driver?.close();

@@ -179,6 +179,12 @@ export interface UploadFileOptions {
   content: Uint8Array | string;
 }
 
+/** Cursor and page-size controls for project staged-file listing. */
+export interface ListFilesOptions {
+  cursor?: string;
+  limit?: number;
+}
+
 /** User and toolkit fields for a development connection fixture. */
 export interface CreateConnectionOptions {
   /** Uses the client-level userId when omitted. */

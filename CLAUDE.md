@@ -27,7 +27,7 @@ Open-core tool and integration platform for AI agents: one typed, authenticated 
 - OpenTelemetry exporters are disabled unless `EYEBALL_OTEL=1`; tests use in-memory providers and never require a collector.
 - Trigger events deliver as `trigger.<toolkit>.<name>` through signed webhooks; push ingest secrets appear only in create-time URLs.
 - Unauthenticated push-trigger ingest is capped at 1 MiB before buffering; exposed path credentials rotate through the subscription rotation endpoint.
-- `EYEBALL_DATABASE_URL` enables the executor's five-connection Postgres pool and applies committed Drizzle migrations at boot; absent keeps all zero-config in-memory defaults.
+- `EYEBALL_DATABASE_URL` enables the executor's five-connection Postgres pool, including durable staged-file metadata and `bytea` content, and applies committed Drizzle migrations at boot; absent keeps all zero-config in-memory defaults.
 - Executor HTTP limits share project buckets: standard 120/min with 240 burst, execute 60/min with 120 burst; `EYEBALL_RATE_LIMIT_*` overrides them and daily quota is off by default.
 - Cloud execution usage reserves after project throttling and before record allocation; execution stores preflight idempotent replays, and terminal reports reuse one opaque SHA-256 identity.
 - Usage reservations release on failures before adapter dispatch; attempted adapter calls report through the terminal outbox.
@@ -63,8 +63,8 @@ Open-core tool and integration platform for AI agents: one typed, authenticated 
 - `UsageGate` defaults to no-op; the Cloud implementation reserves synchronously and reports terminal records through an at-least-once outbox.
 - Webhook endpoints, delivery logs, and ID-only event work sit behind injectable stores; handlers re-resolve current endpoints and source records, while delivery is async and concurrency-one per endpoint.
 - Trigger subscriptions, cursors, and dedup claims sit behind injectable stores; Slack push and Gmail polling normalize against catalog schemas.
-- Executor-owned Drizzle stores persist executions/idempotency, leased task jobs, ID-only webhook event work, webhook endpoints/delivery attempts, and trigger subscriptions/state/dedup against pg or PGlite with the same schema and migrations.
-- Staged bytes sit behind project-scoped `FileStore`; adapters resolve them only through execution-bound `AdapterContext.files`.
+- Executor-owned Drizzle stores persist executions/idempotency, leased task jobs, ID-only webhook event work, webhook endpoints/delivery attempts, trigger subscriptions/state/dedup, and staged-file metadata/content against pg or PGlite with the same schema and migrations.
+- Staged files sit behind project-scoped `FileStore`; the stock Postgres implementation stores bytes in `bytea`, while the seam permits a later metadata-plus-object-store implementation without changing routes, the engine, or adapters. Adapters resolve bytes only through execution-bound `AdapterContext.files`.
 - The MCP gateway delegates execution to the executor and preserves child execution identities; negotiated sessions and task records sit behind async `SessionStore`.
 - Project keys authorize all project users unless user-pinned; executor and MCP reject conflicting identities.
 - MCP inbound key policy and its downstream executor key are separate trust boundaries.
@@ -92,7 +92,7 @@ Open-core tool and integration platform for AI agents: one typed, authenticated 
 - Catalog `1.1` contains 37 manifests/toolkits and the implemented capability adapters.
 - The manifest-derived matrix has 493 rows: 227 smoke and 266 explicit `not_supported`.
 - The dashboard, SDK, MCP gateway, local encrypted vault, auth CLI, and public docs source are built.
-- The self-hosted docs renderer builds all 112 authored/generated pages with local navigation, search, syntax highlighting, and dark/light themes.
+- The self-hosted docs renderer builds all 113 authored/generated pages with local navigation, search, syntax highlighting, and dark/light themes.
 - The dashboard has demo-default and cloud modes; cloud mode adds session auth, first-run org/project/key bootstrap, real connection/key/audit screens, project switchers, and per-project executor-key settings.
 - Cloud mode has full Billing and Organization surfaces for usage, plan changes, members, BYO OAuth apps, redirect origins, organization rename, and audit navigation; OAuth connection setup can select an app and validated return URL, and the dashboard suite has 68 serial tests.
 - Search-mode MCP exposes both discovery and a generic executor-backed dispatch tool.
@@ -102,10 +102,11 @@ Open-core tool and integration platform for AI agents: one typed, authenticated 
 - The nested mocks repository has eight workspaces and 164 tests.
 - The private Activepieces bridge spike imports five pinned pieces, introspects 67 actions and 23 triggers, hydrates Airtable dynamic fields, and executes Gmail, Slack, and Airtable against in-process mocks.
 - Staged files flow through Gmail and Outlook send/reply/draft operations plus Google Drive upload; other email providers fail non-empty attachments explicitly as `not_supported`.
+- `GET /v1/files` provides newest-first cursor pagination over unexpired project metadata to unpinned project-authority keys, and `eyeball.files.list` exposes the same contract in the SDK.
 - Project-scoped signed execution webhooks and development voice-session event delivery are implemented with in-process defaults.
 - Structured execution/webhook/trigger logs and pluggable traces/metrics cover the executor pipeline; OTLP export remains opt-in.
 - Catalog `1.1` includes `gmail.email_received` polling and `slack.message_received` push, with executor subscription CRUD and SDK clients.
-- Postgres durable stores are wired behind `EYEBALL_DATABASE_URL`; the leased async queue and boot recovery sweep resume pending/running executions plus webhook selection/delivery jobs, while shared contracts run all stores against both memory and one embedded PGlite database.
+- Postgres durable stores are wired behind `EYEBALL_DATABASE_URL`; the leased async queue and boot recovery sweep resume pending/running executions plus webhook selection/delivery jobs, staged files survive executor restarts until TTL expiry, and a non-overlapping minute sweep reclaims expired files in 100-row online batches, while shared contracts run all stores against both memory and one embedded PGlite database.
 - Project request token buckets, optional UTC daily execution quotas, and manifest-declared toolkit concurrency caps are implemented.
 - `EYEBALL_USAGE_URL` enables Cloud quota admission and terminal billing reports; unset `EYEBALL_USAGE_STRICT` defaults strict with `EYEBALL_CREDENTIALS=cloud` and fail open otherwise, while explicit `1`/`true` or `0`/`false` overrides either composition.
 - A separately deployed Python voice worker provides versioned remote sessions, SQLite event durability, stable child execution identity, and account-free fake/chat contract suites; Pipecat/Twilio/LiveKit paths are certification scaffolding, not proven live-call capability.
@@ -126,7 +127,7 @@ Open-core tool and integration platform for AI agents: one typed, authenticated 
 - Postgres makes webhook selection/delivery jobs and attempts restart-durable, but trigger and voice event bodies have no durable source record; only execution webhook envelopes can be reconstructed after restart. Remote voice-event observation also remains process-local, so an executor restart can still delay, fail, or omit voice webhook publication.
 - Trigger records and dedup claims are durable with Postgres, while the polling scheduler still needs distributed leases, replay/backfill, provider signature verification, and an atomic claim/outbox.
 - Provider idempotency propagation is separate from working executor-level replay protection.
-- The stock executor remains process-local without `EYEBALL_DATABASE_URL`; Postgres makes records, 24-hour idempotency, and leased async task jobs durable, with the boot sweep repairing interrupted work before workers claim it.
+- The stock executor remains process-local without `EYEBALL_DATABASE_URL`, including staged uploads. Postgres makes records, 24-hour idempotency, leased async task jobs, and staged-file metadata/bytes durable; staged files survive restart only until `expiresAt`, and the boot sweep repairs interrupted work before workers claim it.
 - The usage outbox is restart-durable with Postgres; without it, pending reports and the single-process flusher remain process-local.
 - Stock rate and concurrency limiters are process-local; multi-replica global enforcement requires injected distributed implementations.
 - MCP sessions and task pollers are process-local with the stock `InMemorySessionStore`; inject a durable atomic store for restart recovery. SSE event replay and stock executor cancellation are not implemented.
@@ -137,6 +138,6 @@ Open-core tool and integration platform for AI agents: one typed, authenticated 
 - Webhook delivery blocks literal private targets and redirects but does not resolve/pin DNS, so DNS-rebinding SSRF remains a hosted-launch gate.
 - The Activepieces spike contains unpatched `expr-eval` High advisories and incomplete published license metadata; do not expose its formula evaluator to untrusted input or promote it before replacement/provenance work.
 - Internal cloud bearer requests remain replayable without timestamp/nonce signing; trigger and voice URL secrets require upstream access-log suppression, and push triggers still need provider-native signature verification.
-- Staged files are project-scoped bearer capabilities rather than user-owned records; until ownership is added, a leaked same-project file ID can cross a user-pinned boundary during its TTL.
+- Staged files are project-scoped bearer capabilities rather than user-owned records; pinned keys cannot enumerate `GET /v1/files`, but until ownership is added, a leaked or learned same-project file ID can cross a user-pinned boundary during its TTL.
 - Voice Python dependencies are direct-pinned but not transitively hash-locked or covered by `pip-audit`; cloud billing grace still permits existing execution indefinitely.
 - Managed sandboxes may reject loopback and tsx IPC sockets with `EPERM`; use in-process apps.

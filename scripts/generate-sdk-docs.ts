@@ -181,12 +181,14 @@ const pageSpecs: readonly PageSpec[] = [
     slug: "files",
     title: "Files API",
     description:
-      "Stage attachment bytes and retrieve project-scoped file metadata.",
+      "Stage attachment bytes and list or retrieve project-scoped file metadata.",
     exports: [
       "FilesClient",
+      "ListFilesOptions",
       "UploadFileOptions",
       "FileId",
       "StagedFileMetadata",
+      "StagedFilePage",
       "StagedFileReference",
     ],
   },
@@ -801,6 +803,7 @@ function validateDocumentation(model: SdkApiModel): void {
     "ToolsClient.run",
     "ExecutionsClient.wait",
     "FilesClient.upload",
+    "FilesClient.list",
     "WebhooksClient.create",
     "SubscriptionsClient.create",
   ]) {

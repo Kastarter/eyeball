@@ -1,5 +1,6 @@
 import {
   createExecutionId,
+  createFileId,
   createTriggerSubscriptionId,
   type ExecuteRequest,
   type ExecutionId,
@@ -11,7 +12,9 @@ import { beforeAll, describe, expect, it } from "vitest";
 import type {
   ExecutionAllocation,
   ExecutionStore,
+  FileStore,
   JobStore,
+  StoredStagedFile,
   StoredTriggerSubscription,
   TriggerStateStore,
   TriggerSubscriptionStore,
@@ -29,6 +32,7 @@ import {
 
 export interface StoreContractStores {
   executionStore: ExecutionStore;
+  fileStore: FileStore;
   webhookEndpointStore: WebhookEndpointStore;
   webhookDeliveryStore: WebhookDeliveryStore;
   triggerSubscriptionStore: TriggerSubscriptionStore;
@@ -118,6 +122,25 @@ function allocation(
             ).toISOString(),
           },
         }),
+  };
+}
+
+function stagedFile(
+  fileId: ReturnType<typeof createFileId>,
+  createdAt: string,
+  expiresAt: string,
+  content: readonly number[] = [0, 1, 2, 254, 255],
+): StoredStagedFile {
+  return {
+    createdAt,
+    meta: {
+      fileId,
+      name: `${fileId}.bin`,
+      mimeType: "application/octet-stream",
+      size: content.length,
+      expiresAt,
+    },
+    content: Uint8Array.from(content),
   };
 }
 
@@ -461,6 +484,349 @@ export function registerStoreContractSuite(
         expect(
           await stores.executionStore.list(`other_${projectId}`, { limit: 10 }),
         ).toEqual({ executions: [] });
+      });
+    });
+
+    describe("staged files", () => {
+      it("round-trips isolated bytes and metadata with project-scoped IDs", async () => {
+        const scope = namespace(implementation.name);
+        const projectId = `project_${scope}`;
+        const otherProjectId = `other_${scope}`;
+        const fileId = createFileId(`${scope}_round_trip`);
+        const createdAt = "2026-07-18T04:00:00.000Z";
+        const expiresAt = "2026-07-18T05:00:00.000Z";
+        const now = "2026-07-18T04:30:00.000Z";
+        const original = stagedFile(fileId, createdAt, expiresAt);
+        await stores.fileStore.put(projectId, original);
+
+        original.meta.name = "mutated-after-write.bin";
+        original.content[0] = 99;
+        const first = await stores.fileStore.get(projectId, fileId, now);
+        expect(first).toEqual({
+          meta: {
+            fileId,
+            name: `${fileId}.bin`,
+            mimeType: "application/octet-stream",
+            size: 5,
+            expiresAt,
+          },
+          content: Uint8Array.from([0, 1, 2, 254, 255]),
+        });
+        if (first === undefined) throw new Error("Expected staged-file bytes.");
+        first.meta.name = "mutated-after-read.bin";
+        first.content[1] = 88;
+        await expect(
+          stores.fileStore.get(projectId, fileId, now),
+        ).resolves.toEqual({
+          meta: {
+            fileId,
+            name: `${fileId}.bin`,
+            mimeType: "application/octet-stream",
+            size: 5,
+            expiresAt,
+          },
+          content: Uint8Array.from([0, 1, 2, 254, 255]),
+        });
+
+        const metadata = await stores.fileStore.getMetadata(
+          projectId,
+          fileId,
+          now,
+        );
+        expect(metadata).toEqual({
+          fileId,
+          name: `${fileId}.bin`,
+          mimeType: "application/octet-stream",
+          size: 5,
+          expiresAt,
+        });
+        expect(metadata).not.toHaveProperty("content");
+        if (metadata === undefined) throw new Error("Expected file metadata.");
+        metadata.name = "mutated-metadata.bin";
+        await expect(
+          stores.fileStore.getMetadata(projectId, fileId, now),
+        ).resolves.toMatchObject({ name: `${fileId}.bin` });
+
+        await expect(
+          stores.fileStore.put(
+            projectId,
+            stagedFile(fileId, createdAt, expiresAt),
+          ),
+        ).rejects.toThrow(`Duplicate staged-file ID: ${fileId}`);
+        await expect(
+          stores.fileStore.put(
+            otherProjectId,
+            stagedFile(fileId, createdAt, expiresAt, [7, 8]),
+          ),
+        ).resolves.toBeUndefined();
+        await expect(
+          stores.fileStore.get(`missing_${scope}`, fileId, now),
+        ).resolves.toBeUndefined();
+        await expect(
+          stores.fileStore.getMetadata(`missing_${scope}`, fileId, now),
+        ).resolves.toBeUndefined();
+        await expect(
+          stores.fileStore.list(`missing_${scope}`, { now, limit: 10 }),
+        ).resolves.toEqual({ files: [] });
+        const page = await stores.fileStore.list(projectId, { now, limit: 10 });
+        expect(page.files).toEqual([
+          {
+            fileId,
+            name: `${fileId}.bin`,
+            mimeType: "application/octet-stream",
+            size: 5,
+            expiresAt,
+          },
+        ]);
+        expect(page.files[0]).not.toHaveProperty("content");
+      });
+
+      it("enforces expiresAt less than or equal to now for every read path", async () => {
+        const scope = namespace(implementation.name);
+        const projectId = `project_${scope}`;
+        const createdAt = "2026-07-18T05:00:00.000Z";
+        const expiresAt = "2026-07-18T05:01:00.000Z";
+        const before = "2026-07-18T05:00:59.999Z";
+        const contentId = createFileId(`${scope}_expiry_content`);
+        const metadataId = createFileId(`${scope}_expiry_metadata`);
+        const listId = createFileId(`${scope}_expiry_list`);
+        for (const fileId of [contentId, metadataId, listId]) {
+          await stores.fileStore.put(
+            projectId,
+            stagedFile(fileId, createdAt, expiresAt),
+          );
+        }
+        await expect(
+          stores.fileStore.get(projectId, contentId, before),
+        ).resolves.toBeDefined();
+        await expect(
+          stores.fileStore.getMetadata(projectId, metadataId, before),
+        ).resolves.toBeDefined();
+        expect(
+          (await stores.fileStore.list(projectId, { now: before, limit: 10 }))
+            .files,
+        ).toHaveLength(3);
+
+        await expect(
+          stores.fileStore.get(projectId, contentId, expiresAt),
+        ).resolves.toBeUndefined();
+        await expect(
+          stores.fileStore.getMetadata(projectId, metadataId, expiresAt),
+        ).resolves.toBeUndefined();
+        await expect(
+          stores.fileStore.list(projectId, { now: expiresAt, limit: 10 }),
+        ).resolves.toEqual({ files: [] });
+      });
+
+      it("orders newest first, breaks timestamp ties by sequence, and paginates live rows", async () => {
+        const scope = namespace(implementation.name);
+        const projectId = `project_${scope}`;
+        const expiry = "2026-07-18T08:00:00.000Z";
+        const now = "2026-07-18T06:00:00.000Z";
+        const oldest = createFileId(`${scope}_oldest`);
+        const tieFirst = createFileId(`${scope}_tie_first`);
+        const tieSecond = createFileId(`${scope}_tie_second`);
+        const newest = createFileId(`${scope}_newest`);
+        const expiredNewest = createFileId(`${scope}_expired_newest`);
+        await stores.fileStore.put(
+          projectId,
+          stagedFile(oldest, "2026-07-18T05:00:01.000Z", expiry),
+        );
+        await stores.fileStore.put(
+          projectId,
+          stagedFile(tieFirst, "2026-07-18T05:00:02.000Z", expiry),
+        );
+        await stores.fileStore.put(
+          projectId,
+          stagedFile(tieSecond, "2026-07-18T05:00:02.000Z", expiry),
+        );
+        await stores.fileStore.put(
+          projectId,
+          stagedFile(newest, "2026-07-18T05:00:03.000Z", expiry),
+        );
+        await stores.fileStore.put(
+          projectId,
+          stagedFile(
+            expiredNewest,
+            "2026-07-18T05:00:04.000Z",
+            "2026-07-18T05:30:00.000Z",
+          ),
+        );
+
+        const first = await stores.fileStore.list(projectId, { now, limit: 2 });
+        expect(first.files.map(({ fileId }) => fileId)).toEqual([
+          newest,
+          tieSecond,
+        ]);
+        expect(first.nextCursor).toBeDefined();
+        const firstCursor = first.nextCursor;
+        if (firstCursor === undefined) throw new Error("Expected next cursor.");
+        const second = await stores.fileStore.list(projectId, {
+          now,
+          limit: 2,
+          cursor: firstCursor,
+        });
+        expect(second.files.map(({ fileId }) => fileId)).toEqual([
+          tieFirst,
+          oldest,
+        ]);
+        expect(second.nextCursor).toBeUndefined();
+      });
+
+      it("validates cursors and continues from an expired unswept anchor", async () => {
+        const scope = namespace(implementation.name);
+        const projectId = `project_${scope}`;
+        const otherProjectId = `other_${scope}`;
+        const anchor = createFileId(`${scope}_anchor`);
+        const older = createFileId(`${scope}_older`);
+        const otherAnchor = createFileId(`${scope}_other_anchor`);
+        await stores.fileStore.put(
+          projectId,
+          stagedFile(
+            older,
+            "2026-07-18T06:00:00.000Z",
+            "2026-07-18T08:00:00.000Z",
+          ),
+        );
+        await stores.fileStore.put(
+          projectId,
+          stagedFile(
+            anchor,
+            "2026-07-18T06:01:00.000Z",
+            "2026-07-18T06:02:00.000Z",
+          ),
+        );
+        await stores.fileStore.put(
+          otherProjectId,
+          stagedFile(
+            otherAnchor,
+            "2026-07-18T06:03:00.000Z",
+            "2026-07-18T08:00:00.000Z",
+          ),
+        );
+        const first = await stores.fileStore.list(projectId, {
+          now: "2026-07-18T06:01:30.000Z",
+          limit: 1,
+        });
+        expect(first.files.map(({ fileId }) => fileId)).toEqual([anchor]);
+        expect(first.nextCursor).toBeDefined();
+        const firstCursor = first.nextCursor;
+        if (firstCursor === undefined) throw new Error("Expected next cursor.");
+        await expect(
+          stores.fileStore.list(projectId, {
+            now: "2026-07-18T06:02:00.000Z",
+            limit: 1,
+            cursor: firstCursor,
+          }),
+        ).resolves.toMatchObject({ files: [{ fileId: older }] });
+        await expect(
+          stores.fileStore.list(projectId, {
+            now: "2026-07-18T06:01:30.000Z",
+            limit: 1,
+            cursor: "not-valid!",
+          }),
+        ).rejects.toThrow("File cursor is invalid.");
+        await expect(
+          stores.fileStore.list(projectId, {
+            now: "2026-07-18T06:01:30.000Z",
+            limit: 1,
+            cursor: Buffer.from(
+              JSON.stringify({ after: createFileId(`${scope}_unknown`) }),
+            ).toString("base64url"),
+          }),
+        ).rejects.toThrow("File cursor is invalid.");
+        await expect(
+          stores.fileStore.list(projectId, {
+            now: "2026-07-18T06:01:30.000Z",
+            limit: 1,
+            cursor: Buffer.from(
+              JSON.stringify({ after: otherAnchor }),
+            ).toString("base64url"),
+          }),
+        ).rejects.toThrow("File cursor is invalid.");
+
+        await stores.fileStore.sweepExpired({
+          now: "2026-07-18T06:02:00.000Z",
+          limit: 1_000,
+        });
+        await expect(
+          stores.fileStore.list(projectId, {
+            now: "2026-07-18T06:02:00.000Z",
+            limit: 1,
+            cursor: firstCursor,
+          }),
+        ).rejects.toThrow("File cursor is invalid.");
+      });
+
+      it("sweeps expired rows in bounded idempotent batches and preserves live rows", async () => {
+        const scope = namespace(implementation.name);
+        const projectId = `project_${scope}`;
+        const expiredFirst = createFileId(`${scope}_sweep_first`);
+        const expiredSecond = createFileId(`${scope}_sweep_second`);
+        const live = createFileId(`${scope}_sweep_live`);
+        await stores.fileStore.sweepExpired({
+          now: "2026-07-18T08:00:00.000Z",
+          limit: 1_000,
+        });
+        await stores.fileStore.put(
+          projectId,
+          stagedFile(
+            expiredFirst,
+            "2026-07-18T07:00:00.000Z",
+            "2026-07-18T08:00:00.000Z",
+          ),
+        );
+        await stores.fileStore.put(
+          projectId,
+          stagedFile(
+            expiredSecond,
+            "2026-07-18T07:00:01.000Z",
+            "2026-07-18T08:00:00.000Z",
+          ),
+        );
+        await stores.fileStore.put(
+          projectId,
+          stagedFile(
+            live,
+            "2026-07-18T07:00:02.000Z",
+            "2026-07-18T10:00:00.000Z",
+          ),
+        );
+        await expect(
+          stores.fileStore.sweepExpired({
+            now: "2026-07-18T08:00:00.000Z",
+            limit: 1,
+          }),
+        ).resolves.toBe(1);
+        await expect(
+          stores.fileStore.sweepExpired({
+            now: "2026-07-18T08:00:00.000Z",
+            limit: 1,
+          }),
+        ).resolves.toBe(1);
+        await expect(
+          stores.fileStore.sweepExpired({
+            now: "2026-07-18T08:00:00.000Z",
+            limit: 1,
+          }),
+        ).resolves.toBe(0);
+        await expect(
+          stores.fileStore.get(projectId, live, "2026-07-18T08:00:00.000Z"),
+        ).resolves.toBeDefined();
+      });
+
+      it("rejects invalid list limits", async () => {
+        const scope = namespace(implementation.name);
+        for (const limit of [0, 101, 1.5]) {
+          await expect(
+            stores.fileStore.list(`project_${scope}`, {
+              now: "2026-07-18T08:00:00.000Z",
+              limit,
+            }),
+          ).rejects.toThrow(
+            "File list limit must be an integer from 1 through 100.",
+          );
+        }
       });
     });
 

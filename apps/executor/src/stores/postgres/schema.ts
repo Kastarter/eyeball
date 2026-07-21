@@ -13,6 +13,7 @@ import {
   bigserial,
   boolean,
   check,
+  customType,
   foreignKey,
   index,
   integer,
@@ -33,6 +34,53 @@ import type { WebhookEventSourceKind } from "../../webhooks/work-store.js";
 
 const timestampColumn = (name: string) =>
   timestamp(name, { mode: "string", withTimezone: true });
+
+const bytea = customType<{ data: Uint8Array; driverData: Uint8Array }>({
+  dataType: () => "bytea",
+  toDriver: (value) => Buffer.from(value),
+  fromDriver: (value) => Uint8Array.from(value),
+});
+
+export const stagedFiles = pgTable(
+  "staged_files",
+  {
+    sequence: bigserial("sequence", { mode: "number" }).notNull(),
+    projectId: text("project_id").notNull(),
+    fileId: text("file_id").notNull(),
+    name: text("name").notNull(),
+    mimeType: text("mime_type").notNull(),
+    size: bigint("size", { mode: "number" }).notNull(),
+    content: bytea("content").notNull(),
+    createdAt: timestampColumn("created_at").notNull(),
+    expiresAt: timestampColumn("expires_at").notNull(),
+  },
+  (table) => [
+    primaryKey({ columns: [table.projectId, table.fileId] }),
+    index("staged_files_project_created_idx").on(
+      table.projectId,
+      table.createdAt.desc(),
+      table.sequence.desc(),
+    ),
+    index("staged_files_expiry_idx").on(table.expiresAt, table.sequence),
+    check("staged_files_size_nonnegative", sql`${table.size} >= 0`),
+    check(
+      "staged_files_content_size_check",
+      sql`octet_length(${table.content}) = ${table.size}`,
+    ),
+    check(
+      "staged_files_expiry_after_creation",
+      sql`${table.expiresAt} > ${table.createdAt}`,
+    ),
+    check(
+      "staged_files_name_length_check",
+      sql`octet_length(${table.name}) BETWEEN 1 AND 255`,
+    ),
+    check(
+      "staged_files_mime_type_length_check",
+      sql`char_length(${table.mimeType}) BETWEEN 1 AND 255`,
+    ),
+  ],
+);
 
 export const executions = pgTable(
   "executions",
@@ -377,6 +425,7 @@ export const triggerDedupClaims = pgTable(
 );
 
 export const postgresSchema = {
+  stagedFiles,
   executions,
   executionIdempotency,
   taskJobs,

@@ -27,18 +27,15 @@ change. Never bind ports in tests; use in-process apps (`app.request`, PGlite).
 - M2.4 CLOUD-002 delinquency enforcement + operator exemption.
 - M3.1 Durable serializable async queue, Postgres leases, and startup recovery
   for pending/running executions plus webhook selection/delivery work.
+- M3.2 Durable FileStore and files list: Postgres `bytea` content behind the
+  existing seam, durable runtime wiring, paginated `GET /v1/files`, and
+  `eyeball.files.list`. Audit finding 8 + A-04.
 
 ## M3 — Restart and replica safety (executor durability)
 
-Until M3.2 and M3.3 land, deploy ONE executor replica and ONE MCP gateway
+Until M3.3 lands, deploy ONE executor replica and ONE MCP gateway
 replica.
 
-2. **M3.2 Durable FileStore + `GET /v1/files` list.** Staged bytes are
-   in-memory only — upload returns 201, restart makes it 404 (reproduced).
-   Postgres impl behind the existing `FileStore` seam (bytea now; object-store
-   seam documented), wired into the `EYEBALL_DATABASE_URL` bundle; add a
-   paginated project files list route + `eyeball.files.list` (also needed by
-   M5.3 UI). Audit finding 8 + A-04.
 3. **M3.3 Durable AgentStore + MCP SessionStore.** Voice agent definitions,
    bindings, and session pointers are process-local because `AgentStore` is
    synchronous — convert the seam to async, add the Postgres impl. Add the
@@ -68,7 +65,8 @@ replica.
    proxy (currently GET/POST/DELETE only). A-01.
 7. **M5.2 Triggers page.** Subscription CRUD, mode-specific forms, reveal-once
    push ingest URL, rotate, delete. A-02.
-8. **M5.3 Files page + Try-It attachment picker.** Needs M3.2's list route.
+8. **M5.3 Files page + Try-It attachment picker.** Uses the completed M3.2
+   file-list API.
    A-04.
 9. **M5.4 Voice panel: WebRTC web-session test + Numbers section.** The stale
    WebRTC branch says activation is undefined although

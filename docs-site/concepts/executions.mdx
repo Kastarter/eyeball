@@ -98,11 +98,39 @@ The primary REST upload format is JSON with padded base64 content:
 {"name":"receipt.pdf","mimeType":"application/pdf","content":"JVBERi0xLjcK...=="}
 ```
 
-The response is `{ fileId, name, mimeType, size, expiresAt }`. `GET /v1/files/:id` returns
-metadata, but file bytes are internal-only and can be resolved only by an adapter executing
-inside the authenticated project. Files expire after one hour by default, and the decoded
-size limit defaults to 25 MiB. Self-hosted executors can override those limits with
-`EYEBALL_FILE_TTL_MS` and `EYEBALL_FILE_MAX_BYTES`.
+The response is `{ fileId, name, mimeType, size, expiresAt }`. Both `GET /v1/files/:id` and
+the paginated `GET /v1/files` collection return metadata only. The collection is newest-first,
+omits expired files, defaults to 100 results, and accepts `limit` from 1 through 100 plus an
+opaque `cursor`:
+
+```ts
+import { Eyeball } from "@eyeball/sdk";
+
+const eyeball = new Eyeball({
+  apiKey: process.env.EYEBALL_API_KEY!,
+  baseUrl: process.env.EYEBALL_EXECUTOR_URL!,
+});
+
+let cursor: string | undefined;
+do {
+  const page = await eyeball.files.list({ limit: 25, cursor });
+  for (const file of page.files) console.log(file.fileId, file.name);
+  cursor = page.nextCursor;
+} while (cursor);
+```
+
+The response shape is `{ files, nextCursor? }`. Project-wide enumeration requires an unpinned
+project-authority API key; user-pinned keys receive `403 auth_insufficient_scope`. A malformed,
+unknown, reclaimed, or cross-project cursor receives `422 invalid_input`.
+
+File bytes are internal-only and can be resolved only by an adapter executing inside the
+authenticated project. Files expire after one hour by default, and the decoded size limit
+defaults to 25 MiB. Self-hosted executors can override those limits with
+`EYEBALL_FILE_TTL_MS` and `EYEBALL_FILE_MAX_BYTES`. Without `EYEBALL_DATABASE_URL`, staged files
+are in memory and disappear on executor restart. With Postgres, metadata and `bytea` content
+survive restart only until expiry; the `FileStore` seam permits a future object-store backend
+without changing the public routes or execution-bound resolver. There is no public download
+route.
 
 Staged files currently flow through Gmail and Microsoft Outlook `send_email`,
 `reply_to_email`, and `create_draft`, plus Google Drive `upload_file`. Other email providers

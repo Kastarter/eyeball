@@ -88,7 +88,7 @@ deployment error.
 
 | Guarantee | Enforcement and evidence |
 | --- | --- |
-| Executor logs and telemetry redact credential fields, authorization headers, canonical bodies, file bytes, URLs, and nested secrets before emission. | Central wrapper in `apps/executor/src/telemetry/log.ts`; [`apps/executor/test/telemetry.test.ts`](../apps/executor/test/telemetry.test.ts). |
+| Executor logs and telemetry redact credential fields, authorization headers, canonical bodies, file bytes, URLs, and nested secrets before emission. Upload base64 and decoded-byte sentinels are regression-tested as size-only markers. | Central wrapper in `apps/executor/src/telemetry/log.ts`; [`apps/executor/test/telemetry.test.ts`](../apps/executor/test/telemetry.test.ts). |
 | Provider errors retain bounded diagnostics without exposing response secrets or configured credential values, and credentialed redirects are not followed. | `packages/toolkits/src/http-client.ts`; [`apps/executor/test/http-client.test.ts`](../apps/executor/test/http-client.test.ts). |
 | Cloud audit metadata passes through recursive named-field redaction before persistence. | `cloud/apps/control/src/audit.ts`; [`cloud/apps/control/test/control.test.ts`](../cloud/apps/control/test/control.test.ts) and [`cloud/apps/control/test/vault.test.ts`](../cloud/apps/control/test/vault.test.ts). |
 | The local vault encrypts every credential with AES-256-GCM, authenticates record metadata as AAD, and rejects ciphertext/AAD tampering. | `packages/core/src/local-vault.ts`; [`packages/core/test/local-vault.test.ts`](../packages/core/test/local-vault.test.ts). |
@@ -97,6 +97,7 @@ deployment error.
 | Outbound execution webhooks sign `<unix-seconds>.<raw-body>` with HMAC-SHA256 and expose the signature as `v1=<hex>`. Verification has a five-minute replay window. | `packages/core/src/webhooks.ts`; [`packages/core/test/webhooks.test.ts`](../packages/core/test/webhooks.test.ts). |
 | Trigger-ingest secrets are 32 random bytes, stored only as SHA-256 hashes, compared in constant time, returned only in create/rotate URLs, and immediately invalidated on rotation. | `apps/executor/src/triggers/service.ts`; [`apps/executor/test/triggers.test.ts`](../apps/executor/test/triggers.test.ts). |
 | A user-pinned key cannot assert a different user or read another user's executions, connections, webhooks, or triggers. | Executor authorization in `apps/executor/src/routes.ts`; [`apps/executor/test/execution.test.ts`](../apps/executor/test/execution.test.ts) and [`apps/executor/test/triggers.test.ts`](../apps/executor/test/triggers.test.ts). Staged-file ownership is a separately documented gap. |
+| Staged files are project-isolated, remain available across Postgres/PGlite executor reconstruction until expiry, expired durable rows are reclaimed online in bounded batches, persistence failures do not retain byte-bearing driver errors, and metadata routes never return content. | Shared memory/PGlite FileStore contracts, restart and continuous-runtime reclamation regressions, and forced-insert-failure error-chain coverage in [`apps/executor/test/store-contract.test.ts`](../apps/executor/test/store-contract.test.ts); HTTP isolation, metadata-only, expiry, and authorization coverage in [`apps/executor/test/files.test.ts`](../apps/executor/test/files.test.ts). |
 | Caller-supplied reserved child execution IDs require a user-pinned key, synchronous mode, and an idempotency key. | `apps/executor/src/routes.ts`; [`apps/executor/test/execution.test.ts`](../apps/executor/test/execution.test.ts). |
 | The dashboard forwards only allowlisted cloud cookies/headers and stores executor keys in project-scoped HttpOnly, SameSite=Strict cookies. Cloud and executor redirects are not followed. | `apps/dashboard/src/lib/cloud-proxy.ts` and `executor-proxy.ts`; [`apps/dashboard/src/lib/cloud-proxy.test.ts`](../apps/dashboard/src/lib/cloud-proxy.test.ts) and [`apps/dashboard/src/lib/executor-key-route.test.ts`](../apps/dashboard/src/lib/executor-key-route.test.ts). |
 | The remote voice client requires HTTPS outside loopback, rejects URL credentials/query/fragment, refuses short supplied bearer tokens, and does not follow authenticated redirects. | `packages/toolkits/src/voice/remote-session-driver.ts`; [`packages/toolkits/test/voice/remote-session-driver.test.ts`](../packages/toolkits/test/voice/remote-session-driver.test.ts). |
@@ -151,12 +152,16 @@ child-ID path. MCP metadata is checked against the inbound key's pin and MCP
 callers do not receive the reserved-ID header seam.
 
 Staged-file records are currently scoped only to a project, not to their
-uploading user. File IDs are high-entropy and expire after one hour by default,
-but a pinned user who obtains another same-project user's file ID can retrieve
-its metadata or reference its bytes in an execution. Treat file IDs as bearer
-capabilities until user ownership is enforced in the file-store contract. The
-JSON upload route applies a streaming body ceiling derived from the configured
-decoded-byte limit plus 16 KiB for metadata before parsing or base64 decoding.
+uploading user. Upload and single-file metadata routes remain available through
+the normal project/pinned middleware, while project-wide `GET /v1/files`
+enumeration requires an unpinned project-authority key. That restriction keeps
+the collection route from turning SEC-017's high-entropy bearer IDs into a
+pinned-user enumeration surface. A pinned user who otherwise obtains another
+same-project user's file ID can still retrieve its metadata or reference its
+bytes in an execution, so treat file IDs as bearer capabilities until user
+ownership is enforced in the file-store contract. The JSON upload route applies
+a streaming body ceiling derived from the configured decoded-byte limit plus 16
+KiB for metadata before parsing or base64 decoding.
 
 ### Executor to providers
 
@@ -306,6 +311,15 @@ The following are explicit limitations, not implied guarantees:
   leases, deterministic identities, startup recovery, and private immutable
   webhook work snapshots. The zero-config queue remains in memory, and the
   Postgres worker has not been load- or chaos-certified as a managed service.
+- With `EYEBALL_DATABASE_URL`, staged-file metadata and `bytea` content survive
+  restart until TTL expiry. Without a database they remain process-local and are
+  lost on restart. Logical expiry is enforced continuously on get/list, while
+  bulk physical row reclamation drains 100-row batches at durable startup and
+  deletes at most 100 rows per non-overlapping minute tick while the runtime is
+  healthy, with lazy per-ID cleanup as well. Postgres insert failures are
+  replaced at the `FileStore` boundary by a constant error with no retained
+  driver message, parameters, or cause because Drizzle query errors can include
+  bound `bytea` content.
 - Postgres does not make trigger polling distributed. Polling still needs
   distributed leases, replay/backfill, provider signature verification, and an
   atomic claim/outbox.
@@ -336,7 +350,7 @@ The following are explicit limitations, not implied guarantees:
 | Auditability | Structured redacted executor telemetry and tenant-scoped cloud audit events. | Central immutable retention, administrator/data-access events, clock/ingestion monitoring, alert coverage, review cadence, and evidence exports. |
 | Key management | AES-GCM local/cloud vaults, versioned cloud KEK wrappers, reveal-once keys, secret rotation APIs for webhooks/triggers. | Documented custodians, KMS/HSM integration, rotation cadence/SLOs, automated KEK rewrap job, dual-control, inventory, expiry alerts, and completed rotation evidence. |
 | Vulnerability management | Lockfiles, exact sensitive pins, SHA-pinned actions, offline secret scanner, this register. | Scheduled gitleaks/SCA/pip-audit/SBOM, advisory SLA, signed provenance, dependency update cadence, external penetration test, and remediation evidence. |
-| Availability and recovery | Durable Postgres/PGlite records, lease-fenced execution/webhook jobs, startup recovery, and conservative post-dispatch fencing. | Production backup schedule, encryption/key escrow, restore drills, RPO/RTO, regional/replica strategy, multi-replica load/chaos evidence, and dependency outage runbooks. |
+| Availability and recovery | Durable Postgres/PGlite records, lease-fenced execution/webhook jobs, startup recovery, conservative post-dispatch fencing, and restart-durable staged-file metadata/`bytea` content until expiry. | Production backup schedule, storage monitoring and vacuum policy for potentially large `bytea` rows, encryption/key escrow, restore drills covering staged files, RPO/RTO, regional/replica strategy, multi-replica load/chaos evidence, and dependency outage runbooks. |
 | Incident response | [`INCIDENT-RESPONSE.md`](./INCIDENT-RESPONSE.md) skeleton and revocation order. | Named on-call/incident roles, paging and forensic tooling, tabletop exercise, counsel/insurer contacts, customer status channel, and postmortem evidence. |
 | Change management | Pull-request CI, scoped tests, immutable action pins, release changesets. | Required review/branch protections evidence, production segregation of duties, deployment approvals, rollback evidence, and emergency-change procedure. |
 | Vendor and data governance | Provider manifests and a partial license/provenance review. | Vendor risk register, subprocessors, DPAs, data-flow inventory, retention/deletion policy, data classification, privacy request process, and license sign-off. |

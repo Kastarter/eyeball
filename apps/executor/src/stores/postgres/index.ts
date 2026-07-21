@@ -1,6 +1,7 @@
 export * from "./database.js";
 export * from "./execution-store.js";
 export * from "./factory.js";
+export * from "./file-store.js";
 export * from "./job-store.js";
 export * from "./migrate.js";
 export * from "./schema.js";

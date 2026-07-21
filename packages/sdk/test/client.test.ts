@@ -191,6 +191,110 @@ describe("Eyeball SDK", () => {
     });
   });
 
+  it("lists staged-file metadata without adding the client default user", async () => {
+    const requests: Request[] = [];
+    const expiresAt = "2026-07-17T01:00:00.000Z";
+    let call = 0;
+    const eb = client(
+      testFetch(() => {
+        call += 1;
+        return jsonResponse(
+          call === 1
+            ? {
+                files: [
+                  {
+                    fileId: "file_sdk_first",
+                    name: "first.txt",
+                    mimeType: "text/plain",
+                    size: 5,
+                    expiresAt,
+                  },
+                ],
+                nextCursor: "cursor_sdk_next",
+              }
+            : { files: [] },
+        );
+      }, requests),
+      { userId: "user_must_not_be_serialized" },
+    );
+
+    await expect(eb.files.list()).resolves.toEqual({
+      files: [
+        {
+          fileId: "file_sdk_first",
+          name: "first.txt",
+          mimeType: "text/plain",
+          size: 5,
+          expiresAt,
+        },
+      ],
+      nextCursor: "cursor_sdk_next",
+    });
+    await expect(
+      eb.files.list({ cursor: "cursor_sdk_next", limit: 25 }),
+    ).resolves.toEqual({ files: [] });
+    expect(requests.map((request) => request.method)).toEqual(["GET", "GET"]);
+    expect(requests.map((request) => new URL(request.url).pathname)).toEqual([
+      "/v1/files",
+      "/v1/files",
+    ]);
+    expect(new URL(requests[0]?.url ?? "").search).toBe("");
+    expect(new URL(requests[1]?.url ?? "").search).toBe(
+      "?cursor=cursor_sdk_next&limit=25",
+    );
+    expect(new URL(requests[0]?.url ?? "").searchParams.has("userId")).toBe(
+      false,
+    );
+  });
+
+  it("validates file list options before fetch and normalizes 403 and 422 errors", async () => {
+    const requests: Request[] = [];
+    let responseIndex = 0;
+    const eb = client(
+      testFetch(() => {
+        responseIndex += 1;
+        const status = responseIndex === 1 ? 403 : 422;
+        return jsonResponse(
+          {
+            requestId: `req_files_${status}`,
+            error: {
+              code:
+                status === 403 ? "auth_insufficient_scope" : "invalid_input",
+              message:
+                status === 403
+                  ? "Project authority is required."
+                  : "File cursor is invalid.",
+              retryable: false,
+            },
+          },
+          status,
+        );
+      }, requests),
+    );
+    for (const options of [
+      { cursor: "" },
+      { limit: 0 },
+      { limit: 101 },
+      { limit: 1.5 },
+    ]) {
+      await expect(eb.files.list(options)).rejects.toMatchObject({
+        code: TOOL_ERROR_CODES.INVALID_INPUT,
+      });
+    }
+    expect(requests).toHaveLength(0);
+    const forbidden = eb.files.list();
+    await expect(forbidden).rejects.toBeInstanceOf(EyeballError);
+    await expect(forbidden).rejects.toMatchObject({
+      code: TOOL_ERROR_CODES.AUTH_INSUFFICIENT_SCOPE,
+      requestId: "req_files_403",
+    });
+    await expect(eb.files.list({ cursor: "unknown" })).rejects.toMatchObject({
+      code: TOOL_ERROR_CODES.INVALID_INPUT,
+      requestId: "req_files_422",
+    });
+    expect(requests).toHaveLength(2);
+  });
+
   it("includes async MCP tools only after Tasks support is negotiated", async () => {
     const eb = client(
       testFetch(() => {

@@ -5,13 +5,14 @@ description: "Replace in-memory defaults, protect public edges, and deploy compa
 
 Before production:
 
-- configure `EYEBALL_DATABASE_URL` or provide equivalent durable execution, job, webhook-work, and delivery stores;
+- configure `EYEBALL_DATABASE_URL` or provide equivalent durable execution, job, webhook-work, delivery, and `FileStore` implementations;
 - retain idempotency correlation, immutable terminal records, and the stable recovery metadata during migrations;
 - run the executor, gateway, and dashboard behind TLS and authentication;
 - rate-limit bearer keys and MCP sessions;
 - configure the executor's redacted logs and optional OpenTelemetry export, then add deployment metrics for queue age and provider saturation;
-- keep provider credentials out of custom logs, traces, errors, collector configuration, and client bundles;
-- back up execution/voice history according to retention policy;
+- keep provider credentials and staged-file bytes out of custom logs, traces, errors, collector configuration, and client bundles;
+- back up execution/voice history and any retained staged-file rows according to retention policy, then test restore paths;
+- monitor database growth and vacuum behavior for potentially large `bytea` rows; plan for TTL cleanup and replacement with an object-store-backed `FileStore` when workload or retention makes inline blobs inappropriate;
 - monitor durable queue age, expired leases, repeated recovery, `execution_interrupted` outcomes, and exhausted webhook deliveries; signing and retry semantics are fixed by RFC 001.
 
 The dashboard uses a server-side proxy; keep `EYEBALL_API_KEY` server-only. Mockhouse and `/_mock` must stay on loopback or an isolated test network.

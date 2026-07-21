@@ -20,6 +20,7 @@ export {
   type QualifiedTriggerName,
   type RotatedWebhookSecret,
   type StagedFileMetadata,
+  type StagedFilePage,
   type StagedFileReference,
   TOOL_ERROR_CODES,
   type ToolDefinition,

@@ -22,6 +22,7 @@ import {
   type RotatedTriggerIngestSecret,
   type RotatedWebhookSecret,
   type StagedFileMetadata,
+  type StagedFilePage,
   type StagedFileReference,
   TOOL_ERROR_CODES,
   type ToolDefinition,
@@ -54,6 +55,7 @@ import type {
   GetToolsResult,
   GetTriggersOptions,
   ListExecutionsOptions,
+  ListFilesOptions,
   ListSubscriptionsOptions,
   ListWebhookDeliveriesOptions,
   ListWebhookEndpointsOptions,
@@ -265,6 +267,27 @@ export class FilesClient {
       name: metadata.name,
       mimeType: metadata.mimeType,
     };
+  }
+
+  /**
+   * Lists unexpired project staged-file metadata in newest-first order.
+   *
+   * @param options Opaque continuation cursor and a page size from 1 through 100; the executor defaults to 100.
+   * @returns File metadata plus an optional cursor for the next page.
+   * @throws EyeballError when options are invalid, the key lacks project authority, or the executor request fails.
+   * @example
+   * const first = await eyeball.files.list({ limit: 50 });
+   * for (const file of first.files) console.log(file.name, file.expiresAt);
+   * if (first.nextCursor !== undefined) {
+   *   const next = await eyeball.files.list({
+   *     cursor: first.nextCursor,
+   *     limit: 50,
+   *   });
+   *   console.log(next.files.length);
+   * }
+   */
+  async list(options: ListFilesOptions = {}): Promise<StagedFilePage> {
+    return this.#context.http.request(`/v1/files${pageSuffix(options)}`);
   }
 
   /**

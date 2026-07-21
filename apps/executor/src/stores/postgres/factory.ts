@@ -10,6 +10,7 @@ import {
 } from "drizzle-orm/pglite";
 import { Pool } from "pg";
 import type { JobStore } from "../../jobs/store.js";
+import type { FileStore } from "../../staged-files.js";
 import type { ExecutionStore } from "../../store.js";
 import type { TriggerStateStore } from "../../triggers/state-store.js";
 import type { TriggerSubscriptionStore } from "../../triggers/subscription-store.js";
@@ -19,6 +20,7 @@ import type { WebhookEndpointStore } from "../../webhooks/endpoint-store.js";
 import type { WebhookWorkStore } from "../../webhooks/work-store.js";
 import type { EyeballPostgresDatabase } from "./database.js";
 import { PostgresExecutionStore } from "./execution-store.js";
+import { PostgresFileStore } from "./file-store.js";
 import { PostgresJobStore } from "./job-store.js";
 import { migrate } from "./migrate.js";
 import { type PostgresSchema, postgresSchema } from "./schema.js";
@@ -31,6 +33,7 @@ import { PostgresWebhookWorkStore } from "./webhook-work-store.js";
 
 export interface PostgresStoreSet {
   executionStore: ExecutionStore;
+  fileStore: FileStore;
   webhookEndpointStore: WebhookEndpointStore;
   webhookDeliveryStore: WebhookDeliveryStore;
   triggerSubscriptionStore: TriggerSubscriptionStore;
@@ -72,6 +75,7 @@ function stores<TQueryResult extends PgQueryResultHKT>(
 ): PostgresStoreSet {
   return {
     executionStore: new PostgresExecutionStore(database),
+    fileStore: new PostgresFileStore(database),
     webhookEndpointStore: new PostgresWebhookEndpointStore(database),
     webhookDeliveryStore: new PostgresWebhookDeliveryStore(database),
     triggerSubscriptionStore: new PostgresTriggerSubscriptionStore(database),

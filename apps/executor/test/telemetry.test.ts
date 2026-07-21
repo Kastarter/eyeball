@@ -222,6 +222,8 @@ function findMetric(resourceMetrics: ResourceMetrics, name: string) {
 describe("executor observability", () => {
   it("centrally redacts credentials, authorization, bodies, binary files, and nested secrets", () => {
     const longBody = "x".repeat(2_000);
+    const uploadBase64 = "ZmlsZS10ZWxlbWV0cnktc2VudGluZWw=";
+    const decodedUpload = new TextEncoder().encode("file-telemetry-sentinel");
     const redacted = redact({
       credentials: {
         type: "oauth2",
@@ -245,6 +247,10 @@ describe("executor observability", () => {
           size: 3,
           content: new Uint8Array([1, 2, 3]),
         },
+        upload: {
+          content: uploadBase64,
+          decoded: decodedUpload,
+        },
       },
     }) as Record<string, unknown>;
 
@@ -266,6 +272,10 @@ describe("executor observability", () => {
         size: 3,
         content: "[REDACTED:body:3 bytes]",
       },
+      upload: {
+        content: `[REDACTED:body:${Buffer.byteLength(uploadBase64)} bytes]`,
+        decoded: `[REDACTED:binary:${decodedUpload.byteLength} bytes]`,
+      },
     });
     const serialized = JSON.stringify(redacted);
     for (const secret of [
@@ -276,6 +286,8 @@ describe("executor observability", () => {
       "cookie-top-secret",
       "idempotency-top-secret",
       "url-top-secret",
+      uploadBase64,
+      "file-telemetry-sentinel",
     ]) {
       expect(serialized).not.toContain(secret);
     }

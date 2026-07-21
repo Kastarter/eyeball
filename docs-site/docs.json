@@ -207,6 +207,7 @@
             "api/executions/get-execution"
           ]
         },
+        "api/files",
         {
           "group": "Connections dev API",
           "pages": [

@@ -91,6 +91,12 @@ export interface StagedFileMetadata {
   expiresAt: string;
 }
 
+/** One cursor page of unexpired project-scoped staged-file metadata. */
+export interface StagedFilePage {
+  files: readonly StagedFileMetadata[];
+  nextCursor?: string;
+}
+
 export interface ExecuteRequest {
   tool: QualifiedToolName;
   userId: string;

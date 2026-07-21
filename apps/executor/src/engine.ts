@@ -27,6 +27,7 @@ import {
   type QualifiedToolName,
   type ResolvedCredential,
   type StagedFileMetadata,
+  type StagedFilePage,
   TOOL_ERROR_CODES,
   type ToolDefinition,
   validateInput,
@@ -58,6 +59,7 @@ import {
   DEFAULT_MAX_FILE_SIZE_BYTES,
   type FileStore,
   InMemoryFileStore,
+  InvalidFileCursorError,
 } from "./staged-files.js";
 import {
   type ExecutionAllocation,
@@ -139,6 +141,11 @@ export interface ListExecutionsQuery {
   status?: ExecutionStatus;
   tool?: QualifiedToolName;
   userId?: string;
+  cursor?: string;
+  limit?: number;
+}
+
+export interface ListFilesQuery {
   cursor?: string;
   limit?: number;
 }
@@ -586,8 +593,7 @@ export class ExecutionEngine {
     this.#clock = options.clock ?? systemClock;
     this.#env = options.env ?? process.env;
     this.store = options.store ?? new InMemoryExecutionStore();
-    this.fileStore =
-      options.fileStore ?? new InMemoryFileStore({ clock: this.#clock });
+    this.fileStore = options.fileStore ?? new InMemoryFileStore();
     this.fileTtlMs = positiveIntegerConfig(
       options.fileTtlMs,
       this.#env.EYEBALL_FILE_TTL_MS,
@@ -734,6 +740,7 @@ export class ExecutionEngine {
     await this.fileStore.put(projectId, {
       meta,
       content: Uint8Array.from(input.content),
+      createdAt: now.toISOString(),
     });
     return structuredClone(meta);
   }
@@ -748,7 +755,8 @@ export class ExecutionEngine {
         message: "Staged file was not found or has expired.",
       });
     }
-    const file = await this.fileStore.get(projectId, fileId);
+    const now = this.#now();
+    const file = await this.fileStore.get(projectId, fileId, now.toISOString());
     if (file === undefined) {
       throw new ExecutionRequestError(404, {
         code: TOOL_ERROR_CODES.NOT_FOUND,
@@ -759,13 +767,79 @@ export class ExecutionEngine {
     if (!Number.isFinite(expiresAt)) {
       throw new Error("File store returned an invalid expiry timestamp.");
     }
-    if (expiresAt <= this.#now().valueOf()) {
+    if (expiresAt <= now.valueOf()) {
       throw new ExecutionRequestError(404, {
         code: TOOL_ERROR_CODES.NOT_FOUND,
         message: "Staged file was not found or has expired.",
       });
     }
     return file;
+  }
+
+  async getFileMetadata(
+    projectId: string,
+    fileId: string,
+  ): Promise<StagedFileMetadata> {
+    if (!isFileId(fileId)) {
+      throw new ExecutionRequestError(404, {
+        code: TOOL_ERROR_CODES.NOT_FOUND,
+        message: "Staged file was not found or has expired.",
+      });
+    }
+    const now = this.#now();
+    const metadata = await this.fileStore.getMetadata(
+      projectId,
+      fileId,
+      now.toISOString(),
+    );
+    if (metadata === undefined) {
+      throw new ExecutionRequestError(404, {
+        code: TOOL_ERROR_CODES.NOT_FOUND,
+        message: "Staged file was not found or has expired.",
+      });
+    }
+    const expiresAt = Date.parse(metadata.expiresAt);
+    if (!Number.isFinite(expiresAt)) {
+      throw new Error("File store returned an invalid expiry timestamp.");
+    }
+    if (expiresAt <= now.valueOf()) {
+      throw new ExecutionRequestError(404, {
+        code: TOOL_ERROR_CODES.NOT_FOUND,
+        message: "Staged file was not found or has expired.",
+      });
+    }
+    return structuredClone(metadata);
+  }
+
+  async listFiles(
+    projectId: string,
+    query: ListFilesQuery = {},
+  ): Promise<StagedFilePage> {
+    const limit = query.limit ?? 100;
+    if (!Number.isInteger(limit) || limit < 1 || limit > 100) {
+      return invalidRequest("limit must be an integer from 1 through 100.");
+    }
+    const now = this.#now();
+    let page: StagedFilePage;
+    try {
+      page = await this.fileStore.list(projectId, {
+        limit,
+        now: now.toISOString(),
+        ...(query.cursor === undefined ? {} : { cursor: query.cursor }),
+      });
+    } catch (error) {
+      if (error instanceof InvalidFileCursorError) {
+        return invalidRequest(error.message);
+      }
+      throw error;
+    }
+    for (const metadata of page.files) {
+      const expiresAt = Date.parse(metadata.expiresAt);
+      if (!Number.isFinite(expiresAt) || expiresAt <= now.valueOf()) {
+        throw new Error("File store returned invalid or expired metadata.");
+      }
+    }
+    return structuredClone(page);
   }
 
   async execute(command: ExecuteCommand): Promise<ExecuteOutcome> {

@@ -204,6 +204,18 @@ function projectAuthorityFailure(context: ExecutorContext): Response {
   );
 }
 
+function fileProjectAuthorityFailure(context: ExecutorContext): Response {
+  return requestFailure(
+    context,
+    new EyeballError({
+      code: TOOL_ERROR_CODES.AUTH_INSUFFICIENT_SCOPE,
+      message:
+        "Project-scoped file listing requires an unpinned project API key.",
+    }),
+    403,
+  );
+}
+
 function webhookNotFound(context: ExecutorContext): Response {
   return requestFailure(
     context,
@@ -321,7 +333,7 @@ function handleRouteError(context: ExecutorContext, error: unknown): Response {
   );
 }
 
-function parseWebhookPageQuery(
+function parseCursorPageQuery(
   context: ExecutorContext,
 ): { cursor?: string; limit: number } | Response {
   const limitValue = context.req.query("limit");
@@ -681,7 +693,7 @@ export function createExecutorApp(options: ExecutorAppOptions = {}): Hono<{
     if (context.get("pinnedUserId") !== undefined) {
       return projectAuthorityFailure(context);
     }
-    const query = parseWebhookPageQuery(context);
+    const query = parseCursorPageQuery(context);
     if (query instanceof Response) return query;
     try {
       const page = await engine.webhookDeliverer.endpointStore.list(
@@ -815,7 +827,7 @@ export function createExecutorApp(options: ExecutorAppOptions = {}): Hono<{
     if (context.get("pinnedUserId") !== undefined) {
       return projectAuthorityFailure(context);
     }
-    const query = parseWebhookPageQuery(context);
+    const query = parseCursorPageQuery(context);
     if (query instanceof Response) return query;
     try {
       const endpoint = await engine.webhookDeliverer.endpointStore.get(
@@ -1190,13 +1202,28 @@ export function createExecutorApp(options: ExecutorAppOptions = {}): Hono<{
     },
   );
 
+  app.get("/v1/files", async (context) => {
+    if (context.get("pinnedUserId") !== undefined) {
+      return fileProjectAuthorityFailure(context);
+    }
+    const query = parseCursorPageQuery(context);
+    if (query instanceof Response) return query;
+    try {
+      return context.json(
+        await engine.listFiles(context.get("projectId"), query),
+      );
+    } catch (error) {
+      return handleRouteError(context, error);
+    }
+  });
+
   app.get("/v1/files/:id", async (context) => {
     try {
-      const file = await engine.getFile(
+      const file = await engine.getFileMetadata(
         context.get("projectId"),
         context.req.param("id"),
       );
-      return context.json(file.meta);
+      return context.json(file);
     } catch (error) {
       return handleRouteError(context, error);
     }

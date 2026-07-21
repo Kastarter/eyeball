@@ -1,0 +1,85 @@
+---
+title: "Files API"
+description: "Stage project-scoped bytes, list unexpired metadata, and resolve attachments only during execution."
+---
+
+Staged files are short-lived project resources. Public routes expose metadata only; there is no public content-download route. Tool adapters resolve bytes through the trusted, execution-bound `AdapterContext.files` interface.
+
+## Stage a file
+
+`POST /v1/files`
+
+The request is a closed JSON object. `name` and `content` are required, `mimeType` is optional, and unknown fields are rejected. `content` must be canonical padded base64; unpadded and URL-safe encodings are invalid.
+
+```http
+POST /v1/files
+Authorization: Bearer eyeball_project_key
+Content-Type: application/json
+
+{"name":"receipt.pdf","mimeType":"application/pdf","content":"JVBERi0xLjcK...=="}
+```
+
+The `201` response contains metadata only:
+
+```json
+{
+  "fileId": "file_01JZ7F4Y8E7H48H3Y2NQ4J5H8P",
+  "name": "receipt.pdf",
+  "mimeType": "application/pdf",
+  "size": 18422,
+  "expiresAt": "2026-07-20T15:00:00.000Z"
+}
+```
+
+When omitted, `mimeType` defaults to `application/octet-stream`. The decoded size cap defaults to 25 MiB and the TTL defaults to one hour; self-hosted operators can change them with `EYEBALL_FILE_MAX_BYTES` and `EYEBALL_FILE_TTL_MS`. The executor applies a streaming request-body ceiling derived from the decoded-byte cap plus 16 KiB of JSON metadata before parsing or decoding.
+
+## List files
+
+`GET /v1/files?limit=100&cursor=...`
+
+This project-wide collection requires an unpinned project-authority API key. A user-pinned key receives `403 auth_insufficient_scope`.
+
+Results are newest-first and omit files whose TTL has expired. `limit` defaults to 100 and must be an integer from 1 through 100. `cursor` is an opaque continuation token returned by the previous page.
+
+```json
+{
+  "files": [
+    {
+      "fileId": "file_01JZ7F4Y8E7H48H3Y2NQ4J5H8P",
+      "name": "receipt.pdf",
+      "mimeType": "application/pdf",
+      "size": 18422,
+      "expiresAt": "2026-07-20T15:00:00.000Z"
+    }
+  ],
+  "nextCursor": "eyJhZnRlciI6ImZpbGVfLi4uIn0"
+}
+```
+
+Malformed cursors, unknown or physically reclaimed anchors, and anchors from another project receive `422 invalid_input`. An anchor that expires between pages remains usable while its row still exists; after physical cleanup, restart pagination without that cursor.
+
+The SDK exposes the same contract:
+
+```ts
+import { Eyeball } from "@eyeball/sdk";
+
+const eyeball = new Eyeball({
+  apiKey: process.env.EYEBALL_API_KEY!,
+  baseUrl: process.env.EYEBALL_EXECUTOR_URL!,
+});
+
+const page = await eyeball.files.list({ limit: 25 });
+console.log(page.files, page.nextCursor);
+```
+
+## Get file metadata
+
+`GET /v1/files/:id`
+
+The response is one staged-file metadata object and never includes bytes or a storage locator. Malformed, missing, expired, and cross-project IDs all receive the same `404 not_found` response. This route uses the normal project/pinned authentication middleware; file ownership remains project-scoped, so IDs must be treated as bearer capabilities during their TTL.
+
+## Durability and cleanup
+
+Without `EYEBALL_DATABASE_URL`, staged metadata and bytes are in memory and disappear on executor restart. With Postgres, the stock `FileStore` persists metadata and `bytea` content across restart until `expiresAt`. Logical expiry is enforced immediately on reads and lists. Bulk row cleanup drains 100-row batches at durable startup, then a non-overlapping sweep deletes at most 100 expired rows once per minute while the runtime remains healthy; reads also lazily delete an expired row addressed by ID.
+
+`FileStore` is the implementation seam for a future backend that keeps metadata/indexes in Postgres and content in an object store. Such a replacement does not change these routes, the engine contract, or adapter byte resolution.

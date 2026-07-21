@@ -3,16 +3,19 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import {
   createExecutionId,
+  createFileId,
   type ExecutionRecord,
   MockCredentialProvider,
 } from "@eyeball/core";
-import { afterAll, expect, it } from "vitest";
+import { afterAll, expect, it, vi } from "vitest";
 import {
+  createExecutorApp,
   createExecutorRuntime,
   createJobEnvelope,
   createPgliteStoreBundle,
   executorJobId,
   InMemoryExecutionStore,
+  InMemoryFileStore,
   InMemoryJobStore,
   InMemoryTriggerStateStore,
   InMemoryTriggerSubscriptionStore,
@@ -37,6 +40,24 @@ function pgliteStores(): Promise<PgliteStoreBundle> {
   return pgliteBundlePromise;
 }
 
+function errorChainText(error: unknown): string {
+  const seen = new Set<Error>();
+  const values: string[] = [];
+  let current = error;
+  while (current instanceof Error && !seen.has(current)) {
+    seen.add(current);
+    for (const key of Object.getOwnPropertyNames(current)) {
+      if (key === "cause") continue;
+      const value = Reflect.get(current, key) as unknown;
+      if (typeof value === "string") values.push(value);
+      if (value instanceof Uint8Array) values.push([...value].join(","));
+      if (Array.isArray(value)) values.push(value.map(String).join(","));
+    }
+    current = current.cause;
+  }
+  return values.join("\n");
+}
+
 afterAll(async () => {
   if (pgliteBundlePromise !== undefined) {
     await (await pgliteBundlePromise).close();
@@ -51,6 +72,7 @@ registerStoreContractSuite([
       const jobStore = new InMemoryJobStore();
       return {
         executionStore: new InMemoryExecutionStore(),
+        fileStore: new InMemoryFileStore(),
         webhookEndpointStore: new InMemoryWebhookEndpointStore(),
         webhookDeliveryStore,
         webhookWorkStore: new InMemoryWebhookWorkStore(
@@ -77,6 +99,7 @@ it("keeps zero-config runtime stores in memory", async () => {
   });
   expect(runtime.persistence).toBeUndefined();
   expect(runtime.engine.store).toBeInstanceOf(InMemoryExecutionStore);
+  expect(runtime.engine.fileStore).toBeInstanceOf(InMemoryFileStore);
   expect(runtime.engine.webhookDeliverer.endpointStore).toBeInstanceOf(
     InMemoryWebhookEndpointStore,
   );
@@ -96,6 +119,7 @@ it("wires every durable store when EYEBALL_DATABASE_URL is set", async () => {
   try {
     expect(runtime.persistence).toBe(bundle);
     expect(runtime.engine.store).toBe(bundle.executionStore);
+    expect(runtime.engine.fileStore).toBe(bundle.fileStore);
     expect(runtime.engine.webhookDeliverer.endpointStore).toBe(
       bundle.webhookEndpointStore,
     );
@@ -110,6 +134,225 @@ it("wires every durable store when EYEBALL_DATABASE_URL is set", async () => {
     );
   } finally {
     await runtime.close();
+  }
+});
+
+it("sweeps expired durable files in fixed-clock batches before startup", async () => {
+  const bundle = await createPgliteStoreBundle();
+  const sweep = vi
+    .spyOn(bundle.fileStore, "sweepExpired")
+    .mockResolvedValueOnce(100)
+    .mockResolvedValueOnce(2);
+  const now = new Date("2026-07-18T08:30:00.000Z");
+  const runtime = await createExecutorRuntime({
+    env: { EYEBALL_DATABASE_URL: "postgresql://contract.invalid/eyeball" },
+    credentialProvider: new MockCredentialProvider([]),
+    persistenceFactory: async () => bundle,
+    clock: { now: () => new Date(now) },
+  });
+  try {
+    expect(sweep).toHaveBeenCalledTimes(2);
+    expect(sweep).toHaveBeenNthCalledWith(1, {
+      limit: 100,
+      now: now.toISOString(),
+    });
+    expect(sweep).toHaveBeenNthCalledWith(2, {
+      limit: 100,
+      now: now.toISOString(),
+    });
+  } finally {
+    await runtime.close();
+  }
+});
+
+it("physically reclaims expired durable files while the runtime stays healthy", async () => {
+  const bundle = await createPgliteStoreBundle();
+  const projectId = "project_online_file_sweep";
+  const fileId = createFileId("online_file_sweep");
+  let now = Date.parse("2026-07-18T08:30:00.000Z");
+  const runtime = await createExecutorRuntime({
+    env: { EYEBALL_DATABASE_URL: "postgresql://contract.invalid/eyeball" },
+    credentialProvider: new MockCredentialProvider([]),
+    persistenceFactory: async () => bundle,
+    clock: { now: () => new Date(now) },
+    fileSweepIntervalMs: 5,
+  });
+  try {
+    await bundle.fileStore.put(projectId, {
+      createdAt: new Date(now).toISOString(),
+      meta: {
+        fileId,
+        name: "online-sweep.bin",
+        mimeType: "application/octet-stream",
+        size: 3,
+        expiresAt: new Date(now + 1_000).toISOString(),
+      },
+      content: Uint8Array.from([1, 2, 3]),
+    });
+    const before = await bundle.client.query<{ present: boolean }>(
+      "select exists(select 1 from staged_files where project_id = $1 and file_id = $2) as present",
+      [projectId, fileId],
+    );
+    expect(before.rows[0]?.present).toBe(true);
+
+    now += 1_000;
+    await vi.waitFor(
+      async () => {
+        const after = await bundle.client.query<{ present: boolean }>(
+          "select exists(select 1 from staged_files where project_id = $1 and file_id = $2) as present",
+          [projectId, fileId],
+        );
+        expect(after.rows[0]?.present).toBe(false);
+      },
+      { interval: 10, timeout: 1_000 },
+    );
+  } finally {
+    await runtime.close();
+  }
+});
+
+it("migrates staged file content as bytea with metadata and expiry columns", async () => {
+  const bundle = await pgliteStores();
+  const result = await bundle.client.query<{
+    column_name: string;
+    data_type: string;
+  }>(
+    `select column_name, data_type
+       from information_schema.columns
+      where table_schema = 'public'
+        and table_name = 'staged_files'
+      order by ordinal_position`,
+  );
+  expect(result.rows).toEqual([
+    { column_name: "sequence", data_type: "bigint" },
+    { column_name: "project_id", data_type: "text" },
+    { column_name: "file_id", data_type: "text" },
+    { column_name: "name", data_type: "text" },
+    { column_name: "mime_type", data_type: "text" },
+    { column_name: "size", data_type: "bigint" },
+    { column_name: "content", data_type: "bytea" },
+    { column_name: "created_at", data_type: "timestamp with time zone" },
+    { column_name: "expires_at", data_type: "timestamp with time zone" },
+  ]);
+});
+
+it("does not retain staged bytes when a Postgres insert fails", async () => {
+  const bundle = await createPgliteStoreBundle();
+  const sentinel = "file-write-plaintext-sentinel";
+  const content = Uint8Array.from(Buffer.from(sentinel, "utf8"));
+  try {
+    await bundle.client.exec("drop table staged_files");
+    let captured: unknown;
+    try {
+      await bundle.fileStore.put("project_failed_file_write", {
+        createdAt: "2026-07-18T09:00:00.000Z",
+        meta: {
+          fileId: createFileId("failed_file_write"),
+          name: "failed-write.bin",
+          mimeType: "application/octet-stream",
+          size: content.byteLength,
+          expiresAt: "2026-07-18T10:00:00.000Z",
+        },
+        content,
+      });
+    } catch (error) {
+      captured = error;
+    }
+
+    expect(captured).toBeInstanceOf(Error);
+    const safeError = captured as Error;
+    expect(safeError.message).toBe("Staged-file persistence failed.");
+    expect(safeError.cause).toBeUndefined();
+    const chain = errorChainText(safeError);
+    expect(chain).not.toContain(sentinel);
+    expect(chain).not.toContain([...content].join(","));
+    expect(chain).not.toContain([...content].join(", "));
+    expect(chain).not.toContain(
+      [...content].map((byte) => byte.toString(16).padStart(2, "0")).join(" "),
+    );
+  } finally {
+    await bundle.close();
+  }
+});
+
+it("keeps uploaded staged bytes available across a PGlite restart until exact expiry", async () => {
+  const directory = await mkdtemp(join(tmpdir(), "eyeball-file-restart-"));
+  const apiKey = "ey_file_restart";
+  const projectId = "project_file_restart";
+  let now = Date.parse("2026-07-18T09:00:00.000Z");
+  const clock = { now: () => new Date(now) };
+  let first: PgliteStoreBundle | undefined;
+  try {
+    first = await createPgliteStoreBundle({ dataDir: directory });
+    const firstEngine = new (await import("../src/engine.js")).ExecutionEngine({
+      fileStore: first.fileStore,
+      clock,
+      fileTtlMs: 1_000,
+      fileIdFactory: () => createFileId("restart_round_trip"),
+    });
+    const firstApp = createExecutorApp({
+      engine: firstEngine,
+      apiKeys: { [apiKey]: projectId },
+    });
+    const uploaded = await firstApp.request("/v1/files", {
+      method: "POST",
+      headers: {
+        Authorization: `Bearer ${apiKey}`,
+        "Content-Type": "application/json",
+      },
+      body: JSON.stringify({
+        name: "restart.bin",
+        mimeType: "application/octet-stream",
+        content: Buffer.from([0, 1, 2, 254, 255]).toString("base64"),
+      }),
+    });
+    expect(uploaded.status).toBe(201);
+    await first.close();
+    first = undefined;
+
+    const restored = await createPgliteStoreBundle({ dataDir: directory });
+    try {
+      const { ExecutionEngine } = await import("../src/engine.js");
+      const restoredEngine = new ExecutionEngine({
+        fileStore: restored.fileStore,
+        clock,
+        fileTtlMs: 1_000,
+      });
+      const restoredApp = createExecutorApp({
+        engine: restoredEngine,
+        apiKeys: { [apiKey]: projectId },
+      });
+      const resolved = await restoredEngine.getFile(
+        projectId,
+        "file_restart_round_trip",
+      );
+      expect(resolved.meta).toMatchObject({
+        fileId: "file_restart_round_trip",
+        name: "restart.bin",
+        size: 5,
+      });
+      expect(resolved.content).toEqual(Uint8Array.from([0, 1, 2, 254, 255]));
+      const metadata = await restoredApp.request(
+        "/v1/files/file_restart_round_trip",
+        { headers: { Authorization: `Bearer ${apiKey}` } },
+      );
+      expect(metadata.status).toBe(200);
+
+      now += 1_000;
+      const expired = await restoredApp.request(
+        "/v1/files/file_restart_round_trip",
+        { headers: { Authorization: `Bearer ${apiKey}` } },
+      );
+      expect(expired.status).toBe(404);
+      await expect(expired.json()).resolves.toMatchObject({
+        error: { code: "not_found" },
+      });
+    } finally {
+      await restored.close();
+    }
+  } finally {
+    await first?.close();
+    await rm(directory, { recursive: true, force: true });
   }
 });
 
