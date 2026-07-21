@@ -597,4 +597,64 @@ describe("ExecutorClient", () => {
     });
     expect(requests[0]?.headers.get("Content-Type")).toBe("application/json");
   });
+  it("projects the staged file lifecycle onto metadata-only public state", async () => {
+    const requests: Request[] = [];
+    const fileId = "file_fixture";
+    const contentSentinel = "cXVhcnRlcmx5" + "LXJlcG9ydA==";
+    const metadata = {
+      fileId,
+      name: "quarterly-report.pdf",
+      mimeType: "application/pdf",
+      size: 12,
+      expiresAt: "2026-07-21T13:00:00.000Z",
+    };
+    const fetch: typeof globalThis.fetch = async (input, init) => {
+      const request = new Request(input, init);
+      requests.push(request);
+      const url = new URL(request.url);
+      if (request.method === "POST" && url.pathname === "/v1/files") {
+        return Response.json(
+          { ...metadata, content: contentSentinel },
+          { status: 201 },
+        );
+      }
+      if (request.method === "GET" && url.pathname === "/v1/files") {
+        return Response.json({
+          files: [{ ...metadata, content: contentSentinel }],
+          nextCursor: "file_cursor_2",
+        });
+      }
+      return Response.json({ error: "unexpected request" }, { status: 500 });
+    };
+    const client = new ExecutorClient({
+      baseUrl: "https://executor.example",
+      fetch,
+      projectId: "proj_fixture",
+    });
+
+    const staged = await client.uploadStagedFile({
+      name: metadata.name,
+      mimeType: metadata.mimeType,
+      content: contentSentinel,
+    });
+    expect(staged).toEqual(metadata);
+    expect(JSON.stringify(staged)).not.toContain(contentSentinel);
+
+    const page = await client.listStagedFiles({
+      limit: 25,
+      cursor: "file cursor/1",
+    });
+    expect(page.files).toEqual([metadata]);
+    expect(page.nextCursor).toBe("file_cursor_2");
+    expect(JSON.stringify(page)).not.toContain(contentSentinel);
+
+    expect(requests.map(({ method, url }) => ({ method, url }))).toEqual([
+      { method: "POST", url: "https://executor.example/v1/files" },
+      {
+        method: "GET",
+        url: "https://executor.example/v1/files?limit=25&cursor=file+cursor%2F1",
+      },
+    ]);
+    expect(requests[0]?.headers.get("Content-Type")).toBe("application/json");
+  });
 });

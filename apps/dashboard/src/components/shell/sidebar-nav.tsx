@@ -21,6 +21,7 @@ const navItems: readonly NavItem[] = [
   { icon: "executions", label: "Executions", segment: "executions" },
   { icon: "webhook", label: "Webhooks", segment: "webhooks" },
   { icon: "connections", label: "Triggers", segment: "triggers" },
+  { icon: "copy", label: "Files", segment: "files" },
   { icon: "key", label: "API Keys", segment: "api-keys" },
   { icon: "settings", label: "Settings", segment: "settings" },
 ];

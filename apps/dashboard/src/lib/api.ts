@@ -232,6 +232,31 @@ export interface ListTriggerSubscriptionsParams {
   userId?: string;
 }
 
+export interface StagedFileMetadata {
+  fileId: string;
+  name: string;
+  mimeType: string;
+  size: number;
+  expiresAt: string;
+}
+
+export interface StagedFilePage {
+  files: readonly StagedFileMetadata[];
+  nextCursor?: string;
+}
+
+export interface ListStagedFilesParams {
+  cursor?: string;
+  limit?: number;
+}
+
+export interface UploadStagedFileRequest {
+  name: string;
+  mimeType?: string;
+  /** Padded standard base64 of the raw file bytes. */
+  content: string;
+}
+
 export interface ExecuteToolRequest {
   connectionId?: `conn_${string}`;
   input: Readonly<Record<string, JsonValue>>;
@@ -660,6 +685,42 @@ export function projectTriggerSubscriptionPage(
   };
 }
 
+export function projectStagedFileMetadata(value: unknown): StagedFileMetadata {
+  const file = metadataRecord(value, "staged file");
+  if (typeof file.size !== "number") {
+    throw new ExecutorApiError(
+      "Executor returned invalid staged file metadata.",
+      502,
+    );
+  }
+  return {
+    fileId: metadataString(file, "fileId", "staged file"),
+    name: metadataString(file, "name", "staged file"),
+    mimeType: metadataString(file, "mimeType", "staged file"),
+    size: file.size,
+    expiresAt: metadataString(file, "expiresAt", "staged file"),
+  };
+}
+
+export function projectStagedFilePage(value: unknown): StagedFilePage {
+  const page = metadataRecord(value, "staged file page");
+  if (!Array.isArray(page.files)) {
+    throw new ExecutorApiError(
+      "Executor returned invalid staged file page metadata.",
+      502,
+    );
+  }
+  const nextCursor = optionalMetadataString(
+    page,
+    "nextCursor",
+    "staged file page",
+  );
+  return {
+    files: page.files.map(projectStagedFileMetadata),
+    ...(nextCursor === undefined ? {} : { nextCursor }),
+  };
+}
+
 export const DEFAULT_EXECUTOR_BASE_URL = "http://127.0.0.1:8787";
 export const DASHBOARD_EXECUTOR_PROXY_BASE_URL = "/api/executor";
 
@@ -929,6 +990,33 @@ export class ExecutorClient {
         ...(signal === undefined ? {} : { signal }),
       },
     );
+  }
+
+  async listStagedFiles(
+    params: ListStagedFilesParams = {},
+    signal?: AbortSignal,
+  ): Promise<StagedFilePage> {
+    const query = new URLSearchParams();
+    if (params.limit !== undefined) query.set("limit", String(params.limit));
+    if (params.cursor !== undefined) query.set("cursor", params.cursor);
+    const suffix = query.size > 0 ? `?${query.toString()}` : "";
+    const value = await this.#request<unknown>(`/v1/files${suffix}`, {
+      ...(signal === undefined ? {} : { signal }),
+    });
+    return projectStagedFilePage(value);
+  }
+
+  async uploadStagedFile(
+    request: UploadStagedFileRequest,
+    signal?: AbortSignal,
+  ): Promise<StagedFileMetadata> {
+    const value = await this.#request<unknown>("/v1/files", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(request),
+      ...(signal === undefined ? {} : { signal }),
+    });
+    return projectStagedFileMetadata(value);
   }
 
   execute(

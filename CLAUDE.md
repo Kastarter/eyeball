@@ -81,7 +81,7 @@ Open-core tool and integration platform for AI agents: one typed, authenticated 
 - The five selected Activepieces npm pieces are self-contained bundles; framework/shared are explicit bridge compatibility pins, not peers declared by those artifacts.
 - The self-hosted docs app statically generates every navigation path and builds search/TOC data from the authored MDX.
 - Catalog registries memoize deep-frozen materialized tool/trigger lookups; schema validators skip repeated fingerprints only for recursively frozen schemas, preserving mutation checks for mutable inputs.
-- The dashboard uses one feature-level mode seam: auth, orgs/projects, connections, API keys, and audit switch to the cloud control plane while toolkits, executions, webhooks, triggers, and voice agents retain the executor/catalog data paths.
+- The dashboard uses one feature-level mode seam: auth, orgs/projects, connections, API keys, and audit switch to the cloud control plane while toolkits, executions, webhooks, triggers, files, and voice agents retain the executor/catalog data paths.
 
 ## Current State
 
@@ -96,7 +96,8 @@ Open-core tool and integration platform for AI agents: one typed, authenticated 
 - The dashboard has demo-default and cloud modes; cloud mode adds session auth, first-run org/project/key bootstrap, real connection/key/audit screens, project switchers, and per-project executor-key settings.
 - The project Webhooks surface provides endpoint CRUD, catalog-derived exact trigger selection, reveal-once create/rotation secrets, confirmed rotation/deletion, and metadata-only paginated delivery attempts through the executor in both dashboard modes; the proxy exports scoped endpoint-update `PATCH` coverage without broadening unrelated routes.
 - The project Triggers surface provides subscription create/manage/delete with catalog-derived trigger and delivery-mode selection, minimum-validated polling cadence, webhook endpoint targeting, reveal-once create/rotation push ingest URLs, and confirmed destructive actions through the executor in both dashboard modes; subscription projections never retain ingest URLs.
-- Cloud mode has full Billing and Organization surfaces for usage, plan changes, members, BYO OAuth apps, redirect origins, organization rename, and audit navigation; OAuth connection setup can select an app and validated return URL, and the dashboard suite has 101 serial tests.
+- The project Files surface stages local files as padded base64 and lists metadata-only staged files behind the project-authority `/v1/files` route; the toolkit Try-It panel renders staged-file attachment pickers for attachment-capable canonical tools and submits `fileId` references only.
+- Cloud mode has full Billing and Organization surfaces for usage, plan changes, members, BYO OAuth apps, redirect origins, organization rename, and audit navigation; OAuth connection setup can select an app and validated return URL, and the dashboard suite has 108 serial tests.
 - Search-mode MCP exposes both discovery and a generic executor-backed dispatch tool.
 - MCP Streamable HTTP supports JSON and SSE POST responses, authenticated GET event streams, DELETE teardown, one-way credential-and-scope-bound sessions, and opt-in 2025-11-25 Tasks with execution-backed polling and progress notifications.
 - `pnpm dev:stack` boots 30-provider Mockhouse, executor, and MCP gateway with dev connections.

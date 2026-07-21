@@ -1,6 +1,12 @@
 import type { CatalogJsonPrimitive, CatalogSchema } from "@/src/lib/catalog";
 
-export type SchemaFieldKind = "boolean" | "enum" | "json" | "number" | "string";
+export type SchemaFieldKind =
+  | "attachments"
+  | "boolean"
+  | "enum"
+  | "json"
+  | "number"
+  | "string";
 
 export interface SchemaFormField {
   defaultValue?: unknown;
@@ -29,9 +35,29 @@ function humanize(name: string): string {
     : `${words[0]?.toUpperCase()}${words.slice(1)}`;
 }
 
+function requiresFileId(schema: CatalogSchema | undefined): boolean {
+  if (schema === undefined || typeof schema === "boolean") return false;
+  if (schema.required?.includes("fileId")) return true;
+  const anyOf = schema.anyOf;
+  return (
+    Array.isArray(anyOf) &&
+    anyOf.some((candidate) => requiresFileId(candidate as CatalogSchema))
+  );
+}
+
+/** Arrays of staged-file references get the dedicated Try-It attachment picker. */
+export function isStagedAttachmentArray(schema: CatalogSchema): boolean {
+  if (typeof schema === "boolean") return false;
+  const type = Array.isArray(schema.type)
+    ? schema.type.find((candidate) => candidate !== "null")
+    : schema.type;
+  return type === "array" && requiresFileId(schema.items);
+}
+
 function fieldKind(schema: CatalogSchema): SchemaFieldKind {
   if (typeof schema === "boolean") return "json";
   if (schema.enum !== undefined) return "enum";
+  if (isStagedAttachmentArray(schema)) return "attachments";
   const type = Array.isArray(schema.type)
     ? schema.type.find((candidate) => candidate !== "null")
     : schema.type;
@@ -144,6 +170,22 @@ export function coerceSchemaFormValues(
         errors[field.name] = "Choose one of the allowed values.";
       } else {
         value[field.name] = option;
+      }
+      continue;
+    }
+    if (field.kind === "attachments") {
+      const fileIds = raw
+        .split(",")
+        .map((candidate) => candidate.trim())
+        .filter((candidate) => candidate.length > 0);
+      if (
+        fileIds.some(
+          (fileId) => !/^file_[A-Za-z0-9][A-Za-z0-9_-]{0,127}$/u.test(fileId),
+        )
+      ) {
+        errors[field.name] = "Attachments must be staged file_* identifiers.";
+      } else if (fileIds.length > 0) {
+        value[field.name] = fileIds.map((fileId) => ({ fileId }));
       }
       continue;
     }

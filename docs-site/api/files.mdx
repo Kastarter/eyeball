@@ -78,6 +78,8 @@ console.log(page.files, page.nextCursor);
 
 The response is one staged-file metadata object and never includes bytes or a storage locator. Malformed, missing, expired, and cross-project IDs all receive the same `404 not_found` response. This route uses the normal project/pinned authentication middleware; file ownership remains project-scoped, so IDs must be treated as bearer capabilities during their TTL.
 
+The project **Files** screen in the dashboard stages local files through `POST /v1/files` and lists project-scoped metadata through `GET /v1/files` with an unpinned project key. It renders metadata only; staged bytes never reach list responses or the browser. The toolkit Try-It panel offers staged files as an attachment picker for tools whose input accepts staged `fileId` references.
+
 ## Durability and cleanup
 
 Without `EYEBALL_DATABASE_URL`, staged metadata and bytes are in memory and disappear on executor restart. With Postgres, the stock `FileStore` persists metadata and `bytea` content across restart until `expiresAt`. Logical expiry is enforced immediately on reads and lists. Bulk row cleanup drains 100-row batches at durable startup, then a non-overlapping sweep deletes at most 100 expired rows once per minute while the runtime remains healthy; reads also lazily delete an expired row addressed by ID.

@@ -27,8 +27,10 @@ describe("SidebarNav", () => {
     expect(demo).toContain("/demo/settings");
     expect(demo).toContain("/demo/webhooks");
     expect(demo).toContain("/demo/triggers");
+    expect(demo).toContain("/demo/files");
     expect(cloud).toContain("/proj_fixture/webhooks");
     expect(cloud).toContain("/proj_fixture/triggers");
+    expect(cloud).toContain("/proj_fixture/files");
   });
 
   it("marks the project Webhooks destination active", () => {

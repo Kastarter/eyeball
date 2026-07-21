@@ -1,7 +1,7 @@
 # eyeball — Planned work
 
 State as of 2026-07-21. The 0.2.0 source cut is complete, M5 is underway with
-M5.2 complete, and two audit sweeps
+M5.3 complete, and two audit sweeps
 (cross-feature wiring; dashboard/SDK/docs parity) produced a milestone-ordered
 gap ledger. Milestones **M1 (hosted execution slice)**, **M2 (billing as a
 product)**, **M3 (restart-state durability)**, and **M4 (voice hardening)** are
@@ -63,12 +63,14 @@ change. Never bind ports in tests; use in-process apps (`app.request`, PGlite).
   webhook endpoint targeting, reveal-once create/rotation push ingest URLs,
   and confirmed destructive actions. Subscription projections and screen state
   never retain ingest URLs after acknowledgement. A-02 closed.
+- M5.3 Files page + Try-It attachment picker: staged-file listing and local
+  staging over the M3.2 metadata routes with authority-aware error states, and
+  schema-driven attachment pickers in Try-It that submit `fileId` references
+  only. Bytes never reach list responses or the browser beyond upload encoding.
+  A-04 closed.
 
 ## M5 — Local dashboard surfaces (demo mode; executor APIs mostly exist)
 
-8. **M5.3 Files page + Try-It attachment picker.** Uses the completed M3.2
-   file-list API.
-   A-04.
 9. **M5.4 Voice panel: WebRTC web-session test + Numbers section.** The stale
    WebRTC branch says activation is undefined although
    `voice-agents.create_web_session` shipped; number lifecycle tools have no

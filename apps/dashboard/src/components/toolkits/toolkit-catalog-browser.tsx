@@ -1,5 +1,6 @@
 "use client";
 
+import Link from "next/link";
 import {
   type FormEvent,
   type ReactNode,
@@ -11,6 +12,7 @@ import {
   useRef,
   useState,
 } from "react";
+import { formatFileSize } from "@/src/components/files/files-screen";
 import { PageHeader } from "@/src/components/pages/page-header";
 import { Button } from "@/src/components/ui/button";
 import { CodeBlock } from "@/src/components/ui/code-block";
@@ -23,6 +25,7 @@ import {
   type ExecuteToolResponse,
   ExecutorApiError,
   type JsonValue,
+  type StagedFileMetadata,
 } from "@/src/lib/api";
 import type {
   CatalogToolkitSummary,
@@ -275,12 +278,100 @@ function SchemaFieldControl({
   );
 }
 
+export function TryItAttachmentPicker({
+  error,
+  label,
+  onChange,
+  project,
+  value,
+}: {
+  error?: string;
+  label: string;
+  onChange: (value: string) => void;
+  project: string;
+  value: boolean | string | undefined;
+}) {
+  const [files, setFiles] = useState<readonly StagedFileMetadata[]>();
+  const [loadFailed, setLoadFailed] = useState(false);
+  const selected = String(value ?? "")
+    .split(",")
+    .map((candidate) => candidate.trim())
+    .filter((candidate) => candidate.length > 0);
+
+  useEffect(() => {
+    const controller = new AbortController();
+    void dashboardExecutorClient()
+      .listStagedFiles({ limit: 100 }, controller.signal)
+      .then((page) => {
+        if (!controller.signal.aborted) setFiles(page.files);
+      })
+      .catch(() => {
+        if (!controller.signal.aborted) {
+          setFiles([]);
+          setLoadFailed(true);
+        }
+      });
+    return () => controller.abort();
+  }, []);
+
+  function toggle(fileId: string, checked: boolean) {
+    const next = checked
+      ? [...selected.filter((candidate) => candidate !== fileId), fileId]
+      : selected.filter((candidate) => candidate !== fileId);
+    onChange(next.join(","));
+  }
+
+  return (
+    <fieldset className="trigger-endpoint-field try-it-attachments">
+      <legend>{label}</legend>
+      {files === undefined ? (
+        <Skeleton height={40} label="Staged files loading" width="100%" />
+      ) : files.length === 0 ? (
+        <p className="trigger-endpoint-field__empty">
+          {loadFailed
+            ? "Staged files could not be listed with the configured executor key. Attachments stay optional."
+            : "No staged files exist yet. Stage one on the "}
+          {loadFailed ? null : (
+            <>
+              <Link href={`/${encodeURIComponent(project)}/files`}>Files</Link>
+              {" page first; list responses carry metadata only."}
+            </>
+          )}
+        </p>
+      ) : (
+        files.map((file) => (
+          <label className="trigger-endpoint-field__option" key={file.fileId}>
+            <input
+              checked={selected.includes(file.fileId)}
+              onChange={(event) =>
+                toggle(file.fileId, event.currentTarget.checked)
+              }
+              type="checkbox"
+            />
+            <span>
+              <strong>
+                {file.name} · {formatFileSize(file.size)}
+              </strong>
+              <code>{file.fileId}</code>
+            </span>
+          </label>
+        ))
+      )}
+      {error !== undefined ? (
+        <small className="field__error">{error}</small>
+      ) : null}
+    </fieldset>
+  );
+}
+
 function TryItPanel({
   onSelectTool,
+  project,
   selectedTool,
   toolkit,
 }: {
   onSelectTool: (name: string) => void;
+  project: string;
   selectedTool: CatalogToolView;
   toolkit: CatalogToolkitView;
 }) {
@@ -397,19 +488,34 @@ function TryItPanel({
             This tool takes an empty input object.
           </p>
         ) : (
-          fields.map((field) => (
-            <SchemaFieldControl
-              {...(errors[field.name] === undefined
-                ? {}
-                : { error: errors[field.name] })}
-              field={field}
-              key={field.name}
-              onChange={(value) =>
-                setValues((current) => ({ ...current, [field.name]: value }))
-              }
-              value={values[field.name]}
-            />
-          ))
+          fields.map((field) =>
+            field.kind === "attachments" ? (
+              <TryItAttachmentPicker
+                {...(errors[field.name] === undefined
+                  ? {}
+                  : { error: errors[field.name] })}
+                key={field.name}
+                label={`${field.label}${field.required ? " *" : ""}`}
+                onChange={(value) =>
+                  setValues((current) => ({ ...current, [field.name]: value }))
+                }
+                project={project}
+                value={values[field.name]}
+              />
+            ) : (
+              <SchemaFieldControl
+                {...(errors[field.name] === undefined
+                  ? {}
+                  : { error: errors[field.name] })}
+                field={field}
+                key={field.name}
+                onChange={(value) =>
+                  setValues((current) => ({ ...current, [field.name]: value }))
+                }
+                value={values[field.name]}
+              />
+            ),
+          )
         )}
         <Button
           disabled={state.kind === "running"}
@@ -536,12 +642,14 @@ function ToolkitDrawer({
 function ToolkitInspector({
   onClose,
   onSelectTool,
+  project,
   selectedToolName,
   summary,
   toolkit,
 }: {
   onClose: () => void;
   onSelectTool: (tool: string) => void;
+  project: string;
   selectedToolName?: string;
   summary: CatalogToolkitSummary;
   toolkit: CatalogToolkitView;
@@ -566,6 +674,7 @@ function ToolkitInspector({
         <TryItPanel
           key={selectedTool.name}
           onSelectTool={onSelectTool}
+          project={project}
           selectedTool={selectedTool}
           toolkit={toolkit}
         />
@@ -674,7 +783,7 @@ export function ToolkitCatalogBrowser({
   initialQuery = "",
   initialToolkit,
   initialTool,
-  project: _project,
+  project,
   toolkits,
 }: ToolkitCatalogBrowserProps) {
   const initialToolkitRecord = toolkits.find(
@@ -998,6 +1107,7 @@ export function ToolkitCatalogBrowser({
           <ToolkitInspector
             onClose={closeInspector}
             onSelectTool={selectTool}
+            project={project}
             {...(selectedToolName === undefined ? {} : { selectedToolName })}
             summary={selectedToolkit}
             toolkit={detailState.toolkit}

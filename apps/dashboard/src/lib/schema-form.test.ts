@@ -51,4 +51,57 @@ describe("schema form generator", () => {
     });
     expect(result.errors).toEqual({ metadata: "Enter valid JSON." });
   });
+  it("detects staged-attachment arrays and coerces picked file references", () => {
+    const attachmentSchema = {
+      type: "object",
+      properties: {
+        subject: { type: "string" },
+        attachments: {
+          type: "array",
+          items: {
+            anyOf: [
+              {
+                type: "object",
+                required: ["fileId"],
+                properties: { fileId: { type: "string" } },
+              },
+              { type: "string" },
+            ],
+          },
+        },
+        labels: { type: "array", items: { type: "string" } },
+      },
+    } as const;
+    const fields = buildSchemaFormFields(attachmentSchema);
+
+    expect(fields.map(({ kind, name }) => ({ kind, name }))).toEqual([
+      { kind: "string", name: "subject" },
+      { kind: "attachments", name: "attachments" },
+      { kind: "json", name: "labels" },
+    ]);
+
+    const picked = coerceSchemaFormValues(fields, {
+      attachments: "file_alpha, file_beta",
+      subject: "Launch",
+    });
+    expect(picked.errors).toEqual({});
+    expect(picked.value).toEqual({
+      attachments: [{ fileId: "file_alpha" }, { fileId: "file_beta" }],
+      subject: "Launch",
+    });
+
+    const empty = coerceSchemaFormValues(fields, {
+      attachments: "",
+      subject: "Launch",
+    });
+    expect(empty.value).toEqual({ subject: "Launch" });
+
+    const invalid = coerceSchemaFormValues(fields, {
+      attachments: "not-a-file-id",
+      subject: "Launch",
+    });
+    expect(invalid.errors).toEqual({
+      attachments: "Attachments must be staged file_* identifiers.",
+    });
+  });
 });
