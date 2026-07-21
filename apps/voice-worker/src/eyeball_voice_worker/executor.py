@@ -3,12 +3,14 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import Any
+from typing import Any, Literal
 
 import httpx
 from pydantic import JsonValue
 
 EXECUTION_ID_HEADER = "X-Eyeball-Execution-Id"
+VOICE_SESSION_ID_HEADER = "X-Eyeball-Voice-Session-Id"
+type ExecutorAuthMode = Literal["session-grant", "static-pinned"]
 
 
 class ExecutorProtocolError(RuntimeError):
@@ -21,6 +23,12 @@ class ExecutorResult:
     tool: str
     output: JsonValue | None = None
     error: dict[str, JsonValue] | None = None
+
+
+@dataclass(frozen=True, slots=True)
+class SessionExecutorCredential:
+    mode: ExecutorAuthMode
+    grant_token: str | None = None
 
 
 class ExecutorClient:
@@ -40,6 +48,10 @@ class ExecutorClient:
         if self._owns_client:
             await self._client.aclose()
 
+    @property
+    def has_static_key(self) -> bool:
+        return self._api_key is not None and self._api_key.strip() != ""
+
     async def execute(
         self,
         *,
@@ -49,8 +61,17 @@ class ExecutorClient:
         user_id: str,
         tool: str,
         input: dict[str, JsonValue],
+        credential: SessionExecutorCredential,
     ) -> ExecutorResult:
-        if self._api_key is None or self._api_key.strip() == "":
+        if credential.mode == "session-grant":
+            bearer = credential.grant_token
+            if bearer is None or bearer.strip() == "":
+                raise ExecutorProtocolError(
+                    "The active voice session grant is unavailable."
+                )
+        else:
+            bearer = self._api_key
+        if bearer is None or bearer.strip() == "":
             raise ExecutorProtocolError(
                 "EYEBALL_VOICE_WORKER_KEY is required for tool-enabled sessions."
             )
@@ -58,11 +79,12 @@ class ExecutorClient:
             response = await self._client.post(
                 f"{self._base_url}/v1/execute",
                 headers={
-                    "Authorization": f"Bearer {self._api_key}",
+                    "Authorization": f"Bearer {bearer}",
                     "Idempotency-Key": (
                         f"voice-session:{session_id}:event:{event_sequence}"
                     ),
                     EXECUTION_ID_HEADER: execution_id,
+                    VOICE_SESSION_ID_HEADER: session_id,
                 },
                 json={
                     "tool": tool,

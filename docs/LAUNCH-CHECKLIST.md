@@ -12,7 +12,7 @@ export VITEST_MAX_THREADS=1
 
 ## Done in source
 
-- [x] Cross-repository claims reconciled against executed counts: 37 manifests, 493 matrix rows (227 smoke and 266 explicit not_supported), 112 documentation pages, 30 Mockhouse providers, and 164 Mockhouse tests.
+- [x] Cross-repository claims reconciled against executed counts: 37 manifests, 493 matrix rows (227 smoke and 266 explicit not_supported), 113 documentation pages, 30 Mockhouse providers, and 164 Mockhouse tests.
 - [x] RFC 001–004 authority and cross-references aligned with staged files, webhooks, triggers, durable stores, MCP Tasks, and the remote voice worker.
 - [x] Generated SDK pages and catalog-owned toolkit pages checked for drift.
 - [x] Five high-risk seams reviewed adversarially: development voice auth, staged-file scoping, MCP Tasks identity, webhook SSRF, and cloud API-key verification. The review found and fixed the staged-upload pre-buffer gap as SEC-021.
@@ -100,11 +100,14 @@ The billing bootstrap command must run from an authenticated operator environmen
 
 ### 6. Validate live voice paths
 
-Create a dedicated single-Machine Fly deployment with a durable SQLite volume and one user-pinned executor key. The static worker key is not a multi-user authority model.
+Create a dedicated single-Machine Fly deployment with a durable SQLite volume. Configure `EYEBALL_VOICE_SESSION_GRANT_SECRET` only on the executor so the worker receives a distinct project/user/session/tool-scoped capability for each call. The optional static worker key remains a single-user fallback, not a multi-user authority model.
 
 ~~~sh
+# Executor deployment / secret manager:
+export EYEBALL_VOICE_SESSION_GRANT_SECRET='replace-with-at-least-32-random-bytes'
+
 fly volumes create voice_worker_data --region <region> --size 10 --app <app>
-fly secrets set --app <app> EYEBALL_VOICE_WORKER_TOKEN='...' EYEBALL_VOICE_WORKER_KEY='...' EYEBALL_EXECUTOR_URL='https://executor.example.com' EYEBALL_VOICE_PUBLIC_URL='https://<app>.fly.dev' ANTHROPIC_API_KEY='...' DEEPGRAM_API_KEY='...' ELEVENLABS_API_KEY='...' TWILIO_ACCOUNT_SID='...' TWILIO_AUTH_TOKEN='...' TWILIO_FROM_NUMBER='...' LIVEKIT_URL='...' LIVEKIT_API_KEY='...' LIVEKIT_API_SECRET='...'
+fly secrets set --app <app> EYEBALL_VOICE_WORKER_TOKEN='...' EYEBALL_EXECUTOR_URL='https://executor.example.com' EYEBALL_VOICE_PUBLIC_URL='https://<app>.fly.dev' ANTHROPIC_API_KEY='...' DEEPGRAM_API_KEY='...' ELEVENLABS_API_KEY='...' TWILIO_ACCOUNT_SID='...' TWILIO_AUTH_TOKEN='...' TWILIO_FROM_NUMBER='...' LIVEKIT_URL='...' LIVEKIT_API_KEY='...' LIVEKIT_API_SECRET='...'
 fly deploy --config /Users/khalidsh/eyeball/apps/voice-worker/fly.toml --app <app> --region <region>
 EYEBALL_CONTRACT_TARGET=real EYEBALL_CONTRACT_PROVIDERS='deepgram,elevenlabs,livekit,pipecat,twilio,voice-agents' pnpm test:contract
 ~~~
@@ -117,7 +120,6 @@ These are neither account setup nor release ceremony; they require code or opera
 
 - SEC-002 P1: webhook delivery blocks literal private targets and redirects but does not resolve and pin DNS. Hosted webhook egress needs resolver-aware IP classification on every connection plus network-layer deny policy.
 - SEC-017 P1: staged files are project-scoped bearer capabilities, not user-owned records. Hosted multi-user use needs owner identity in the contract/store and checks on metadata and adapter byte resolution.
-- SEC-004 P1: one static voice-worker bearer/key controls a worker. Keep one worker per trusted pinned user until short-lived session-scoped authority or tenant isolation exists.
 - Trigger polling still needs distributed leases, replay/backfill, provider-native signature verification, and an atomic claim/outbox. Remote voice-event observation retains its documented process-local restart limit. The Postgres execution/webhook, voice-agent, and MCP session/task stores still need production backup/restore drills, queue-age and exhausted-job alerts, and multi-replica load/chaos evidence.
 - The Activepieces bridge remains a private selective-promotion spike. Resolve its expression-engine advisories, license provenance, isolation/egress, auth mapping, and per-piece mock/real certification before exposing it.
 

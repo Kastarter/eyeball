@@ -1,6 +1,6 @@
 # eyeball — Planned work
 
-State as of 2026-07-20. The 0.2.0 source cut is complete, and two audit sweeps
+State as of 2026-07-21. The 0.2.0 source cut is complete, and two audit sweeps
 (cross-feature wiring; dashboard/SDK/docs parity) produced a milestone-ordered
 gap ledger. Milestones **M1 (hosted execution slice)**, **M2 (billing as a
 product)**, and **M3 (restart-state durability)** are DONE. This file lists what
@@ -37,15 +37,14 @@ change. Never bind ports in tests; use in-process apps (`app.request`, PGlite).
   M3 closes restart-state loss for these records, not general multi-replica
   certification: distributed trigger polling, global rate/concurrency limits,
   remote voice observation, backup/restore, and load/chaos evidence remain open.
+- M4.1 Per-session executor grants: v2 worker contract; executor-owned session
+  IDs; short-lived HMAC capabilities scoped to audience/project/user/session/
+  expiry/tool allowlist; durable grant identity and revocation; terminal worker
+  bearer erasure; static pinned-key fallback; and two-user isolation coverage.
+  SEC-004 / audit finding 5.
 
 ## M4 — Voice hardening (multi-tenant + observability)
 
-4. **M4.1 Per-session executor grants.** One static worker key = one pinned
-   user; a shared hosted worker cannot serve multiple tenants
-   (`apps/voice-worker/.../executor.py:43`, `routes.ts:1191`). Mint short-lived
-   signed grants at session start (project/user/session/audience/expiry/tool
-   allowlist), verified by the executor; rotate on session end; two-user
-   isolation test. SEC-004 / audit finding 5.
 5. **M4.2 Observer durability + transport error taxonomy.** Remote voice event
    forwarding can silently stop after 20 retries and never survives executor
    restart (`remote-session-driver.ts:724,742`); worker outages surface as

@@ -148,6 +148,9 @@ export const voiceAgentSessionPointers = pgTable(
     agentRevision: integer("agent_revision").notNull(),
     callId: text("call_id").notNull(),
     createdAt: timestampColumn("created_at").notNull(),
+    grantId: text("grant_id"),
+    grantExpiresAt: timestampColumn("grant_expires_at"),
+    grantRevokedAt: timestampColumn("grant_revoked_at"),
   },
   (table) => [
     foreignKey({
@@ -169,6 +172,17 @@ export const voiceAgentSessionPointers = pgTable(
       "voice_agent_session_pointers_revision_positive",
       sql`${table.agentRevision} >= 1`,
     ),
+    check(
+      "voice_agent_session_pointers_grant_identity_complete",
+      sql`(${table.grantId} IS NULL AND ${table.grantExpiresAt} IS NULL) OR (${table.grantId} IS NOT NULL AND ${table.grantExpiresAt} IS NOT NULL)`,
+    ),
+    check(
+      "voice_agent_session_pointers_revocation_requires_grant",
+      sql`${table.grantRevokedAt} IS NULL OR ${table.grantId} IS NOT NULL`,
+    ),
+    uniqueIndex("voice_agent_session_pointers_grant_id_unique")
+      .on(table.grantId)
+      .where(sql`${table.grantId} IS NOT NULL`),
   ],
 );
 

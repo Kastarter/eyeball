@@ -13,6 +13,9 @@ import { JSON_SCHEMA_DRAFT_2020_12 } from "./types/tool.js";
 export type VoiceAgentTransport = "pstn:twilio" | "webrtc:livekit" | "chat";
 export type Weekday = "mon" | "tue" | "wed" | "thu" | "fri" | "sat" | "sun";
 
+/** Maximum runtime accepted for one voice-agent session. */
+export const VOICE_AGENT_MAX_DURATION_SECONDS = 3_600;
+
 export interface LlmModelRef {
   /** Opaque project model-registry reference; never a provider API key. */
   model: string;
@@ -357,7 +360,11 @@ export const voiceAgentSchemaDefs = {
     additionalProperties: false,
     required: ["maxDurationSeconds", "handoffToHuman"],
     properties: {
-      maxDurationSeconds: { type: "integer", minimum: 1 },
+      maxDurationSeconds: {
+        type: "integer",
+        minimum: 1,
+        maximum: VOICE_AGENT_MAX_DURATION_SECONDS,
+      },
       allowedHours: {
         type: "array",
         items: { $ref: "#/$defs/allowedHoursWindow" },

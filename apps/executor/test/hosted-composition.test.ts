@@ -6,6 +6,7 @@ import {
   createConfiguredApiKeyAuthenticator,
   createExecutorApp,
   createExecutorRuntime,
+  createJsonLineLogger,
   RemoteKeyAuthenticator,
 } from "../src/index.js";
 
@@ -16,6 +17,7 @@ const CREDENTIALS_URL =
   "https://cloud.example.test/internal/credentials/resolve";
 const REMOTE_KEY = "eb_live_remote_executor_key";
 const STATIC_KEY = "ey_static_executor_key";
+const VOICE_GRANT_SECRET = "voice-session-grant-test-secret-at-least-32-bytes";
 
 interface VerifyRequest {
   authorization?: string;
@@ -238,6 +240,59 @@ describe("hosted API-key composition", () => {
 });
 
 describe("stock hosted runtime composition", () => {
+  it("composes grant mode, reports only redacted mode metadata, and preserves static keys", async () => {
+    const lines: string[] = [];
+    const runtime = await createExecutorRuntime({
+      env: {
+        EYEBALL_VOICE_SESSION_GRANT_SECRET: VOICE_GRANT_SECRET,
+        EYEBALL_API_KEYS: `${STATIC_KEY}:project_static:user_static`,
+      },
+      telemetry: {
+        logger: createJsonLineLogger({ sink: (line) => lines.push(line) }),
+      },
+    });
+
+    try {
+      expect(runtime.voiceSessionGrantVerifier).toBeDefined();
+      const app = createExecutorApp({
+        engine: runtime.engine,
+        apiKeyAuthenticator: runtime.apiKeyAuthenticator,
+        voiceSessionGrantVerifier: runtime.voiceSessionGrantVerifier,
+        env: {
+          EYEBALL_API_KEYS: `${STATIC_KEY}:project_static:user_static`,
+        },
+      });
+      expect((await subscriptions(app, STATIC_KEY, "user_static")).status).toBe(
+        200,
+      );
+      const serialized = lines.join("\n");
+      expect(serialized).toContain(
+        '"voiceWorkerExecutionAuthMode":"session_grant"',
+      );
+      expect(serialized).toContain('"grantStateDurability":"process_local"');
+      expect(serialized).not.toContain(VOICE_GRANT_SECRET);
+    } finally {
+      await runtime.close();
+    }
+  });
+
+  it("leaves grant issuance disabled when the secret is unset", async () => {
+    const runtime = await createExecutorRuntime({ env: {} });
+    try {
+      expect(runtime.voiceSessionGrantVerifier).toBeUndefined();
+    } finally {
+      await runtime.close();
+    }
+  });
+
+  it("fails runtime creation for a configured short grant secret", async () => {
+    await expect(
+      createExecutorRuntime({
+        env: { EYEBALL_VOICE_SESSION_GRANT_SECRET: "too-short" },
+      }),
+    ).rejects.toThrow("at least 32 UTF-8 bytes");
+  });
+
   it("uses cloud key verification and a freshly resolved cloud OAuth token during execution", async () => {
     const fixedNow = Date.parse("2026-07-20T12:00:00.000Z");
     const gmailScope = "https://www.googleapis.com/auth/gmail.modify";

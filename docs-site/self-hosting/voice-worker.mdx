@@ -3,7 +3,7 @@ title: "Voice worker"
 description: "Deploy the durable voice-session control plane and its provider-certification scaffolding."
 ---
 
-`apps/voice-worker` is the persistent control-plane implementation of `eyeball.voice-worker.v1`. The TypeScript executor owns agent definitions, canonical schemas, credentials, execution records, and signed webhooks. The Python worker owns durable session state, a gap-free event log, chat turns, and restart-safe child dispatch. Pipecat, Twilio, and LiveKit code paths are present for provider certification, but the repository does not yet claim working live-call capability.
+`apps/voice-worker` is the persistent control-plane implementation of `eyeball.voice-worker.v2`. The TypeScript executor owns agent definitions, canonical schemas, credentials, execution records, and signed webhooks. The Python worker owns durable session state, a gap-free event log, chat turns, and restart-safe child dispatch. Pipecat, Twilio, and LiveKit code paths are present for provider certification, but the repository does not yet claim working live-call capability.
 
 ```text
 client → executor → versioned worker control plane
@@ -21,16 +21,18 @@ The provider-integration code follows Pipecat's documented [pipeline](https://do
 
 ## Configure the trust boundary
 
-Give the executor one project key for normal clients and a distinct key pinned to the worker's project and user. The worker key is the only caller allowed to reserve a durable child `executionId`.
+Give the executor one project key for normal clients and configure a distinct signing secret for short-lived voice-session capabilities. The secret remains executor-only; every issued capability is bound to one project, user, executor-owned session ID, expiry, and immutable canonical-tool allowlist. Agent sessions cap `maxDurationSeconds` at 3,600, so the existing 60-second shutdown buffer bounds every signed grant to 61 minutes.
 
 ```bash
-EYEBALL_API_KEYS="ey_project:proj_local,ey_voice_worker:proj_local:diner_123" \
+EYEBALL_API_KEYS="ey_project:proj_local" \
 EYEBALL_VOICE_WORKER_URL="https://voice-worker.example.com" \
 EYEBALL_VOICE_WORKER_TOKEN="replace-with-at-least-32-random-bytes" \
+EYEBALL_VOICE_SESSION_GRANT_SECRET="replace-with-a-distinct-32-byte-random-secret" \
   pnpm --filter @eyeball/executor start
 ```
 
-Configure the worker with the same control token and the pinned executor key:
+Configure the worker with the same control token. In session-grant mode,
+`EYEBALL_VOICE_WORKER_KEY` can remain unset:
 
 ```bash
 cd apps/voice-worker
@@ -39,17 +41,21 @@ cp .env.example .env
 docker compose --env-file .env up --build
 ```
 
-The two service credentials have different directions:
+The service credentials have different directions:
 
 | Variable | Direction | Authority |
 | --- | --- | --- |
 | `EYEBALL_VOICE_WORKER_TOKEN` | executor → worker | Starts, reads, stops, and streams worker sessions. |
-| `EYEBALL_VOICE_WORKER_KEY` | worker → executor | Executes only as its keyring-pinned project and user. |
+| `EYEBALL_VOICE_SESSION_GRANT_SECRET` | executor-local | Signs one-session worker capabilities; never sent to the worker. |
+| per-session `executorGrant` | executor → worker → executor | Executes only for its signed project, user, session ID, expiry, and tool allowlist. |
+| `EYEBALL_VOICE_WORKER_KEY` | worker → executor | Optional compatibility fallback limited to its keyring-pinned project and user. |
 
-Every `/v1/sessions/*` control request carries the shared token plus `X-Eyeball-Voice-Worker-Version: eyeball.voice-worker.v1`. Child calls return through the normal `/v1/execute` route with a stable `X-Eyeball-Execution-Id` and `voice-session:<session>:event:<sequence>` idempotency key. The executor accepts that reserved identity only for synchronous requests authenticated by a user-pinned key.
+Every `/v1/sessions/*` control request carries the shared token plus `X-Eyeball-Voice-Worker-Version: eyeball.voice-worker.v2`. Child calls return through the normal `/v1/execute` route with a stable `X-Eyeball-Execution-Id`, exact `X-Eyeball-Voice-Session-Id`, and `voice-session:<session>:event:<sequence>` idempotency key. Grant-authenticated calls are accepted only on synchronous `/v1/execute` requests whose user, session, and canonical tool match the signed capability. Static pinned keys retain their separate compatibility path.
+
+The worker excludes the opaque grant from durable request snapshots, events, transcripts, health responses, and executor-side observer callbacks. A dedicated SQLite authorization row retains it only while needed for crash recovery and clears the bearer on terminal transition. The executor also persists grant identity, expiry, and revocation with the session pointer when `EYEBALL_DATABASE_URL` is configured. An explicit executor stop revokes immediately; a terminal event does the same when the process-local observer receives it. If an executor restart misses that terminal event, the worker has still erased its copy and the signed capability expires at its short deadline.
 
 <Warning>
-  One static worker key represents one executor user. Run a separate worker/key boundary per user or implement short-lived per-session worker authorization before serving multiple untrusted users from one deployment.
+  During a v1-to-v2 rollout, keep the pinned `EYEBALL_VOICE_WORKER_KEY` on any worker whose SQLite database contains active v1 sessions. Those legacy snapshots have no session grant; the worker upgrades their wire shape in memory and uses the static fallback until they become terminal. New v2 sessions use executor-issued grants.
 </Warning>
 
 ## Provider-certification settings
@@ -57,7 +63,7 @@ Every `/v1/sessions/*` control request carries the shared token plus `X-Eyeball-
 | Variable | Required for | Meaning |
 | --- | --- | --- |
 | `EYEBALL_EXECUTOR_URL` | tool-enabled sessions | Trusted executor origin. |
-| `EYEBALL_VOICE_WORKER_KEY` | tool-enabled sessions | User-pinned executor API key. |
+| `EYEBALL_VOICE_WORKER_KEY` | static fallback only | User-pinned executor API key used only when the executor did not issue a session grant. |
 | `EYEBALL_VOICE_WORKER_TOKEN` | `pipecat` mode | Shared worker control token and Twilio media-token root. |
 | `EYEBALL_VOICE_DATABASE_PATH` | all modes | SQLite path on durable storage. |
 | `EYEBALL_VOICE_PUBLIC_URL` | Twilio | Public HTTPS origin used in TwiML. |
@@ -67,7 +73,7 @@ Every `/v1/sessions/*` control request carries the shared token plus `X-Eyeball-
 | `TWILIO_ACCOUNT_SID`, `TWILIO_AUTH_TOKEN`, `TWILIO_FROM_NUMBER` | outbound PSTN | Twilio call and Media Stream configuration. |
 | `LIVEKIT_URL`, `LIVEKIT_API_KEY`, `LIVEKIT_API_SECRET` | WebRTC runtime | LiveKit room token and transport configuration. |
 
-Provider secrets remain process environment or secret-manager inputs. They are never written into the immutable agent snapshot, SQLite session row, ordered event log, transcript, or executor response.
+Provider secrets remain process environment or secret-manager inputs. They are never written into the immutable agent snapshot, SQLite session row, ordered event log, transcript, or executor response. The executor grant is not a provider credential; its dedicated active-session row and terminal erasure are described above.
 
 The agent's `llm.model` currently passes directly to Anthropic. A hosted model registry and per-project model credential resolution remain separate control-plane work.
 
@@ -80,7 +86,6 @@ cd apps/voice-worker
 fly volumes create voice_worker_data --region <region> --size 10 --app <app>
 fly secrets set --app <app> \
   EYEBALL_VOICE_WORKER_TOKEN='...' \
-  EYEBALL_VOICE_WORKER_KEY='...' \
   EYEBALL_EXECUTOR_URL='https://executor.example.com' \
   EYEBALL_VOICE_PUBLIC_URL='https://<app>.fly.dev' \
   ANTHROPIC_API_KEY='...' \
@@ -93,7 +98,7 @@ Set the Twilio secrets, LiveKit secrets, or both for the transports you use. Pip
 
 ## Durability and recovery
 
-Before calling the executor, the worker commits a `tool_call` event and pending record containing the canonical tool, input, sequence, and stable execution ID. It commits `tool_result` before clearing the pending record. On restart, fake sessions resume their cursor and unresolved tool calls reuse the exact executor identity and idempotency key.
+Before calling the executor, the worker commits a `tool_call` event and pending record containing the canonical tool, input, sequence, and stable session-bound execution ID. It commits `tool_result` before clearing the pending record. On restart, fake sessions resume their cursor and unresolved tool calls reuse the exact executor identity and idempotency key. Recovery computes the remaining `maxDurationSeconds` window from the original session creation time; a restart never grants a fresh duration budget.
 
 Session events use monotonically increasing, gap-free sequence numbers. `voice-agents.get_agent_session` polls incrementally, and `get_session_transcript` normalizes the complete durable history. When configured, the executor observer forwards selected events and the terminal transcript through ordinary signed webhooks.
 
@@ -116,8 +121,9 @@ The fake transport is accepted only with both `EYEBALL_VOICE_MEDIA_MODE=fake` an
 ## Current operational boundaries
 
 - Run exactly one worker replica per SQLite volume. Multi-replica scheduling needs a distributed repository and session lease.
+- Session grants are the multi-user authority path. If the executor grant secret is unset, the static `EYEBALL_VOICE_WORKER_KEY` fallback still requires one worker/key boundary per trusted pinned user.
 - Without `EYEBALL_DATABASE_URL`, the executor's default `AgentStore` keeps definitions, immutable revisions, bindings, session pointers, and message receipts in process memory. With the variable configured, the stock Postgres store makes those executor-owned records restart-durable. Live worker session state and events remain worker-owned.
-- The remote event observer is process-local, so the worker event log remains the source of truth across an executor restart. Once an observed event is admitted, its webhook-selection and delivery jobs are restart-durable when the executor uses `EYEBALL_DATABASE_URL`.
+- The remote event observer is process-local, so the worker event log remains the source of truth across an executor restart. A terminal event missed during that restart can leave the executor's grant metadata unrevoked until the short signed expiry, although the terminal worker has erased its bearer. Once an observed event is admitted, its webhook-selection and delivery jobs are restart-durable when the executor uses `EYEBALL_DATABASE_URL`.
 - Provider-backed session requests currently require `recordingPolicy.mode=disabled`; no compliant audio-recording and retention backend ships here.
 - Direct chat is covered by account-free tests. Outbound Twilio and worker-level LiveKit integration paths are assembled but unverified; the catalog still has no public WebRTC session-entry tool, and inbound Twilio number provisioning/webhook verification remains open in RFC 002.
 - The media path targets Pipecat 1.5.0 APIs but has not been exercised or certified against real Twilio, LiveKit, Deepgram, ElevenLabs, or Anthropic accounts in this repository.

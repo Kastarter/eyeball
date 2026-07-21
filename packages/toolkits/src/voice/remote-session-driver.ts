@@ -35,6 +35,11 @@ const SESSION_STATES = new Set<VoiceAgentSessionState>([
 ]);
 const TOOL_ERROR_CODE_VALUES = new Set<string>(Object.values(TOOL_ERROR_CODES));
 
+export type VoiceWorkerObservationRequest = Omit<
+  VoiceWorkerStartSessionRequest,
+  "executorGrant"
+>;
+
 function isLoopbackHostname(hostname: string): boolean {
   return (
     hostname === "localhost" ||
@@ -50,12 +55,16 @@ export interface RemoteVoiceSessionDriverOptions {
   /** Shared control-plane token. Required by provider-backed worker mode. */
   token?: string;
   onEvent?: (input: {
-    request: VoiceWorkerStartSessionRequest;
+    request: VoiceWorkerObservationRequest;
     event: VoiceAgentSessionEvent;
   }) => void | Promise<void>;
   onTranscript?: (input: {
-    request: VoiceWorkerStartSessionRequest;
+    request: VoiceWorkerObservationRequest;
     transcript: TranscriptArtifact;
+  }) => void | Promise<void>;
+  onTerminal?: (input: {
+    request: VoiceWorkerObservationRequest;
+    event: VoiceAgentSessionEvent;
   }) => void | Promise<void>;
   pollIntervalMs?: number;
   requestTimeoutMs?: number;
@@ -396,7 +405,7 @@ function transcriptTurn(
 }
 
 function transcriptFromEvents(
-  request: VoiceWorkerStartSessionRequest,
+  request: VoiceWorkerObservationRequest,
   session: VoiceAgentSession,
   events: readonly VoiceAgentSessionEvent[],
 ): TranscriptArtifact {
@@ -440,7 +449,7 @@ function wait(milliseconds: number, signal: AbortSignal): Promise<void> {
   });
 }
 
-/** Trusted TypeScript proxy for `eyeball.voice-worker.v1`. */
+/** Trusted TypeScript proxy for `eyeball.voice-worker.v2`. */
 export class RemoteVoiceSessionDriver implements VoiceSessionDriver {
   readonly baseUrl: string;
   readonly expectedWireVersion = VOICE_WORKER_WIRE_VERSION;
@@ -448,6 +457,7 @@ export class RemoteVoiceSessionDriver implements VoiceSessionDriver {
   readonly #token: string | undefined;
   readonly #onEvent: RemoteVoiceSessionDriverOptions["onEvent"];
   readonly #onTranscript: RemoteVoiceSessionDriverOptions["onTranscript"];
+  readonly #onTerminal: RemoteVoiceSessionDriverOptions["onTerminal"];
   readonly #pollIntervalMs: number;
   readonly #requestTimeoutMs: number;
   readonly #streams = new Map<string, AbortController>();
@@ -465,6 +475,7 @@ export class RemoteVoiceSessionDriver implements VoiceSessionDriver {
     this.#token = token === undefined || token.length === 0 ? undefined : token;
     this.#onEvent = options.onEvent;
     this.#onTranscript = options.onTranscript;
+    this.#onTerminal = options.onTerminal;
     this.#pollIntervalMs = positiveInteger(
       options.pollIntervalMs ?? 250,
       "pollIntervalMs",
@@ -488,6 +499,7 @@ export class RemoteVoiceSessionDriver implements VoiceSessionDriver {
     if (
       created.projectId !== request.scope.projectId ||
       created.userId !== request.scope.userId ||
+      created.id !== request.sessionId ||
       created.agentId !== request.agent.id ||
       created.agentRevision !== request.agent.revision
     ) {
@@ -495,7 +507,9 @@ export class RemoteVoiceSessionDriver implements VoiceSessionDriver {
         "The voice worker returned a session outside the pinned scope.",
       );
     }
-    this.#observe(created.id, request);
+    const { executorGrant: _executorGrant, ...observationRequest } =
+      structuredClone(request);
+    this.#observe(created.id, observationRequest);
     return created;
   }
 
@@ -721,8 +735,13 @@ export class RemoteVoiceSessionDriver implements VoiceSessionDriver {
     return response;
   };
 
-  #observe(sessionId: string, request: VoiceWorkerStartSessionRequest): void {
-    if (this.#onEvent === undefined && this.#onTranscript === undefined) return;
+  #observe(sessionId: string, request: VoiceWorkerObservationRequest): void {
+    if (
+      this.#onEvent === undefined &&
+      this.#onTranscript === undefined &&
+      this.#onTerminal === undefined
+    )
+      return;
     this.#streams.get(sessionId)?.abort();
     const controller = new AbortController();
     this.#streams.set(sessionId, controller);
@@ -741,12 +760,13 @@ export class RemoteVoiceSessionDriver implements VoiceSessionDriver {
 
   async #consumeEvents(
     sessionId: string,
-    request: VoiceWorkerStartSessionRequest,
+    request: VoiceWorkerObservationRequest,
     signal: AbortSignal,
   ): Promise<void> {
     const events: VoiceAgentSessionEvent[] = [];
     let cursor = 0;
     let consecutiveFailures = 0;
+    let terminalObserved = false;
     while (!signal.aborted) {
       try {
         let page = await this.#getEvents(
@@ -759,6 +779,13 @@ export class RemoteVoiceSessionDriver implements VoiceSessionDriver {
         );
         for (;;) {
           for (const event of page.events) {
+            const terminal =
+              event.data.type === "session.lifecycle" &&
+              TERMINAL_STATES.has(event.data.to);
+            if (terminal && !terminalObserved) {
+              await this.#onTerminal?.({ request, event });
+              terminalObserved = true;
+            }
             await this.#onEvent?.({ request, event });
             cursor = event.sequence;
             events.push(event);

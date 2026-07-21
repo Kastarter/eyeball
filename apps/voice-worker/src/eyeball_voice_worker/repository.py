@@ -15,6 +15,7 @@ from typing import Any, NoReturn, cast
 from pydantic import JsonValue
 
 from .contracts import (
+    WIRE_VERSION,
     ChatTurnResponse,
     EventPage,
     PublicSession,
@@ -63,6 +64,10 @@ class StoredSession:
     runtime_cursor: int
     next_turn: int
     pending_tool: PendingToolCall | None
+    executor_auth_mode: str
+    executor_grant_token: str | None
+    executor_grant_expires_at: str | None
+    executor_grant_revoked_at: str | None
 
 
 def _encode(value: Any) -> str:
@@ -119,6 +124,31 @@ class VoiceSessionRepository:
                   UNIQUE(session_id, sequence)
                 );
 
+                CREATE TABLE IF NOT EXISTS voice_session_executor_auth (
+                  session_id TEXT PRIMARY KEY
+                    REFERENCES voice_sessions(id) ON DELETE CASCADE,
+                  mode TEXT NOT NULL
+                    CHECK(mode IN ('session-grant', 'static-pinned')),
+                  grant_token TEXT,
+                  grant_expires_at TEXT,
+                  grant_revoked_at TEXT,
+                  created_at TEXT NOT NULL,
+                  CHECK(
+                    (mode = 'static-pinned'
+                      AND grant_token IS NULL
+                      AND grant_expires_at IS NULL
+                      AND grant_revoked_at IS NULL)
+                    OR
+                    (mode = 'session-grant'
+                      AND grant_expires_at IS NOT NULL
+                      AND (
+                        (grant_token IS NOT NULL AND grant_revoked_at IS NULL)
+                        OR
+                        (grant_token IS NULL AND grant_revoked_at IS NOT NULL)
+                      ))
+                  )
+                );
+
                 CREATE TABLE IF NOT EXISTS voice_chat_receipts (
                   session_id TEXT NOT NULL
                     REFERENCES voice_sessions(id) ON DELETE CASCADE,
@@ -159,7 +189,17 @@ class VoiceSessionRepository:
     def create(
         self, request: StartSessionRequest, session: PublicSession
     ) -> StoredSession:
-        encoded_request = _encode(request.model_dump(by_alias=True, exclude_none=True))
+        if request.session_id != session.id:
+            raise RepositoryError(
+                "The stored session ID must match the executor-owned request ID."
+            )
+        encoded_request = _encode(
+            request.model_dump(
+                by_alias=True,
+                exclude_none=True,
+                exclude={"executor_grant"},
+            )
+        )
         with self._transaction() as cursor:
             cursor.execute(
                 """
@@ -171,6 +211,25 @@ class VoiceSessionRepository:
                     session.id,
                     encoded_request,
                     _encode(session.model_dump(by_alias=True, exclude_none=True)),
+                    _now(),
+                ),
+            )
+            grant = request.executor_grant
+            cursor.execute(
+                """
+                INSERT INTO voice_session_executor_auth (
+                  session_id, mode, grant_token, grant_expires_at, created_at
+                ) VALUES (?, ?, ?, ?, ?)
+                """,
+                (
+                    session.id,
+                    "session-grant" if grant is not None else "static-pinned",
+                    None if grant is None else grant.token,
+                    (
+                        None
+                        if grant is None
+                        else grant.expires_at.isoformat().replace("+00:00", "Z")
+                    ),
                     _now(),
                 ),
             )
@@ -186,7 +245,7 @@ class VoiceSessionRepository:
     def get(self, session_id: str) -> StoredSession:
         with self._lock:
             record = self._connection.execute(
-                "SELECT * FROM voice_sessions WHERE id = ?", (session_id,)
+                self._session_auth_query("WHERE sessions.id = ?"), (session_id,)
             ).fetchone()
             if record is None:
                 self._not_found()
@@ -195,7 +254,9 @@ class VoiceSessionRepository:
     def active(self) -> list[StoredSession]:
         with self._lock:
             records = self._connection.execute(
-                "SELECT * FROM voice_sessions ORDER BY updated_at ASC, id ASC"
+                self._session_auth_query(
+                    "ORDER BY sessions.updated_at ASC, sessions.id ASC"
+                )
             ).fetchall()
         stored = [self._stored(dict(record)) for record in records]
         return [item for item in stored if item.session.state not in TERMINAL_STATES]
@@ -272,6 +333,8 @@ class VoiceSessionRepository:
             session = self._session(row)
             current = session.state
             if current == target:
+                if target in TERMINAL_STATES:
+                    self._clear_grant(cursor, session_id, _now())
                 return session
             if current in TERMINAL_STATES or target not in ALLOWED_TRANSITIONS[current]:
                 raise StateConflictError(
@@ -296,6 +359,8 @@ class VoiceSessionRepository:
                 """,
                 (row["session_json"], now, session_id),
             )
+            if target in TERMINAL_STATES:
+                self._clear_grant(cursor, session_id, now)
             self._append_event(
                 cursor,
                 row,
@@ -505,7 +570,7 @@ class VoiceSessionRepository:
 
     def _row(self, cursor: sqlite3.Cursor, session_id: str) -> dict[str, Any]:
         record = cursor.execute(
-            "SELECT * FROM voice_sessions WHERE id = ?", (session_id,)
+            self._session_auth_query("WHERE sessions.id = ?"), (session_id,)
         ).fetchone()
         if record is None:
             self._not_found()
@@ -516,12 +581,69 @@ class VoiceSessionRepository:
         raise SessionNotFoundError("The session was not found.")
 
     def _stored(self, row: dict[str, Any]) -> StoredSession:
+        request_value = json_object(
+            json.loads(row["request_json"]), "stored session request"
+        )
+        legacy_request = (
+            request_value.get("contractVersion") == "eyeball.voice-worker.v1"
+            and "sessionId" not in request_value
+        )
+        if legacy_request:
+            request_value = {
+                **request_value,
+                "contractVersion": WIRE_VERSION,
+                "sessionId": cast(str, row["id"]),
+            }
+        executor_auth_mode = row.get("executor_auth_mode")
+        if executor_auth_mode is None:
+            if not legacy_request:
+                raise RepositoryError(
+                    "The v2 session executor authorization row is missing."
+                )
+            executor_auth_mode = "static-pinned"
         return StoredSession(
-            request=StartSessionRequest.model_validate(json.loads(row["request_json"])),
+            request=StartSessionRequest.model_validate(request_value),
             session=self._session(row),
             runtime_cursor=int(row["runtime_cursor"]),
             next_turn=int(row["next_turn"]),
             pending_tool=self._pending(row),
+            executor_auth_mode=cast(str, executor_auth_mode),
+            executor_grant_token=cast(str | None, row.get("executor_grant_token")),
+            executor_grant_expires_at=cast(
+                str | None, row.get("executor_grant_expires_at")
+            ),
+            executor_grant_revoked_at=cast(
+                str | None, row.get("executor_grant_revoked_at")
+            ),
+        )
+
+    @staticmethod
+    def _session_auth_query(suffix: str) -> str:
+        return f"""
+            SELECT
+              sessions.*,
+              auth.mode AS executor_auth_mode,
+              auth.grant_token AS executor_grant_token,
+              auth.grant_expires_at AS executor_grant_expires_at,
+              auth.grant_revoked_at AS executor_grant_revoked_at
+            FROM voice_sessions AS sessions
+            LEFT JOIN voice_session_executor_auth AS auth
+              ON auth.session_id = sessions.id
+            {suffix}
+        """
+
+    @staticmethod
+    def _clear_grant(
+        cursor: sqlite3.Cursor, session_id: str, revoked_at: str
+    ) -> None:
+        cursor.execute(
+            """
+            UPDATE voice_session_executor_auth
+            SET grant_token = NULL,
+                grant_revoked_at = COALESCE(grant_revoked_at, ?)
+            WHERE session_id = ? AND mode = 'session-grant'
+            """,
+            (revoked_at, session_id),
         )
 
     @staticmethod

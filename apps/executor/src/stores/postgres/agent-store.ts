@@ -120,6 +120,13 @@ function pointerFromRow(
     agentRevision: row.agentRevision,
     callId: row.callId,
     createdAt: isoTimestamp(row.createdAt),
+    ...(row.grantId === null ? {} : { grantId: row.grantId }),
+    ...(row.grantExpiresAt === null
+      ? {}
+      : { grantExpiresAt: isoTimestamp(row.grantExpiresAt) }),
+    ...(row.grantRevokedAt === null
+      ? {}
+      : { grantRevokedAt: isoTimestamp(row.grantRevokedAt) }),
   };
 }
 
@@ -489,6 +496,19 @@ export class PostgresAgentStore<
   }
 
   async rememberSession(pointer: VoiceAgentSessionPointer): Promise<void> {
+    if (
+      (pointer.grantId === undefined) !==
+      (pointer.grantExpiresAt === undefined)
+    ) {
+      throw new AgentStoreInvariantError(
+        "AgentStore invariant violated: grant identity and expiry must be stored together.",
+      );
+    }
+    if (pointer.grantRevokedAt !== undefined && pointer.grantId === undefined) {
+      throw new AgentStoreInvariantError(
+        "AgentStore invariant violated: a static session cannot have grant revocation state.",
+      );
+    }
     await this.#safe(() =>
       this.#database.transaction(async (transaction) => {
         await transaction
@@ -512,6 +532,20 @@ export class PostgresAgentStore<
             "AgentStore invariant violated: session scope changed.",
           );
         }
+        if (
+          existing !== undefined &&
+          (existing.grantId !== (pointer.grantId ?? null) ||
+            (existing.grantExpiresAt === null
+              ? null
+              : isoTimestamp(existing.grantExpiresAt)) !==
+              (pointer.grantExpiresAt === undefined
+                ? null
+                : isoTimestamp(pointer.grantExpiresAt)))
+        ) {
+          throw new AgentStoreInvariantError(
+            "AgentStore invariant violated: session grant changed.",
+          );
+        }
         if (existing === undefined) {
           throw new AgentStoreInvariantError(
             "AgentStore invariant violated: session pointer disappeared.",
@@ -524,8 +558,43 @@ export class PostgresAgentStore<
             agentRevision: pointer.agentRevision,
             callId: pointer.callId,
             createdAt: pointer.createdAt,
+            grantRevokedAt:
+              existing.grantRevokedAt ?? pointer.grantRevokedAt ?? null,
           })
           .where(eq(voiceAgentSessionPointers.sessionId, pointer.sessionId));
+      }),
+    );
+  }
+
+  async revokeSessionGrant(input: {
+    projectId: string;
+    userId: string;
+    sessionId: string;
+    grantId?: string;
+    revokedAt: string;
+  }): Promise<void> {
+    await this.#safe(() =>
+      this.#database.transaction(async (transaction) => {
+        const [existing] = await transaction
+          .select()
+          .from(voiceAgentSessionPointers)
+          .where(eq(voiceAgentSessionPointers.sessionId, input.sessionId))
+          .for("update")
+          .limit(1);
+        if (
+          existing === undefined ||
+          existing.projectId !== input.projectId ||
+          existing.userId !== input.userId ||
+          existing.grantId === null ||
+          (input.grantId !== undefined && existing.grantId !== input.grantId) ||
+          existing.grantRevokedAt !== null
+        ) {
+          return;
+        }
+        await transaction
+          .update(voiceAgentSessionPointers)
+          .set({ grantRevokedAt: input.revokedAt })
+          .where(eq(voiceAgentSessionPointers.sessionId, input.sessionId));
       }),
     );
   }

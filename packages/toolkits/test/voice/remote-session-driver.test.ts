@@ -17,11 +17,13 @@ import {
 const PROJECT_ID = "proj_remote_driver";
 const USER_ID = "user_remote_driver";
 const AGENT_ID = "va_remote_driver";
-const SESSION_ID = "session_remote_driver";
+const SESSION_ID = "session_0123456789abcdef0123456789abcdef";
 const WORKER_TOKEN = "worker-token-fixture-at-least-32-bytes";
+const GRANT_TOKEN = "grant-token-must-not-leave-the-start-request";
 
 const request = {
   contractVersion: VOICE_WORKER_WIRE_VERSION,
+  sessionId: SESSION_ID,
   scope: { projectId: PROJECT_ID, userId: USER_ID },
   agent: {
     id: AGENT_ID,
@@ -51,6 +53,10 @@ const request = {
     bargeIn: { enabled: true },
   },
   transport: { kind: "fake", turns: [{ caller: "Hello." }] },
+  executorGrant: {
+    token: GRANT_TOKEN,
+    expiresAt: "2026-07-18T00:01:30.000Z",
+  },
 } as const satisfies VoiceWorkerStartSessionRequest;
 
 const createdSession: VoiceAgentSession = {
@@ -207,14 +213,26 @@ describe("remote voice-session driver", () => {
   it("starts a pinned session and consumes its durable ordered events", async () => {
     const requests: Request[] = [];
     const onEvent = vi.fn();
+    const callbackOrder: string[] = [];
+    const observedRequests: unknown[] = [];
     let transcript: TranscriptArtifact | undefined;
     const driver = new RemoteVoiceSessionDriver({
       baseUrl: "https://voice-worker.test",
       token: WORKER_TOKEN,
       fetch: workerFetch(requests),
       pollIntervalMs: 1,
-      onEvent,
+      onTerminal: ({ request: observed, event }) => {
+        observedRequests.push(observed);
+        callbackOrder.push(`terminal:${event.sequence}`);
+      },
+      onEvent: (input) => {
+        observedRequests.push(input.request);
+        callbackOrder.push(`event:${input.event.sequence}`);
+        onEvent(input);
+      },
       onTranscript: (input) => {
+        observedRequests.push(input.request);
+        callbackOrder.push("transcript");
         transcript = input.transcript;
       },
     });
@@ -235,6 +253,15 @@ describe("remote voice-session driver", () => {
     expect(onEvent.mock.calls.map(([input]) => input.event.sequence)).toEqual([
       1, 2, 3, 4, 5, 6,
     ]);
+    expect(callbackOrder.indexOf("terminal:6")).toBeLessThan(
+      callbackOrder.indexOf("event:6"),
+    );
+    expect(callbackOrder.indexOf("event:6")).toBeLessThan(
+      callbackOrder.indexOf("transcript"),
+    );
+    expect(JSON.stringify(observedRequests)).not.toContain(GRANT_TOKEN);
+    const startBody = await requests[0]?.clone().json();
+    expect(startBody).toEqual(request);
     expect(
       requests.every(
         (item) =>
@@ -353,6 +380,28 @@ describe("remote voice-session driver", () => {
     );
     await expect(driver.getEvents(SESSION_ID, { limit: 201 })).rejects.toThrow(
       "limit must not exceed 200.",
+    );
+  });
+
+  it("rejects a worker that replaces the executor-owned session ID", async () => {
+    const driver = new RemoteVoiceSessionDriver({
+      baseUrl: "https://voice-worker.example.test",
+      fetch: vi.fn(async () =>
+        response(
+          {
+            contractVersion: VOICE_WORKER_WIRE_VERSION,
+            session: {
+              ...createdSession,
+              id: "session_ffffffffffffffffffffffffffffffff",
+            },
+          },
+          201,
+        ),
+      ),
+    });
+
+    await expect(driver.startSession(request)).rejects.toThrow(
+      "The voice worker returned a session outside the pinned scope.",
     );
   });
 

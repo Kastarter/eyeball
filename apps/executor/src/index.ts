@@ -15,6 +15,7 @@ export * from "./stores/postgres/index.js";
 export * from "./telemetry/index.js";
 export * from "./triggers/index.js";
 export * from "./usage/index.js";
+export * from "./voice-session-grants.js";
 export * from "./webhooks/index.js";
 
 import { createExecutorApp } from "./routes.js";
@@ -27,5 +28,10 @@ export const triggerPollingScheduler = executorRuntime.triggerPollingScheduler;
 export const app = createExecutorApp({
   engine,
   apiKeyAuthenticator: executorRuntime.apiKeyAuthenticator,
+  ...(executorRuntime.voiceSessionGrantVerifier === undefined
+    ? {}
+    : {
+        voiceSessionGrantVerifier: executorRuntime.voiceSessionGrantVerifier,
+      }),
   env,
 });

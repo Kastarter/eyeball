@@ -129,27 +129,50 @@ manifest override such as `EYEBALL_ZENDESK_BASE_URL=https://acme.zendesk.com` wh
 
 ### 2.3 Voice-worker service identity
 
-The separately deployed `apps/voice-worker` has two credentials with opposite trust directions. `EYEBALL_VOICE_WORKER_TOKEN`
-is a shared bearer secret sent by the executor to the worker's versioned session API. `EYEBALL_VOICE_WORKER_KEY` is an
-executor API key used by the worker when an allowlisted model tool call re-enters `/v1/execute`.
-
-The worker key MUST be pinned to both project and user in `EYEBALL_API_KEYS`:
+The separately deployed `apps/voice-worker` uses a shared
+`EYEBALL_VOICE_WORKER_TOKEN` for the executor-to-worker control plane. In the
+recommended multi-user composition, the executor also uses an executor-only
+`EYEBALL_VOICE_SESSION_GRANT_SECRET` to issue a short-lived capability for each
+session. The capability is signed over one project, user, executor-owned session
+ID, expiry, audience, grant ID, and immutable canonical-tool allowlist. Public
+agent schemas cap `maxDurationSeconds` at 3,600, and the issuer independently
+enforces that ceiling; with its 60-second shutdown buffer, grant TTL is at most
+61 minutes.
 
 ```bash
-export EYEBALL_API_KEYS='ey_project:proj_local,ey_voice_worker:proj_local:diner_123'
+export EYEBALL_API_KEYS='ey_project:proj_local'
 export EYEBALL_VOICE_WORKER_URL='https://voice-worker.example.com'
 export EYEBALL_VOICE_WORKER_TOKEN='replace-with-at-least-32-random-bytes'
+export EYEBALL_VOICE_SESSION_GRANT_SECRET='replace-with-a-distinct-32-byte-random-secret'
 
 # Worker process / secret manager:
 export EYEBALL_EXECUTOR_URL='https://executor.example.com'
-export EYEBALL_VOICE_WORKER_KEY='ey_voice_worker'
 export EYEBALL_VOICE_WORKER_TOKEN='replace-with-at-least-32-random-bytes'
 ```
 
-Only a user-pinned key may submit the reserved `X-Eyeball-Execution-Id` header, and then only with synchronous mode and an
-`Idempotency-Key`. The worker commits the canonical call and stable execution identity before dispatch. Recovery reuses
-that identity and `voice-session:<sessionId>:event:<sequence>`, so executor-level replay prevents a duplicate provider side
-effect.
+The worker commits the canonical call and stable execution identity before
+dispatch. Recovery reuses that identity and
+`voice-session:<sessionId>:event:<sequence>`, so executor-level replay prevents
+a duplicate provider side effect. A grant-authenticated call must also carry the
+exact `X-Eyeball-Voice-Session-Id`, use synchronous mode, match the signed user
+and tool allowlist, and target only `/v1/execute`. The executor checks durable
+grant identity and revocation on every request rather than positively caching
+the capability.
+
+The worker excludes the bearer from its request snapshot, events, transcript,
+health output, and executor observer callbacks. It stores the active bearer in a
+dedicated SQLite authorization row only for crash recovery and erases it when
+the session reaches a terminal state. The executor revokes the corresponding
+grant on explicit stop, failed start, and observed terminal state.
+
+`EYEBALL_VOICE_WORKER_KEY` remains a compatibility fallback. If it is used, the
+key MUST be pinned to both project and user in `EYEBALL_API_KEYS`, and the worker
+must remain isolated to that trusted pinned user:
+
+```bash
+export EYEBALL_API_KEYS='ey_project:proj_local,ey_voice_worker:proj_local:diner_123'
+export EYEBALL_VOICE_WORKER_KEY='ey_voice_worker'
+```
 
 The hosted executor resolves project keys dynamically through
 `POST /internal/keys/verify`, using `EYEBALL_INTERNAL_API_SECRET` and
@@ -162,10 +185,12 @@ query parameter or request target; request-body logging must remain disabled on
 both sides of that internal boundary. The Cloud endpoint limits the raw body to
 4 KiB before buffering and the candidate key to 1,024 characters.
 
-Do not reuse the project-wide administrative key as the worker key, expose either service credential to a browser, or place
-the control token in a Twilio URL directly. Twilio media URLs contain only an HMAC-derived, session-bound token. One static
-worker key represents one user; a multi-user hosted worker requires short-lived per-session executor authorization that this
-open-core implementation does not provide.
+Do not reuse the project-wide administrative key as the fallback worker key,
+expose any service credential to a browser, place the control token in a Twilio
+URL directly, or deploy the executor signing secret to the worker. Twilio media
+URLs contain only an HMAC-derived, session-bound token. One static fallback key
+still represents one user; multi-user hosted workers must use the per-session
+grant path.
 
 Anthropic, Deepgram, ElevenLabs, Twilio, and LiveKit credentials are deployment secrets for the provider-integration process and are not
 stored in session snapshots or SQLite events. Canonical child-tool credentials such as Gmail continue to resolve through the

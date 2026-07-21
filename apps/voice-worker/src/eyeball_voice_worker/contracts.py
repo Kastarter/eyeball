@@ -1,12 +1,13 @@
-"""Pydantic models for ``eyeball.voice-worker.v1``."""
+"""Pydantic models for ``eyeball.voice-worker.v2``."""
 
 from __future__ import annotations
 
+from datetime import datetime
 from typing import Annotated, Any, Literal
 
-from pydantic import BaseModel, ConfigDict, Field, JsonValue
+from pydantic import BaseModel, ConfigDict, Field, JsonValue, field_validator
 
-WIRE_VERSION: Literal["eyeball.voice-worker.v1"] = "eyeball.voice-worker.v1"
+WIRE_VERSION: Literal["eyeball.voice-worker.v2"] = "eyeball.voice-worker.v2"
 WIRE_VERSION_HEADER = "X-Eyeball-Voice-Worker-Version"
 
 SessionState = Literal[
@@ -121,11 +122,27 @@ type TransportSnapshot = Annotated[
 ]
 
 
+class ExecutorGrant(WireModel):
+    """Opaque executor bearer kept only for the active session that received it."""
+
+    token: Annotated[str, Field(min_length=1, max_length=8192)]
+    expires_at: datetime
+
+    @field_validator("expires_at")
+    @classmethod
+    def expiry_must_be_timezone_aware(cls, value: datetime) -> datetime:
+        if value.tzinfo is None or value.utcoffset() is None:
+            raise ValueError("executorGrant.expiresAt must include a time zone.")
+        return value
+
+
 class StartSessionRequest(WireModel):
-    contract_version: Literal["eyeball.voice-worker.v1"]
+    contract_version: Literal["eyeball.voice-worker.v2"]
+    session_id: Annotated[str, Field(pattern=r"^session_[0-9a-f]{32}$")]
     scope: ScopeSnapshot
     agent: AgentSnapshot
     transport: TransportSnapshot
+    executor_grant: ExecutorGrant | None = None
 
 
 class PublicSession(WireModel):
@@ -152,35 +169,35 @@ class SessionEvent(WireModel):
 
 
 class SessionResponse(WireModel):
-    contract_version: Literal["eyeball.voice-worker.v1"] = WIRE_VERSION
+    contract_version: Literal["eyeball.voice-worker.v2"] = WIRE_VERSION
     session: PublicSession
 
 
 class StopSessionRequest(WireModel):
-    contract_version: Literal["eyeball.voice-worker.v1"]
+    contract_version: Literal["eyeball.voice-worker.v2"]
     reason: str | None = None
 
 
 class EventPage(WireModel):
-    contract_version: Literal["eyeball.voice-worker.v1"] = WIRE_VERSION
+    contract_version: Literal["eyeball.voice-worker.v2"] = WIRE_VERSION
     events: list[SessionEvent]
     next_sequence: Annotated[int, Field(ge=0)]
     has_more: bool
 
 
 class EventEnvelope(WireModel):
-    contract_version: Literal["eyeball.voice-worker.v1"] = WIRE_VERSION
+    contract_version: Literal["eyeball.voice-worker.v2"] = WIRE_VERSION
     event: SessionEvent
 
 
 class ChatTurnRequest(WireModel):
-    contract_version: Literal["eyeball.voice-worker.v1"]
+    contract_version: Literal["eyeball.voice-worker.v2"]
     text: Annotated[str, Field(min_length=1)]
     idempotency_key: Annotated[str, Field(min_length=1)]
 
 
 class ChatTurnResponse(WireModel):
-    contract_version: Literal["eyeball.voice-worker.v1"] = WIRE_VERSION
+    contract_version: Literal["eyeball.voice-worker.v2"] = WIRE_VERSION
     session: PublicSession
     turn_id: Annotated[str, Field(min_length=1)]
     assistant_message: str
@@ -195,7 +212,7 @@ class MediaHealth(WireModel):
 class WorkerHealth(WireModel):
     status: Literal["ok", "draining"]
     service: Literal["voice-worker"] = "voice-worker"
-    contract_version: Literal["eyeball.voice-worker.v1"] = WIRE_VERSION
+    contract_version: Literal["eyeball.voice-worker.v2"] = WIRE_VERSION
     accepting_sessions: bool
     active_sessions: Annotated[int, Field(ge=0)]
     media: MediaHealth

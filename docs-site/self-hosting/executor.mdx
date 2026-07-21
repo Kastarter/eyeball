@@ -38,6 +38,7 @@ The stock runtime can verify Cloud-issued API keys dynamically, resolve hosted O
 |---|---:|---|
 | `EYEBALL_KEY_VERIFY_URL` | dynamic key auth | Full HTTPS URL of the Cloud `/internal/keys/verify` endpoint |
 | `EYEBALL_API_KEYS` | no | Optional static `key:project[:user]` entries; static keys are checked before the remote verifier |
+| `EYEBALL_VOICE_SESSION_GRANT_SECRET` | multi-user remote voice | Executor-only 32+ byte HMAC secret for short-lived project/user/session/tool-scoped worker capabilities |
 | `EYEBALL_KEY_VERIFY_POSITIVE_TTL_MS` | no | Valid-key cache TTL in milliseconds, default `60000` |
 | `EYEBALL_KEY_VERIFY_NEGATIVE_TTL_MS` | no | Unknown/revoked-key cache TTL in milliseconds, default `5000`; it must remain shorter than the positive TTL |
 | `EYEBALL_CREDENTIALS` | hosted credentials | Set to `cloud` |
@@ -61,6 +62,8 @@ pnpm --filter @eyeball/executor start
 ```
 
 Cloud endpoint variables must be absolute HTTPS URLs without embedded credentials, queries, or fragments. HTTP is accepted only for explicit loopback development. The executor sends bearer-authenticated, no-store JSON `POST` requests and never places an API key in a URL. Credential resolution and usage requests time out after 10 seconds by default and expose only generic, redacted failures.
+
+When a remote voice worker serves more than one trusted user, configure `EYEBALL_VOICE_SESSION_GRANT_SECRET` on the executor and nowhere else. The executor then issues a fresh capability before worker admission and verifies its durable identity and revocation on every child `/v1/execute` request. See [Voice worker](/self-hosting/voice-worker) for the v2 wire contract and static single-user fallback.
 
 Successful key checks are cached for 60 seconds by default, so revocation reaches an already warm executor within that documented window. Invalid or revoked results are cached for only 5 seconds. Cache entries use the key's SHA-256 digest, not the plaintext key. Verifier transport and protocol failures are never cached: the executor fails closed with a retryable `401`, then tries the control plane again on the next request.
 

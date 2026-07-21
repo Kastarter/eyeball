@@ -32,6 +32,7 @@ from .contracts import (
 from .executor import ExecutorClient
 from .manager import (
     InvalidTransportError,
+    MissingSessionCredentialError,
     SessionManager,
     SessionNotFoundError,
     SessionPolicyError,
@@ -135,6 +136,16 @@ def create_app(
     @app.exception_handler(SessionPolicyError)
     async def invalid_runtime(_request: Request, error: Exception) -> JSONResponse:
         return _error_response(422, "invalid_runtime", str(error))
+
+    @app.exception_handler(MissingSessionCredentialError)
+    async def missing_executor_authorization(
+        _request: Request, _error: MissingSessionCredentialError
+    ) -> JSONResponse:
+        return _error_response(
+            422,
+            "executor_authorization_missing",
+            "Tool-enabled sessions require executor authorization.",
+        )
 
     @app.exception_handler(Exception)
     async def unexpected_failure(_request: Request, _error: Exception) -> JSONResponse:

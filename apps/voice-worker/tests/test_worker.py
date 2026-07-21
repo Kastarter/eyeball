@@ -1,9 +1,12 @@
 from __future__ import annotations
 
 import asyncio
+import hashlib
 import json
+import sqlite3
 import sys
 from dataclasses import replace
+from datetime import UTC, datetime
 from pathlib import Path
 from types import SimpleNamespace
 from typing import Any, ClassVar, cast
@@ -30,13 +33,24 @@ from eyeball_voice_worker.media import (
     TwilioDialer,
     twilio_media_token,
 )
-from eyeball_voice_worker.repository import StateConflictError, VoiceSessionRepository
+from eyeball_voice_worker.repository import (
+    RepositoryError,
+    StateConflictError,
+    VoiceSessionRepository,
+)
 
 CONTROL_TOKEN = "worker-control-test-token-at-least-32-bytes"
 WORKER_KEY = "ey_test_worker_user_pinned"
 
 
-def start_payload(*, delay_ms: int = 0, with_tool: bool = True) -> dict[str, Any]:
+def start_payload(
+    *,
+    delay_ms: int = 0,
+    with_tool: bool = True,
+    session_id: str = "session_11111111111111111111111111111111",
+    user_id: str = "user_worker",
+    executor_grant: str | None = None,
+) -> dict[str, Any]:
     turn: dict[str, Any] = {
         "caller": "Please send the confirmation.",
         "assistant": "I will send it now.",
@@ -68,9 +82,10 @@ def start_payload(*, delay_ms: int = 0, with_tool: bool = True) -> dict[str, Any
                 },
             }
         )
-    return {
+    payload: dict[str, Any] = {
         "contractVersion": WIRE_VERSION,
-        "scope": {"projectId": "proj_worker", "userId": "user_worker"},
+        "sessionId": session_id,
+        "scope": {"projectId": "proj_worker", "userId": user_id},
         "agent": {
             "id": "va_worker",
             "revision": 3,
@@ -105,6 +120,12 @@ def start_payload(*, delay_ms: int = 0, with_tool: bool = True) -> dict[str, Any
         },
         "transport": {"kind": "fake", "turns": [turn]},
     }
+    if executor_grant is not None:
+        payload["executorGrant"] = {
+            "token": executor_grant,
+            "expiresAt": "2099-01-01T00:00:00Z",
+        }
+    return payload
 
 
 def worker_config(path: Path) -> WorkerConfig:
@@ -193,6 +214,95 @@ def test_start_contract_rejects_noncanonical_fake_tool_names() -> None:
         StartSessionRequest.model_validate(payload)
 
 
+def test_repository_upgrades_pre_v2_request_snapshots(tmp_path: Path) -> None:
+    database = tmp_path / "legacy-v1.sqlite3"
+    session_id = "session_99999999999999999999999999999999"
+    payload = start_payload(with_tool=False, session_id=session_id)
+    request = StartSessionRequest.model_validate(payload)
+    session = PublicSession(
+        id=session_id,
+        project_id=request.scope.project_id,
+        user_id=request.scope.user_id,
+        agent_id=request.agent.id,
+        agent_revision=request.agent.revision,
+        transport="chat",
+        state="created",
+        created_at="2026-07-21T00:00:00Z",
+        last_event_sequence=0,
+    )
+    repository = VoiceSessionRepository(database)
+    repository.create(request, session)
+    repository.close()
+
+    legacy_request = dict(payload)
+    legacy_request["contractVersion"] = "eyeball.voice-worker.v1"
+    legacy_request.pop("sessionId")
+    connection = sqlite3.connect(database)
+    try:
+        connection.execute(
+            "UPDATE voice_sessions SET request_json = ? WHERE id = ?",
+            (json.dumps(legacy_request), session_id),
+        )
+        connection.execute(
+            "DELETE FROM voice_session_executor_auth WHERE session_id = ?",
+            (session_id,),
+        )
+        connection.commit()
+    finally:
+        connection.close()
+
+    restored = VoiceSessionRepository(database)
+    try:
+        stored = restored.get(session_id)
+        assert stored.request.contract_version == WIRE_VERSION
+        assert stored.request.session_id == session_id
+        assert stored.executor_auth_mode == "static-pinned"
+        assert stored.executor_grant_token is None
+    finally:
+        restored.close()
+
+
+def test_v2_request_never_downgrades_when_auth_row_is_missing(
+    tmp_path: Path,
+) -> None:
+    database = tmp_path / "missing-v2-auth.sqlite3"
+    session_id = "session_88888888888888888888888888888888"
+    request = StartSessionRequest.model_validate(
+        start_payload(with_tool=False, session_id=session_id)
+    )
+    session = PublicSession(
+        id=session_id,
+        project_id=request.scope.project_id,
+        user_id=request.scope.user_id,
+        agent_id=request.agent.id,
+        agent_revision=request.agent.revision,
+        transport="chat",
+        state="created",
+        created_at="2026-07-21T00:00:00Z",
+        last_event_sequence=0,
+    )
+    repository = VoiceSessionRepository(database)
+    repository.create(request, session)
+    repository.close()
+
+    connection = sqlite3.connect(database)
+    try:
+        connection.execute(
+            "DELETE FROM voice_session_executor_auth WHERE session_id = ?",
+            (session_id,),
+        )
+        connection.commit()
+    finally:
+        connection.close()
+
+    restored = VoiceSessionRepository(database)
+    try:
+        with pytest.raises(RepositoryError, match="authorization row is missing"):
+            restored.get(session_id)
+    finally:
+        restored.close()
+
+
 def test_livekit_transport_snapshot_preserves_connection_selector() -> None:
     payload = start_payload(with_tool=False)
     payload["transport"] = {
@@ -223,7 +333,7 @@ async def wait_for_terminal(
 
 
 @pytest.mark.asyncio
-async def test_fake_transport_reenters_executor_with_durable_identity(
+async def test_dedicated_pinned_worker_reenters_executor_with_durable_identity(
     tmp_path: Path,
 ) -> None:
     calls: list[httpx.Request] = []
@@ -281,6 +391,11 @@ async def test_fake_transport_reenters_executor_with_durable_identity(
     call = calls[0]
     assert call.headers["Authorization"] == f"Bearer {WORKER_KEY}"
     assert call.headers["X-Eyeball-Execution-Id"] == tool_call["data"]["executionId"]
+    session_digest = hashlib.sha256(session_id.encode()).hexdigest()[:32]
+    assert call.headers["X-Eyeball-Execution-Id"].startswith(
+        f"exe_voice_{session_digest}"
+    )
+    assert call.headers["X-Eyeball-Voice-Session-Id"] == session_id
     assert call.headers["Idempotency-Key"] == (
         f"voice-session:{session_id}:event:{tool_call['sequence']}"
     )
@@ -305,18 +420,91 @@ async def test_fake_transport_reenters_executor_with_durable_identity(
 
 
 @pytest.mark.asyncio
+async def test_session_grant_replaces_static_worker_key_and_is_erased_at_terminal(
+    tmp_path: Path,
+) -> None:
+    grant_token = "evg1." + ("g" * 32) + "." + ("s" * 32)
+    session_id = "session_aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+    calls: list[httpx.Request] = []
+
+    def execute(request: httpx.Request) -> httpx.Response:
+        calls.append(request)
+        body = json.loads(request.content)
+        return httpx.Response(
+            200,
+            json={
+                "executionId": request.headers["X-Eyeball-Execution-Id"],
+                "tool": body["tool"],
+                "status": "succeeded",
+                "output": {"messageId": "message_session_grant"},
+            },
+        )
+
+    executor_http = httpx.AsyncClient(transport=httpx.MockTransport(execute))
+    database = tmp_path / "session-grant.sqlite3"
+    config = replace(worker_config(database), executor_key=None)
+    app = create_app(config=config, executor_http_client=executor_http)
+    async with app.router.lifespan_context(app):
+        async with httpx.AsyncClient(
+            transport=httpx.ASGITransport(app=app), base_url="http://worker.test"
+        ) as client:
+            created = await client.post(
+                "/v1/sessions",
+                headers=control_headers(),
+                json=start_payload(
+                    session_id=session_id,
+                    executor_grant=grant_token,
+                ),
+            )
+            assert created.status_code == 201
+            terminal = await wait_for_terminal(client, session_id)
+            assert terminal["session"]["state"] == "completed"
+
+    assert len(calls) == 1
+    assert calls[0].headers["Authorization"] == f"Bearer {grant_token}"
+    assert calls[0].headers["X-Eyeball-Voice-Session-Id"] == session_id
+
+    connection = sqlite3.connect(database)
+    connection.row_factory = sqlite3.Row
+    try:
+        session_row = connection.execute(
+            "SELECT request_json FROM voice_sessions WHERE id = ?",
+            (session_id,),
+        ).fetchone()
+        auth_row = connection.execute(
+            """
+            SELECT mode, grant_token, grant_expires_at, grant_revoked_at
+            FROM voice_session_executor_auth WHERE session_id = ?
+            """,
+            (session_id,),
+        ).fetchone()
+    finally:
+        connection.close()
+    assert session_row is not None
+    assert grant_token not in session_row["request_json"]
+    assert "executorGrant" not in json.loads(session_row["request_json"])
+    assert auth_row is not None
+    assert auth_row["mode"] == "session-grant"
+    assert auth_row["grant_token"] is None
+    assert auth_row["grant_expires_at"] == "2099-01-01T00:00:00Z"
+    assert auth_row["grant_revoked_at"] is not None
+    await executor_http.aclose()
+
+
+@pytest.mark.asyncio
 async def test_recovery_reuses_pending_execution_id(tmp_path: Path) -> None:
     database = tmp_path / "recovery.sqlite3"
-    request = StartSessionRequest.model_validate(start_payload())
+    session_id = "session_22222222222222222222222222222222"
+    request = StartSessionRequest.model_validate(start_payload(session_id=session_id))
     session = PublicSession(
-        id="session_recovery",
+        id=session_id,
         project_id=request.scope.project_id,
         user_id=request.scope.user_id,
         agent_id=request.agent.id,
         agent_revision=request.agent.revision,
         transport="chat",
         state="created",
-        created_at="2026-07-18T00:00:00Z",
+        created_at=datetime.now(tz=UTC).isoformat().replace("+00:00", "Z"),
         last_event_sequence=0,
     )
     repository = VoiceSessionRepository(database)
@@ -383,17 +571,18 @@ async def test_recovery_never_dispatches_a_tool_outside_the_snapshot(
     tmp_path: Path,
 ) -> None:
     database = tmp_path / "disallowed.sqlite3"
-    payload = start_payload(with_tool=False)
+    session_id = "session_33333333333333333333333333333333"
+    payload = start_payload(with_tool=False, session_id=session_id)
     request = StartSessionRequest.model_validate(payload)
     session = PublicSession(
-        id="session_disallowed",
+        id=session_id,
         project_id=request.scope.project_id,
         user_id=request.scope.user_id,
         agent_id=request.agent.id,
         agent_revision=request.agent.revision,
         transport="chat",
         state="created",
-        created_at="2026-07-18T00:00:00Z",
+        created_at=datetime.now(tz=UTC).isoformat().replace("+00:00", "Z"),
         last_event_sequence=0,
     )
     repository = VoiceSessionRepository(database)
@@ -443,6 +632,77 @@ async def test_recovery_never_dispatches_a_tool_outside_the_snapshot(
         "message": "The tool is not allowed by the pinned agent revision.",
         "retryable": False,
     }
+    await manager.drain(0.1)
+    await manager.close()
+    await executor_http.aclose()
+
+
+@pytest.mark.asyncio
+async def test_recovery_does_not_extend_an_expired_session_deadline(
+    tmp_path: Path,
+) -> None:
+    database = tmp_path / "expired-recovery.sqlite3"
+    session_id = "session_44444444444444444444444444444444"
+    request = StartSessionRequest.model_validate(
+        start_payload(session_id=session_id)
+    )
+    session = PublicSession(
+        id=session_id,
+        project_id=request.scope.project_id,
+        user_id=request.scope.user_id,
+        agent_id=request.agent.id,
+        agent_revision=request.agent.revision,
+        transport="chat",
+        state="created",
+        created_at="2026-07-18T00:00:00Z",
+        last_event_sequence=0,
+    )
+    repository = VoiceSessionRepository(database)
+    repository.create(request, session)
+    repository.transition(session.id, "in-progress")
+    repository.create_tool_call(
+        session.id,
+        event_key="fake:0:tool:call",
+        turn_id="turn_session_expired_0001",
+        execution_id="exe_voice_expired",
+        tool="gmail.send_email",
+        input={"to": ["sam@example.com"], "subject": "Late", "body": "Late"},
+        runtime_cursor=1,
+    )
+    repository.close()
+
+    calls: list[httpx.Request] = []
+
+    def execute(request: httpx.Request) -> httpx.Response:
+        calls.append(request)
+        return httpx.Response(500)
+
+    executor_http = httpx.AsyncClient(
+        transport=httpx.MockTransport(execute)
+    )
+    recovered_repository = VoiceSessionRepository(database)
+    manager = SessionManager(
+        ExecutorClient(
+            base_url="https://executor.test",
+            api_key=WORKER_KEY,
+            client=executor_http,
+        ),
+        recovered_repository,
+    )
+    await manager.recover()
+    for _ in range(100):
+        if manager.get(session.id).state == "failed":
+            break
+        await asyncio.sleep(0.005)
+
+    terminal = manager.get(session.id)
+    assert terminal.state == "failed"
+    assert terminal.error == {
+        "code": "timeout",
+        "message": "The session exceeded maxDurationSeconds.",
+        "retryable": False,
+    }
+    assert calls == []
     await manager.drain(0.1)
     await manager.close()
     await executor_http.aclose()
@@ -627,6 +887,44 @@ async def test_anthropic_chat_round_trips_canonical_tool_results(
         "content": '{"messageId":"message_chat_test"}',
         "is_error": False,
     }
+
+
+@pytest.mark.asyncio
+async def test_tool_enabled_session_requires_static_key_or_session_grant(
+    tmp_path: Path,
+) -> None:
+    app = create_app(
+        config=replace(
+            worker_config(tmp_path / "missing-executor-auth.sqlite3"),
+            executor_key=None,
+        )
+    )
+    async with app.router.lifespan_context(app):
+        async with httpx.AsyncClient(
+            transport=httpx.ASGITransport(app=app), base_url="http://worker.test"
+        ) as client:
+            rejected = await client.post(
+                "/v1/sessions",
+                headers=control_headers(),
+                json=start_payload(),
+            )
+            assert rejected.status_code == 422
+            assert rejected.json() == {
+                "error": {
+                    "code": "executor_authorization_missing",
+                    "message": "Tool-enabled sessions require executor authorization.",
+                }
+            }
+
+            allowed = await client.post(
+                "/v1/sessions",
+                headers=control_headers(),
+                json=start_payload(
+                    with_tool=False,
+                    session_id="session_bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+                ),
+            )
+            assert allowed.status_code == 201
 
 
 @pytest.mark.asyncio

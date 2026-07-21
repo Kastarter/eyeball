@@ -20,6 +20,8 @@ export type ApiKeyAuthenticationResult =
 
 export interface ApiKeyAuthenticator {
   verify(key: string): Promise<ApiKeyAuthenticationResult>;
+  /** Checks only configured in-process keys and never delegates remotely. */
+  verifyStatic?(key: string): Promise<ApiKeyAuthenticationResult>;
 }
 
 export interface RemoteKeyAuthenticatorOptions {
@@ -195,6 +197,10 @@ export class StaticKeyringAuthenticator implements ApiKeyAuthenticator {
       ...(principal.userId === undefined ? {} : { userId: principal.userId }),
     };
   }
+
+  async verifyStatic(key: string): Promise<ApiKeyAuthenticationResult> {
+    return this.verify(key);
+  }
 }
 
 /** Tries authenticators in order and returns the first valid principal. */
@@ -211,6 +217,15 @@ export class CompositeApiKeyAuthenticator implements ApiKeyAuthenticator {
   async verify(key: string): Promise<ApiKeyAuthenticationResult> {
     for (const authenticator of this.#authenticators) {
       const result = await authenticator.verify(key);
+      if (result.valid) return result;
+    }
+    return INVALID_RESULT;
+  }
+
+  async verifyStatic(key: string): Promise<ApiKeyAuthenticationResult> {
+    for (const authenticator of this.#authenticators) {
+      if (authenticator.verifyStatic === undefined) continue;
+      const result = await authenticator.verifyStatic(key);
       if (result.valid) return result;
     }
     return INVALID_RESULT;

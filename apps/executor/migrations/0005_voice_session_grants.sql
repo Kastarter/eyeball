@@ -1,0 +1,6 @@
+ALTER TABLE "voice_agent_session_pointers" ADD COLUMN "grant_id" text;--> statement-breakpoint
+ALTER TABLE "voice_agent_session_pointers" ADD COLUMN "grant_expires_at" timestamp with time zone;--> statement-breakpoint
+ALTER TABLE "voice_agent_session_pointers" ADD COLUMN "grant_revoked_at" timestamp with time zone;--> statement-breakpoint
+CREATE UNIQUE INDEX "voice_agent_session_pointers_grant_id_unique" ON "voice_agent_session_pointers" USING btree ("grant_id") WHERE "voice_agent_session_pointers"."grant_id" IS NOT NULL;--> statement-breakpoint
+ALTER TABLE "voice_agent_session_pointers" ADD CONSTRAINT "voice_agent_session_pointers_grant_identity_complete" CHECK (("voice_agent_session_pointers"."grant_id" IS NULL AND "voice_agent_session_pointers"."grant_expires_at" IS NULL) OR ("voice_agent_session_pointers"."grant_id" IS NOT NULL AND "voice_agent_session_pointers"."grant_expires_at" IS NOT NULL));--> statement-breakpoint
+ALTER TABLE "voice_agent_session_pointers" ADD CONSTRAINT "voice_agent_session_pointers_revocation_requires_grant" CHECK ("voice_agent_session_pointers"."grant_revoked_at" IS NULL OR "voice_agent_session_pointers"."grant_id" IS NOT NULL);

@@ -1,3 +1,4 @@
+import { randomUUID } from "node:crypto";
 import {
   type AdapterContext,
   EyeballError,
@@ -58,6 +59,23 @@ export interface VoiceAgentSessionPointer {
   agentRevision: number;
   callId: string;
   createdAt: string;
+  grantId?: string;
+  grantExpiresAt?: string;
+  grantRevokedAt?: string;
+}
+
+export interface VoiceSessionGrantIssuer {
+  issue(input: {
+    projectId: string;
+    userId: string;
+    sessionId: string;
+    maxDurationSeconds: number;
+    allowedTools: readonly QualifiedToolName[];
+  }): Promise<{
+    token: string;
+    grantId: string;
+    expiresAt: string;
+  }>;
 }
 
 export interface VoiceAgentMessageReceipt {
@@ -128,6 +146,13 @@ export interface AgentStore {
     phoneNumber: string,
   ): Promise<VoiceAgentBinding | undefined>;
   rememberSession(pointer: VoiceAgentSessionPointer): Promise<void>;
+  revokeSessionGrant(input: {
+    projectId: string;
+    userId: string;
+    sessionId: string;
+    grantId?: string;
+    revokedAt: string;
+  }): Promise<void>;
   getSession(
     projectId: string,
     userId: string,
@@ -400,6 +425,19 @@ export class InMemoryAgentStore implements AgentStore {
   }
 
   async rememberSession(pointer: VoiceAgentSessionPointer): Promise<void> {
+    if (
+      (pointer.grantId === undefined) !==
+      (pointer.grantExpiresAt === undefined)
+    ) {
+      throw new Error(
+        "AgentStore invariant violated: grant identity and expiry must be stored together.",
+      );
+    }
+    if (pointer.grantRevokedAt !== undefined && pointer.grantId === undefined) {
+      throw new Error(
+        "AgentStore invariant violated: a static session cannot have grant revocation state.",
+      );
+    }
     const existing = this.#sessions.get(pointer.sessionId);
     if (
       existing !== undefined &&
@@ -408,7 +446,46 @@ export class InMemoryAgentStore implements AgentStore {
     ) {
       throw new Error("AgentStore invariant violated: session scope changed.");
     }
-    this.#sessions.set(pointer.sessionId, copy(pointer));
+    if (
+      existing !== undefined &&
+      (existing.grantId !== pointer.grantId ||
+        existing.grantExpiresAt !== pointer.grantExpiresAt)
+    ) {
+      throw new Error("AgentStore invariant violated: session grant changed.");
+    }
+    this.#sessions.set(
+      pointer.sessionId,
+      copy({
+        ...pointer,
+        ...(existing?.grantRevokedAt === undefined
+          ? {}
+          : { grantRevokedAt: existing.grantRevokedAt }),
+      }),
+    );
+  }
+
+  async revokeSessionGrant(input: {
+    projectId: string;
+    userId: string;
+    sessionId: string;
+    grantId?: string;
+    revokedAt: string;
+  }): Promise<void> {
+    const existing = this.#sessions.get(input.sessionId);
+    if (
+      existing === undefined ||
+      existing.projectId !== input.projectId ||
+      existing.userId !== input.userId ||
+      existing.grantId === undefined ||
+      (input.grantId !== undefined && existing.grantId !== input.grantId) ||
+      existing.grantRevokedAt !== undefined
+    ) {
+      return;
+    }
+    this.#sessions.set(input.sessionId, {
+      ...existing,
+      grantRevokedAt: input.revokedAt,
+    });
   }
 
   async getSession(
@@ -600,6 +677,7 @@ function assertTrustedSession(
   if (
     session.projectId !== context.projectId ||
     session.userId !== context.userId ||
+    session.id !== pointer.sessionId ||
     session.agentId !== pointer.agentId ||
     session.agentRevision !== pointer.agentRevision
   ) {
@@ -781,6 +859,7 @@ export interface VoiceAgentsAdapterOptions {
   sessionRuntimeFetch?: typeof globalThis.fetch;
   resolveTool?: (name: QualifiedToolName) => ToolDefinition | undefined;
   executeProviderTool?: VoiceProviderToolExecutor;
+  voiceSessionGrantIssuer?: VoiceSessionGrantIssuer;
 }
 
 /** Native RFC 002 adapter backed by an injectable revision store and Pipecat. */
@@ -793,6 +872,7 @@ export class VoiceAgentsAdapter implements ToolkitAdapter {
     | ((name: QualifiedToolName) => ToolDefinition | undefined)
     | undefined;
   readonly #executeProviderTool: VoiceProviderToolExecutor | undefined;
+  readonly #voiceSessionGrantIssuer: VoiceSessionGrantIssuer | undefined;
   #webSessionSequence = 0;
 
   constructor(options: VoiceAgentsAdapterOptions = {}) {
@@ -801,6 +881,7 @@ export class VoiceAgentsAdapter implements ToolkitAdapter {
     this.#sessionRuntimeFetch = options.sessionRuntimeFetch;
     this.#resolveTool = options.resolveTool;
     this.#executeProviderTool = options.executeProviderTool;
+    this.#voiceSessionGrantIssuer = options.voiceSessionGrantIssuer;
   }
 
   private sessionRuntimeContext(context: AdapterContext): AdapterContext {
@@ -1084,7 +1165,9 @@ export class VoiceAgentsAdapter implements ToolkitAdapter {
   private remoteStartRequest(
     context: AdapterContext,
     agent: VoiceAgentDefinition,
+    sessionId: string,
     transport: VoiceWorkerStartSessionRequest["transport"],
+    executorGrant?: VoiceWorkerStartSessionRequest["executorGrant"],
   ): VoiceWorkerStartSessionRequest {
     const allowedTools = agent.tools.map((name) => {
       const definition = this.#resolveTool?.(name);
@@ -1102,6 +1185,7 @@ export class VoiceAgentsAdapter implements ToolkitAdapter {
     });
     return {
       contractVersion: VOICE_WORKER_CONTRACT_VERSION,
+      sessionId,
       scope: {
         projectId: context.projectId,
         userId: context.userId,
@@ -1122,26 +1206,80 @@ export class VoiceAgentsAdapter implements ToolkitAdapter {
         bargeIn: copy(agent.voice.bargeIn ?? { enabled: true }),
       },
       transport,
+      ...(executorGrant === undefined ? {} : { executorGrant }),
     };
   }
 
-  private async rememberRemoteSession(
+  private async startRemoteSession(
     context: AdapterContext,
     agent: VoiceAgentDefinition,
-    session: VoiceAgentSession,
-  ): Promise<VoiceAgentSessionPointer> {
+    transport: VoiceWorkerStartSessionRequest["transport"],
+  ): Promise<{
+    pointer: VoiceAgentSessionPointer;
+    session: VoiceAgentSession;
+  }> {
+    if (this.#sessionDriver === undefined) {
+      throw new Error("Remote voice-session driver is not configured.");
+    }
+    const sessionId = `session_${randomUUID().replaceAll("-", "")}`;
+    const unsignedRequest = this.remoteStartRequest(
+      context,
+      agent,
+      sessionId,
+      transport,
+    );
+    const issued = await this.#voiceSessionGrantIssuer?.issue({
+      projectId: context.projectId,
+      userId: context.userId,
+      sessionId,
+      maxDurationSeconds: agent.guardrails.maxDurationSeconds,
+      allowedTools: unsignedRequest.agent.allowedTools.map((tool) => tool.name),
+    });
     const pointer: VoiceAgentSessionPointer = {
-      sessionId: session.id,
+      sessionId,
       projectId: context.projectId,
       userId: context.userId,
       agentId: agent.id,
       agentRevision: agent.revision,
-      callId: `call_${session.id}`,
-      createdAt: session.createdAt,
+      callId: `call_${sessionId}`,
+      createdAt: context.clock.now().toISOString(),
+      ...(issued === undefined
+        ? {}
+        : { grantId: issued.grantId, grantExpiresAt: issued.expiresAt }),
     };
-    assertTrustedSession(context, session, pointer);
-    await this.store.rememberSession(pointer);
-    return pointer;
+    if (issued !== undefined) {
+      await this.store.rememberSession(pointer);
+    }
+    try {
+      const session = await this.#sessionDriver.startSession({
+        ...unsignedRequest,
+        ...(issued === undefined
+          ? {}
+          : {
+              executorGrant: {
+                token: issued.token,
+                expiresAt: issued.expiresAt,
+              },
+            }),
+      });
+      assertTrustedSession(context, session, pointer);
+      const updated = {
+        ...pointer,
+        callId: `call_${session.id}`,
+        createdAt: session.createdAt,
+      };
+      await this.store.rememberSession(updated);
+      return { pointer: updated, session };
+    } catch (error) {
+      await this.store.revokeSessionGrant({
+        projectId: context.projectId,
+        userId: context.userId,
+        sessionId,
+        ...(issued === undefined ? {} : { grantId: issued.grantId }),
+        revokedAt: context.clock.now().toISOString(),
+      });
+      throw error;
+    }
   }
 
   private async remoteEventPage(
@@ -1254,16 +1392,13 @@ export class VoiceAgentsAdapter implements ToolkitAdapter {
 
     let session: VoiceAgentSession;
     if (this.#sessionDriver !== undefined) {
-      session = await this.#sessionDriver.startSession(
-        this.remoteStartRequest(context, agent, {
-          kind: "livekit",
-          roomName,
-          transportConnectionId,
-          participantIdentity: `agent-${agent.id}-${agent.revision}`,
-          ...(metadata === undefined ? {} : { metadata }),
-        }),
-      );
-      await this.rememberRemoteSession(context, agent, session);
+      ({ session } = await this.startRemoteSession(context, agent, {
+        kind: "livekit",
+        roomName,
+        transportConnectionId,
+        participantIdentity: `agent-${agent.id}-${agent.revision}`,
+        ...(metadata === undefined ? {} : { metadata }),
+      }));
     } else {
       const body = await pipecatObject(
         this.sessionRuntimeContext(context),
@@ -1352,16 +1487,17 @@ export class VoiceAgentsAdapter implements ToolkitAdapter {
           "Remote outbound transport resolver invariant violated.",
         );
       }
-      const session = await this.#sessionDriver.startSession(
-        this.remoteStartRequest(context, agent, {
+      const { session, pointer } = await this.startRemoteSession(
+        context,
+        agent,
+        {
           kind: "twilio",
           to: requiredInputString(context, "to"),
           from: transport.from,
           transportConnectionId: transport.transportConnectionId,
           ...(metadata === undefined ? {} : { metadata }),
-        }),
+        },
       );
-      const pointer = await this.rememberRemoteSession(context, agent, session);
       return asJson({
         session,
         callId: pointer.callId,
@@ -1417,15 +1553,18 @@ export class VoiceAgentsAdapter implements ToolkitAdapter {
   private async readSession(
     context: AdapterContext,
     sessionId: string,
+    knownPointer?: VoiceAgentSessionPointer,
   ): Promise<{
     session: VoiceAgentSession;
     pointer: VoiceAgentSessionPointer;
   }> {
-    const pointer = await this.store.getSession(
-      context.projectId,
-      context.userId,
-      sessionId,
-    );
+    const pointer =
+      knownPointer ??
+      (await this.store.getSession(
+        context.projectId,
+        context.userId,
+        sessionId,
+      ));
     const session =
       this.#sessionDriver === undefined
         ? sessionFromProvider(
@@ -1458,9 +1597,22 @@ export class VoiceAgentsAdapter implements ToolkitAdapter {
 
   private async stopAgentSession(context: AdapterContext): Promise<JsonValue> {
     const sessionId = requiredInputString(context, "sessionId");
-    const { session: current, pointer } = await this.readSession(
+    const pointer = await this.store.getSession(
+      context.projectId,
+      context.userId,
+      sessionId,
+    );
+    await this.store.revokeSessionGrant({
+      projectId: context.projectId,
+      userId: context.userId,
+      sessionId,
+      ...(pointer.grantId === undefined ? {} : { grantId: pointer.grantId }),
+      revokedAt: context.clock.now().toISOString(),
+    });
+    const { session: current } = await this.readSession(
       context,
       sessionId,
+      pointer,
     );
     if (
       current.state === "completed" ||
@@ -1596,13 +1748,10 @@ export class VoiceAgentsAdapter implements ToolkitAdapter {
             message: `${context.tool.name}: the configured voice worker does not support chat turns.`,
           });
         }
-        const session = await this.#sessionDriver.startSession(
-          this.remoteStartRequest(context, agent, { kind: "chat" }),
-        );
-        const pointer = await this.rememberRemoteSession(
+        const { session, pointer } = await this.startRemoteSession(
           context,
           agent,
-          session,
+          { kind: "chat" },
         );
         let turn: Omit<VoiceWorkerChatTurnResponse, "contractVersion">;
         try {
@@ -1612,6 +1761,15 @@ export class VoiceAgentsAdapter implements ToolkitAdapter {
             idempotencyKey: clientMessageId,
           });
         } catch (error) {
+          await this.store.revokeSessionGrant({
+            projectId: context.projectId,
+            userId: context.userId,
+            sessionId: session.id,
+            ...(pointer.grantId === undefined
+              ? {}
+              : { grantId: pointer.grantId }),
+            revokedAt: context.clock.now().toISOString(),
+          });
           await this.#sessionDriver
             .stopSession(session.id, {
               contractVersion: VOICE_WORKER_CONTRACT_VERSION,

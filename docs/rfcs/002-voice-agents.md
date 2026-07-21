@@ -444,6 +444,16 @@ session's pinned catalog and rejects missing, disabled, or unauthorized tools. I
 model-generated calls through the regular executor, never directly to an adapter. The
 executor rechecks the allowlist at its trusted boundary, validates canonical input before
 calling `CredentialProvider`, and records each child execution with `sessionId` correlation.
+For a remote worker, the executor allocates the session ID before admission and signs a
+short-lived capability over the exact audience, project, user, session, expiry, grant ID, and
+canonical-tool allowlist. Agent definitions and the issuer independently cap the session
+duration at one hour; the issuer's shutdown buffer bounds grant TTL to 61 minutes. The worker
+returns that capability only on synchronous `/v1/execute` calls carrying the matching
+`X-Eyeball-Voice-Session-Id` and a session-bound reserved execution ID; the executor checks durable grant
+identity and revocation on every call. The bearer is excluded from session snapshots, events,
+transcripts, and observer callbacks, retained separately only for crash recovery, and erased at
+terminal state. A user-pinned static worker key is a single-user compatibility fallback, not the
+multi-user authority model.
 
 Before dispatch, the worker MUST persist the `tool_call` event with a valid child `exe_*` ID.
 Its trusted executor command reserves that same ID, while the public RFC 001 execute body stays

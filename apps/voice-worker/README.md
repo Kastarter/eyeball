@@ -1,7 +1,7 @@
 # Eyeball voice worker
 
 The voice worker is the persistent control-plane implementation of
-`eyeball.voice-worker.v1`. It durably owns session state, ordered events, and
+`eyeball.voice-worker.v2`. It durably owns session state, ordered events, and
 child-dispatch recovery while the TypeScript executor remains the trusted
 boundary for canonical tool calls, credentials, webhooks, and execution
 records. The repository also contains Pipecat, Twilio, and LiveKit integration
@@ -29,11 +29,12 @@ EYEBALL_VOICE_ALLOW_FAKE_TRANSPORT=true
 
 ## Run the container
 
-Set a control token shared with the executor, plus a user-pinned executor key:
+Set a control token shared with the executor. For multi-user deployments,
+enable executor-issued per-session grants and leave the static worker key
+unset:
 
 ```bash
 export EYEBALL_VOICE_WORKER_TOKEN='replace-with-a-long-random-token'
-export EYEBALL_VOICE_WORKER_KEY='ey_live_user_pinned_key'
 cp .env.example .env
 docker compose --env-file .env up --build
 ```
@@ -43,7 +44,21 @@ Then configure the executor with the same control token and the worker URL:
 ```text
 EYEBALL_VOICE_WORKER_URL=http://127.0.0.1:8080
 EYEBALL_VOICE_WORKER_TOKEN=replace-with-a-long-random-token
+EYEBALL_VOICE_SESSION_GRANT_SECRET=replace-with-a-distinct-32-byte-random-secret
 ```
+
+`EYEBALL_VOICE_SESSION_GRANT_SECRET` belongs only on the executor. It signs a
+capability bound to one project, user, session, and immutable tool allowlist.
+Agent sessions cap `maxDurationSeconds` at 3,600, so the 60-second shutdown
+buffer bounds every signed grant to 61 minutes. `EYEBALL_VOICE_WORKER_KEY` remains available as a compatibility
+fallback, but it must be pinned to one project and user and requires a separate
+worker boundary for every trusted user.
+
+When upgrading a worker database that contains active v1 sessions, keep the
+static `EYEBALL_VOICE_WORKER_KEY` configured until those sessions are terminal.
+Legacy snapshots have no per-session grant; the worker upgrades their wire
+shape in memory and continues to authenticate their child calls with the pinned
+fallback key. New v2 sessions use executor-issued grants.
 
 `GET /health` is public. Its `media.liveReady` field reports configuration
 presence only; it does not probe providers or certify a call path. Every
@@ -59,7 +74,6 @@ credentials as secrets, and keep exactly one Machine attached to the volume:
 fly volumes create voice_worker_data --region <region> --size 10 --app <app>
 fly secrets set --app <app> \
   EYEBALL_VOICE_WORKER_TOKEN='...' \
-  EYEBALL_VOICE_WORKER_KEY='...' \
   EYEBALL_EXECUTOR_URL='https://executor.example.com' \
   EYEBALL_VOICE_PUBLIC_URL='https://<app>.fly.dev' \
   ANTHROPIC_API_KEY='...' \
@@ -77,7 +91,7 @@ running because a SQLite volume cannot be mounted by multiple replicas.
 | Variable | Purpose |
 | --- | --- |
 | `EYEBALL_VOICE_WORKER_TOKEN` | Shared executor-to-worker control token; always required and at least 32 bytes. |
-| `EYEBALL_VOICE_WORKER_KEY` | User-pinned executor API key used only for child tool execution. |
+| `EYEBALL_VOICE_WORKER_KEY` | Optional compatibility fallback: a user-pinned executor API key used for child tool execution when no per-session grant is supplied. |
 | `EYEBALL_EXECUTOR_URL` | Trusted executor origin; defaults to `http://127.0.0.1:8787`. |
 | `EYEBALL_VOICE_DATABASE_PATH` | SQLite state path; defaults to `.eyeball/voice-worker.sqlite3`. |
 | `EYEBALL_VOICE_PUBLIC_URL` | Public HTTPS origin used to construct Twilio media WebSocket URLs. |
@@ -88,8 +102,11 @@ running because a SQLite volume cannot be mounted by multiple replicas.
 | `LIVEKIT_URL`, `LIVEKIT_API_KEY`, `LIVEKIT_API_SECRET` | WebRTC room configuration. |
 
 The worker stores no provider credentials in session snapshots or events.
-Child calls persist `tool_call` before dispatch, reserve the same `exe_*`
-identity at the executor, and derive
+Per-session executor grants are excluded from request snapshots and event
+payloads, stored in a dedicated SQLite authorization row for crash recovery,
+and erased when the session becomes terminal.
+Child calls persist `tool_call` before dispatch, reserve the same session-bound
+`exe_voice_*` identity at the executor, and derive
 `voice-session:<sessionId>:event:<sequence>` as the retry key.
 
 ## Operations and recovery
@@ -102,9 +119,11 @@ identity at the executor, and derive
   active tasks, then marks overdue sessions abandoned.
 - Fake and chat sessions resume from durable cursors. An unresolved child tool
   call reuses its stored execution ID and idempotency key after restart.
+- Recovery computes the remaining `maxDurationSeconds` window from the original
+  session creation time; restarting the worker never resets the duration budget.
 - The configured media recovery policy marks an interrupted carrier session
   failed instead of silently starting a second call. This policy still awaits
   end-to-end provider certification.
-- One static `EYEBALL_VOICE_WORKER_KEY` represents one pinned executor user.
-  Multi-user hosted deployments need short-lived per-session executor
-  authorization, which is outside this open-core worker.
+- If `EYEBALL_VOICE_SESSION_GRANT_SECRET` is not configured on the executor,
+  one static `EYEBALL_VOICE_WORKER_KEY` still represents exactly one pinned
+  executor user; isolate those fallback workers per trusted user.

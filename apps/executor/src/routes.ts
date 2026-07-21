@@ -9,10 +9,12 @@ import {
   isCanonicalToolName,
   isConnectionId,
   isExecutionId,
+  isVoiceSessionExecutionIdForSession,
   isWebhookSubscriptionEventType,
   type JsonValue,
   type QualifiedToolName,
   TOOL_ERROR_CODES,
+  VOICE_SESSION_ID_HEADER,
   VOICE_WORKER_EXECUTION_ID_HEADER,
   WEBHOOK_SUBSCRIPTION_EVENT_TYPES,
   type WebhookSubscriptionEventType,
@@ -46,6 +48,12 @@ import type { FileStore } from "./staged-files.js";
 import type { HttpRequestClass, HttpRequestMethod } from "./telemetry/index.js";
 import { TriggerRequestError } from "./triggers/service.js";
 import { TriggerSubscriptionStoreError } from "./triggers/subscription-store.js";
+import {
+  VOICE_SESSION_GRANT_PREFIX,
+  type VoiceSessionGrantPrincipal,
+  type VoiceSessionGrantVerificationResult,
+  type VoiceSessionGrantVerifier,
+} from "./voice-session-grants.js";
 import { WebhookDeliveryInputError } from "./webhooks/delivery-store.js";
 import { WebhookEndpointInputError } from "./webhooks/endpoint-store.js";
 
@@ -65,6 +73,13 @@ const USER_ID_HEADER = "X-Eyeball-User-Id";
 export interface ExecutorVariables {
   projectId: string;
   pinnedUserId: string | undefined;
+  authPrincipal:
+    | {
+        kind: "api_key";
+        projectId: string;
+        pinnedUserId?: string;
+      }
+    | VoiceSessionGrantPrincipal;
   requestId: string;
 }
 
@@ -75,6 +90,7 @@ export interface ExecutorAppOptions {
   fileStore?: FileStore;
   apiKeys?: ApiKeyringInput;
   apiKeyAuthenticator?: ApiKeyAuthenticator;
+  voiceSessionGrantVerifier?: VoiceSessionGrantVerifier;
   env?: Readonly<Record<string, string | undefined>>;
   fetchImpl?: typeof fetch;
   requestIdFactory?: () => string;
@@ -102,6 +118,28 @@ function requestFailure(
   return context.json(
     createErrorEnvelope(error, context.get("requestId")),
     status,
+  );
+}
+
+function grantScopeFailure(context: ExecutorContext): Response {
+  return requestFailure(
+    context,
+    new EyeballError({
+      code: TOOL_ERROR_CODES.AUTH_INSUFFICIENT_SCOPE,
+      message: "The voice session grant does not authorize this request.",
+    }),
+    403,
+  );
+}
+
+function grantExpiredFailure(context: ExecutorContext): Response {
+  return requestFailure(
+    context,
+    new EyeballError({
+      code: TOOL_ERROR_CODES.AUTH_EXPIRED,
+      message: "The voice session grant is expired or inactive.",
+    }),
+    401,
   );
 }
 
@@ -515,36 +553,130 @@ export function createExecutorApp(options: ExecutorAppOptions = {}): Hono<{
         401,
       );
     }
-    let principal: ApiKeyAuthenticationResult;
-    try {
-      principal = await apiKeyAuthenticator.verify(token);
-    } catch {
-      return requestFailure(
-        context,
-        new EyeballError({
-          code: TOOL_ERROR_CODES.AUTH_MISSING,
-          message: "API key verification is temporarily unavailable.",
-          retryable: true,
-        }),
-        401,
-      );
-    }
-    if (!principal.valid) {
-      return requestFailure(
-        context,
-        new EyeballError({
-          code: TOOL_ERROR_CODES.AUTH_MISSING,
-          message: "A valid Eyeball API key is required.",
-        }),
-        401,
-      );
-    }
-    context.set("projectId", principal.projectId);
-    context.set("pinnedUserId", principal.userId);
+    let staticGrantLookingPrincipal: ApiKeyAuthenticationResult = {
+      valid: false,
+    };
     if (
-      principal.userId !== undefined &&
+      token.startsWith(VOICE_SESSION_GRANT_PREFIX) &&
+      apiKeyAuthenticator.verifyStatic !== undefined
+    ) {
+      try {
+        staticGrantLookingPrincipal =
+          await apiKeyAuthenticator.verifyStatic(token);
+      } catch {
+        return requestFailure(
+          context,
+          new EyeballError({
+            code: TOOL_ERROR_CODES.AUTH_MISSING,
+            message: "API key verification is temporarily unavailable.",
+            retryable: true,
+          }),
+          401,
+        );
+      }
+    }
+    if (staticGrantLookingPrincipal.valid) {
+      context.set("authPrincipal", {
+        kind: "api_key",
+        projectId: staticGrantLookingPrincipal.projectId,
+        ...(staticGrantLookingPrincipal.userId === undefined
+          ? {}
+          : { pinnedUserId: staticGrantLookingPrincipal.userId }),
+      });
+      context.set("projectId", staticGrantLookingPrincipal.projectId);
+      context.set("pinnedUserId", staticGrantLookingPrincipal.userId);
+    } else if (token.startsWith(VOICE_SESSION_GRANT_PREFIX)) {
+      const verifier = options.voiceSessionGrantVerifier;
+      if (verifier === undefined) {
+        return requestFailure(
+          context,
+          new EyeballError({
+            code: TOOL_ERROR_CODES.AUTH_MISSING,
+            message: "A valid Eyeball API key is required.",
+          }),
+          401,
+        );
+      }
+      let verification: VoiceSessionGrantVerificationResult;
+      try {
+        verification = await verifier.verify(token);
+      } catch {
+        verification = { status: "unavailable" } as const;
+      }
+      if (verification.status === "invalid") {
+        return requestFailure(
+          context,
+          new EyeballError({
+            code: TOOL_ERROR_CODES.AUTH_MISSING,
+            message: "A valid Eyeball API key is required.",
+          }),
+          401,
+        );
+      }
+      if (verification.status === "expired") {
+        return grantExpiredFailure(context);
+      }
+      if (verification.status === "insufficient_scope") {
+        return grantScopeFailure(context);
+      }
+      if (verification.status === "unavailable") {
+        return requestFailure(
+          context,
+          new EyeballError({
+            code: TOOL_ERROR_CODES.AUTH_MISSING,
+            message: "API key verification is temporarily unavailable.",
+            retryable: true,
+          }),
+          401,
+        );
+      }
+      const grant = verification.principal;
+      context.set("authPrincipal", grant);
+      context.set("projectId", grant.projectId);
+      context.set("pinnedUserId", grant.userId);
+      if (context.req.method !== "POST" || context.req.path !== "/v1/execute") {
+        return grantScopeFailure(context);
+      }
+    } else {
+      let principal: ApiKeyAuthenticationResult;
+      try {
+        principal = await apiKeyAuthenticator.verify(token);
+      } catch {
+        return requestFailure(
+          context,
+          new EyeballError({
+            code: TOOL_ERROR_CODES.AUTH_MISSING,
+            message: "API key verification is temporarily unavailable.",
+            retryable: true,
+          }),
+          401,
+        );
+      }
+      if (!principal.valid) {
+        return requestFailure(
+          context,
+          new EyeballError({
+            code: TOOL_ERROR_CODES.AUTH_MISSING,
+            message: "A valid Eyeball API key is required.",
+          }),
+          401,
+        );
+      }
+      context.set("authPrincipal", {
+        kind: "api_key",
+        projectId: principal.projectId,
+        ...(principal.userId === undefined
+          ? {}
+          : { pinnedUserId: principal.userId }),
+      });
+      context.set("projectId", principal.projectId);
+      context.set("pinnedUserId", principal.userId);
+    }
+    const pinnedUserId = context.get("pinnedUserId");
+    if (
+      pinnedUserId !== undefined &&
       context.req.header(USER_ID_HEADER) !== undefined &&
-      context.req.header(USER_ID_HEADER) !== principal.userId
+      context.req.header(USER_ID_HEADER) !== pinnedUserId
     ) {
       return pinnedUserFailure(context);
     }
@@ -1257,6 +1389,32 @@ export function createExecutorApp(options: ExecutorAppOptions = {}): Hono<{
       const reservedExecutionId = context.req.header(
         VOICE_WORKER_EXECUTION_ID_HEADER,
       );
+      const authPrincipal = context.get("authPrincipal");
+      if (authPrincipal.kind === "voice_session_grant") {
+        if (
+          bodyUserId !== authPrincipal.userId ||
+          context.req.header(VOICE_SESSION_ID_HEADER) !==
+            authPrincipal.sessionId ||
+          reservedExecutionId === undefined ||
+          !isExecutionId(reservedExecutionId) ||
+          !isVoiceSessionExecutionIdForSession(
+            reservedExecutionId,
+            authPrincipal.sessionId,
+          ) ||
+          idempotencyKey === undefined ||
+          !new RegExp(
+            `^voice-session:${authPrincipal.sessionId}:event:[1-9]\\d*$`,
+          ).test(idempotencyKey) ||
+          !isRecord(request) ||
+          request.mode !== "sync" ||
+          typeof request.tool !== "string" ||
+          !isCanonicalToolName(request.tool) ||
+          !authPrincipal.allowedTools.includes(request.tool)
+        ) {
+          return grantScopeFailure(context);
+        }
+        request = { ...request, userId: authPrincipal.userId };
+      }
       if (
         reservedExecutionId !== undefined &&
         !isExecutionId(reservedExecutionId)
@@ -1274,7 +1432,7 @@ export function createExecutorApp(options: ExecutorAppOptions = {}): Hono<{
           createErrorEnvelope(
             {
               code: TOOL_ERROR_CODES.AUTH_INSUFFICIENT_SCOPE,
-              message: `${VOICE_WORKER_EXECUTION_ID_HEADER} requires a user-pinned API key.`,
+              message: `${VOICE_WORKER_EXECUTION_ID_HEADER} requires user-pinned execution authority.`,
               retryable: false,
             },
             context.get("requestId"),

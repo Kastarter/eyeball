@@ -542,6 +542,112 @@ export function registerStoreContractSuite(
           ),
         ).resolves.toBeUndefined();
       });
+
+      it("keeps voice-session grant identity immutable and revocation monotonic", async () => {
+        const scope = namespace(`${implementation.name}_grant_pointer`);
+        const projectId = `project_grant_${scope}`;
+        const userId = `user_grant_${scope}`;
+        const agent = await stores.agentStore.createAgent(
+          projectId,
+          voiceAgentDraft("Grant session agent"),
+          "2026-07-20T03:00:00.000Z",
+        );
+        const pointer = {
+          sessionId: `session_grant_${scope}`,
+          projectId,
+          userId,
+          agentId: agent.id,
+          agentRevision: agent.revision,
+          callId: `call_grant_${scope}`,
+          createdAt: "2026-07-20T03:00:01.000Z",
+          grantId: `vsg_${scope}_a`,
+          grantExpiresAt: "2026-07-20T03:10:01.000Z",
+        };
+        await stores.agentStore.rememberSession(pointer);
+        await expect(
+          stores.agentStore.rememberSession({
+            ...pointer,
+            grantId: `vsg_${scope}_b`,
+          }),
+        ).rejects.toThrow("session grant changed");
+        await expect(
+          stores.agentStore.rememberSession({
+            ...pointer,
+            grantExpiresAt: "2026-07-20T03:11:01.000Z",
+          }),
+        ).rejects.toThrow("session grant changed");
+
+        await stores.agentStore.revokeSessionGrant({
+          projectId,
+          userId: `wrong_${userId}`,
+          sessionId: pointer.sessionId,
+          grantId: pointer.grantId,
+          revokedAt: "2026-07-20T03:02:00.000Z",
+        });
+        expect(
+          await stores.agentStore.getSession(
+            projectId,
+            userId,
+            pointer.sessionId,
+          ),
+        ).not.toHaveProperty("grantRevokedAt");
+        await stores.agentStore.revokeSessionGrant({
+          projectId,
+          userId,
+          sessionId: pointer.sessionId,
+          grantId: `wrong_${pointer.grantId}`,
+          revokedAt: "2026-07-20T03:02:00.000Z",
+        });
+        await stores.agentStore.revokeSessionGrant({
+          projectId,
+          userId,
+          sessionId: pointer.sessionId,
+          grantId: pointer.grantId,
+          revokedAt: "2026-07-20T03:03:00.000Z",
+        });
+        await stores.agentStore.revokeSessionGrant({
+          projectId,
+          userId,
+          sessionId: pointer.sessionId,
+          grantId: pointer.grantId,
+          revokedAt: "2026-07-20T03:04:00.000Z",
+        });
+        await stores.agentStore.rememberSession({
+          ...pointer,
+          callId: `call_updated_${scope}`,
+        });
+        await expect(
+          stores.agentStore.getSession(projectId, userId, pointer.sessionId),
+        ).resolves.toMatchObject({
+          grantId: pointer.grantId,
+          grantExpiresAt: pointer.grantExpiresAt,
+          grantRevokedAt: "2026-07-20T03:03:00.000Z",
+          callId: `call_updated_${scope}`,
+        });
+
+        const competingSessionId = `session_competing_${scope}`;
+        const base = {
+          ...pointer,
+          sessionId: competingSessionId,
+          callId: `call_competing_${scope}`,
+        };
+        const contenders = await Promise.allSettled([
+          stores.agentStore.rememberSession({
+            ...base,
+            grantId: `vsg_${scope}_winner_a`,
+          }),
+          stores.agentStore.rememberSession({
+            ...base,
+            grantId: `vsg_${scope}_winner_b`,
+          }),
+        ]);
+        expect(
+          contenders.filter((result) => result.status === "fulfilled"),
+        ).toHaveLength(1);
+        expect(
+          contenders.filter((result) => result.status === "rejected"),
+        ).toHaveLength(1);
+      });
     });
 
     describe("executions", () => {

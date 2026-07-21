@@ -47,6 +47,8 @@ const TOOL = "echo.run";
 const INPUT_SECRET = "canonical-input-top-secret";
 const ACCESS_TOKEN = "fixture:credential-token-top-secret";
 const WEBHOOK_SECRET = "whsec_webhook-top-secret";
+const VOICE_GRANT_TOKEN = `evg1.${"g".repeat(32)}.${"s".repeat(32)}`;
+const VOICE_GRANT_SECRET = "g".repeat(32);
 const UNTRUSTED_TOOL = "privatepayload.run";
 const UNTRUSTED_SUBSCRIPTION_ID = "trgsub_private_subscription_top_secret";
 const STARTED_AT = "2026-07-18T10:00:00.000Z";
@@ -239,6 +241,9 @@ describe("executor observability", () => {
       output: longBody,
       nested: {
         signingSecret: WEBHOOK_SECRET,
+        executorGrant: { token: VOICE_GRANT_TOKEN },
+        voiceSessionGrantToken: VOICE_GRANT_TOKEN,
+        voiceSessionGrantSecret: VOICE_GRANT_SECRET,
         ingestUrl: "https://executor.example.test/ingest/url-top-secret",
         ordinaryLongValue: longBody,
         file: {
@@ -264,6 +269,9 @@ describe("executor observability", () => {
     expect(redacted.output).toBe("[REDACTED:body:2000 bytes]");
     expect(redacted.nested).toEqual({
       signingSecret: "[REDACTED:whse…]",
+      executorGrant: { token: REDACTED },
+      voiceSessionGrantToken: REDACTED,
+      voiceSessionGrantSecret: REDACTED,
       ingestUrl: REDACTED,
       ordinaryLongValue: "[REDACTED:long-string:2000 bytes]",
       file: {
@@ -282,6 +290,8 @@ describe("executor observability", () => {
       ACCESS_TOKEN,
       INPUT_SECRET,
       WEBHOOK_SECRET,
+      VOICE_GRANT_TOKEN,
+      VOICE_GRANT_SECRET,
       "refresh-top-secret",
       "cookie-top-secret",
       "idempotency-top-secret",

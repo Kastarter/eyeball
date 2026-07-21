@@ -33,8 +33,8 @@ cryptographic audit.
 - Local-vault encryption keys and cloud key-encryption keys (KEKs).
 - Execution inputs, outputs, staged files, identities, and audit records.
 - Webhook signing secrets and trigger-ingest secrets.
-- Voice-worker control tokens, executor keys, media tokens, transcripts, and
-  call metadata.
+- Voice-worker control tokens, session grants, fallback executor keys, media
+  tokens, transcripts, and call metadata.
 - Cloud sessions, CSRF tokens, internal service secrets, Stripe webhook
   secrets, and tenant billing state.
 - Release credentials, source integrity, lockfiles, and CI provenance.
@@ -63,7 +63,7 @@ Executor <---------------------------- Cloud internal API
   ^   ^   ^
   |   |   +-- signed webhook egress --> customer endpoint / hostile DNS
   |   +------ SDK and MCP API keys
-  +---------- user-pinned voice-worker key + reserved child IDs
+  +---------- session-scoped voice grant + reserved child IDs
   |
   +-- credentialed, no-auto-redirect HTTP --> SaaS providers
 
@@ -100,7 +100,8 @@ deployment error.
 | Staged files are project-isolated, remain available across Postgres/PGlite executor reconstruction until expiry, expired durable rows are reclaimed online in bounded batches, persistence failures do not retain byte-bearing driver errors, and metadata routes never return content. | Shared memory/PGlite FileStore contracts, restart and continuous-runtime reclamation regressions, and forced-insert-failure error-chain coverage in [`apps/executor/test/store-contract.test.ts`](../apps/executor/test/store-contract.test.ts); HTTP isolation, metadata-only, expiry, and authorization coverage in [`apps/executor/test/files.test.ts`](../apps/executor/test/files.test.ts). |
 | Historical voice-agent revisions are immutable; number bindings and executor-side session pointers pin exact revisions; project/user scopes are enforced; and definitions, bindings, pointers, and message receipts survive PGlite reconstruction. | Shared memory/PGlite AgentStore contracts and durable runtime/restart reconstruction in [`apps/executor/test/store-contract.test.ts`](../apps/executor/test/store-contract.test.ts); pinned development-session coverage in [`apps/executor/test/dev-voice-sessions.test.ts`](../apps/executor/test/dev-voice-sessions.test.ts). |
 | MCP session updates are atomic in memory and Postgres/PGlite, negotiated sessions and task records survive reconstruction, and persistence stores only a one-way binding over the inbound credential plus configured project/pinned-user authority rather than either bearer credential or plaintext authority. | Shared SessionStore contracts and migration/restart coverage in [`apps/mcp-gateway/test/session-store-contract.test.ts`](../apps/mcp-gateway/test/session-store-contract.test.ts); authenticated restart, authority-remap rejection, and raw-row credential-absence regressions in [`apps/mcp-gateway/test/streamable-http.test.ts`](../apps/mcp-gateway/test/streamable-http.test.ts). |
-| Caller-supplied reserved child execution IDs require a user-pinned key, synchronous mode, and an idempotency key. | `apps/executor/src/routes.ts`; [`apps/executor/test/execution.test.ts`](../apps/executor/test/execution.test.ts). |
+| Reserved child execution IDs require synchronous mode and an idempotency key. Static callers additionally require a user-pinned key; session-grant callers must satisfy the stricter capability shape below. | `apps/executor/src/routes.ts`; [`apps/executor/test/execution.test.ts`](../apps/executor/test/execution.test.ts). |
+| Remote voice child execution can use a short-lived HMAC capability bound to one audience, project, user, executor-owned session ID, grant ID, expiry, and immutable canonical-tool allowlist. The executor checks durable revocation on every call; the worker keeps the bearer out of snapshots/events and erases it at terminal state. | `apps/executor/src/voice-session-grants.ts`, `routes.ts`, and the memory/Postgres agent stores; cross-user/session/tool confinement, tamper, expiry, revocation, persistence, and log-redaction coverage in [`apps/executor/test/voice-session-grants.test.ts`](../apps/executor/test/voice-session-grants.test.ts), [`apps/executor/test/store-contract.test.ts`](../apps/executor/test/store-contract.test.ts), and [`apps/voice-worker/tests/test_worker.py`](../apps/voice-worker/tests/test_worker.py). |
 | The dashboard forwards only allowlisted cloud cookies/headers and stores executor keys in project-scoped HttpOnly, SameSite=Strict cookies. Cloud and executor redirects are not followed. | `apps/dashboard/src/lib/cloud-proxy.ts` and `executor-proxy.ts`; [`apps/dashboard/src/lib/cloud-proxy.test.ts`](../apps/dashboard/src/lib/cloud-proxy.test.ts) and [`apps/dashboard/src/lib/executor-key-route.test.ts`](../apps/dashboard/src/lib/executor-key-route.test.ts). |
 | The remote voice client requires HTTPS outside loopback, rejects URL credentials/query/fragment, refuses short supplied bearer tokens, and does not follow authenticated redirects. | `packages/toolkits/src/voice/remote-session-driver.ts`; [`packages/toolkits/test/voice/remote-session-driver.test.ts`](../packages/toolkits/test/voice/remote-session-driver.test.ts). |
 | The Python voice worker rejects hostname suffix tricks for loopback HTTP and uses a minimum 32-byte control token with constant-time comparison. | `apps/voice-worker/src/eyeball_voice_worker/config.py` and `app.py`; [`apps/voice-worker/tests/test_worker.py`](../apps/voice-worker/tests/test_worker.py). |
@@ -210,12 +211,15 @@ network-layer egress deny policy.
 ### Voice worker
 
 The worker control API uses one high-entropy service token and versioned,
-session-addressed routes. Stable child execution identities re-enter the normal
-executor through a user-pinned API key. The default self-host model is one
-worker per trusted pinned user; the single control token is not a multi-tenant
-session capability. Media URL tokens are session-derived but still travel in a
-query; Uvicorn access logging is disabled and upstream access logs must follow
-the same rule.
+session-addressed routes. That token authorizes executor-to-worker control only;
+it cannot execute provider tools. Stable child execution identities re-enter
+the executor through a separate HMAC capability scoped to one audience,
+project, user, session, expiry, and immutable tool allowlist. The executor owns
+the session ID, persists capability identity/revocation with the session
+pointer, and checks it on every child request. The optional static pinned-key
+fallback still requires one worker per trusted pinned user. Media URL tokens
+are session-derived but still travel in a query; Uvicorn access logging is
+disabled and upstream access logs must follow the same rule.
 
 ### Trigger ingest
 
@@ -238,7 +242,7 @@ untrusted hosted traffic.
 | SEC-001 | P1 | Fixed | Cloud API-key verification placed a customer key in `GET /internal/keys/verify?key=`, exposing it to URL logs and caches. | Replaced with authenticated `POST`, a pre-buffer 4 KiB cap, and a bounded key schema; old `GET` and oversized bodies are tested. |
 | SEC-002 | P1 | Open, launch gate | Webhook registration blocks literal private addresses but does not resolve and pin DNS at delivery, leaving DNS-rebinding/TOCTOU SSRF. | Resolver-aware delivery with IP classification on every connection, address pinning, and network egress policy; 3–5 days. |
 | SEC-003 | P1 | Open, bridge gate | `@activepieces/shared` brings unpatched `expr-eval@2.0.2`; [GHSA-8gw3-rxh4-v6jx](https://github.com/advisories/GHSA-8gw3-rxh4-v6jx) and [GHSA-jc85-fpwf-qm7x](https://github.com/advisories/GHSA-jc85-fpwf-qm7x) permit prototype pollution/code execution when attackers control expressions or evaluation variables. The bridge remains a private spike and must not accept untrusted formulas. | Replace with a maintained compatible fork and run formula compatibility/security tests, or remove formula evaluation; 1–2 days. No patched `expr-eval` release exists. |
-| SEC-004 | P1 | Open, hosted-voice gate | One voice-worker bearer token authorizes every session on that worker. This is acceptable only for the documented single-user/service boundary. | Issue short-lived, audience- and session-scoped capabilities or isolate workers per tenant; 3–5 days. |
+| SEC-004 | P1 | Fixed | One static voice-worker key authorized every session on a worker, preventing a safe multi-user authority model. | Added short-lived, audience/project/user/session/tool-scoped HMAC capabilities, executor-owned session IDs, durable grant identity/revocation, terminal cleanup, and a v2 worker contract. The static pinned key remains an explicitly documented single-user compatibility fallback. |
 | SEC-005 | P1 | Open, product decision | After the 14-day cloud billing grace period, existing keys and connections continue executing indefinitely; only creation is blocked. A delinquent tenant can continue incurring provider/control-plane cost. | Define suspension semantics and enforce them at execution/credential resolution, with operator override and tests; 1–2 days. |
 | SEC-017 | P1 | Open, hosted multi-user gate | Staged files are project-scoped rather than user-owned. A pinned user who learns another same-project user's high-entropy file ID during its TTL can retrieve metadata or reference those bytes in an execution. | Add owner user IDs to the file contract/store, bind uploads to the effective identity, and enforce ownership on metadata and adapter resolution; 1–2 days including persistence migration and tests. |
 | SEC-022 | P1 | Fixed | Usage-gate transport and protocol failures defaulted fail open in the full hosted executor composition, so degrading the Cloud usage service could bypass quota admission and permit unbounded unbilled executions. | Unset `EYEBALL_USAGE_STRICT` now defaults fail closed when `EYEBALL_CREDENTIALS=cloud` and remains fail open for self-hosted composition. Explicit `1`/`true` and `0`/`false` overrides are honored, invalid values fail startup, and a structured startup log exposes the resolution and warns on hosted relaxation. |

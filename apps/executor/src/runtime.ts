@@ -8,6 +8,7 @@ import {
   RemoteVoiceSessionDriver,
   TwilioAdapter,
   VoiceAgentsAdapter,
+  type VoiceSessionGrantIssuer,
   voiceWorkerTokenFromEnv,
   voiceWorkerUrlFromEnv,
 } from "@eyeball/toolkits";
@@ -44,6 +45,10 @@ import {
   UsageOutboxFlusher,
   type UsageOutboxStore,
 } from "./usage/index.js";
+import {
+  createConfiguredVoiceSessionGrantAuthority,
+  type VoiceSessionGrantVerifier,
+} from "./voice-session-grants.js";
 import { WebhookDeliverer } from "./webhooks/deliverer.js";
 
 export interface CreateExecutorRuntimeOptions {
@@ -77,6 +82,7 @@ export interface ExecutorPersistence extends PostgresStoreSet {
 export interface ExecutorRuntime {
   engine: ExecutionEngine;
   apiKeyAuthenticator: ApiKeyAuthenticator;
+  voiceSessionGrantVerifier?: VoiceSessionGrantVerifier;
   triggerPollingScheduler: TriggerPollingScheduler;
   persistence?: ExecutorPersistence;
   usageOutboxFlusher?: UsageOutboxFlusher;
@@ -224,6 +230,8 @@ function configuredVoiceWorker(
   env: Readonly<Record<string, string | undefined>>,
   catalog: RuntimeCatalog,
   agentStore: AgentStore,
+  clock: Clock,
+  voiceSessionGrantIssuer?: VoiceSessionGrantIssuer,
   fetchImpl?: typeof fetch,
 ): {
   adapters: AdapterRegistry;
@@ -240,6 +248,22 @@ function configuredVoiceWorker(
           baseUrl: workerUrl,
           ...(fetchImpl === undefined ? {} : { fetch: fetchImpl }),
           ...(token === undefined ? {} : { token }),
+          onTerminal: async ({ request }) => {
+            const pointer = await agentStore.getSession(
+              request.scope.projectId,
+              request.scope.userId,
+              request.sessionId,
+            );
+            await agentStore.revokeSessionGrant({
+              projectId: request.scope.projectId,
+              userId: request.scope.userId,
+              sessionId: request.sessionId,
+              ...(pointer.grantId === undefined
+                ? {}
+                : { grantId: pointer.grantId }),
+              revokedAt: clock.now().toISOString(),
+            });
+          },
           onEvent: ({ request, event }) => {
             if (!request.agent.webhooks.events.includes(event.data.type))
               return;
@@ -310,6 +334,9 @@ function configuredVoiceWorker(
         `Nested synchronous provider execution returned ${response.status}.`,
       );
     },
+    ...(voiceSessionGrantIssuer === undefined
+      ? {}
+      : { voiceSessionGrantIssuer }),
   });
   const twilio = new TwilioAdapter({ bindingLookup: agentStore });
   return {
@@ -381,14 +408,29 @@ export async function createExecutorRuntime(
     const initializedPersistence = persistence;
     const agentStore =
       initializedPersistence?.agentStore ?? new InMemoryAgentStore();
+    const clock = options.clock ?? systemClock;
+    const voiceSessionGrantAuthority =
+      createConfiguredVoiceSessionGrantAuthority({
+        env,
+        store: agentStore,
+        clock,
+      });
+    telemetry.logger.info("voice.execution_auth_configured", {
+      voiceWorkerExecutionAuthMode:
+        voiceSessionGrantAuthority === undefined
+          ? "static_pinned"
+          : "session_grant",
+      grantStateDurability: durable ? "postgres" : "process_local",
+    });
     const initializedVoiceWorker = configuredVoiceWorker(
       env,
       catalog,
       agentStore,
+      clock,
+      voiceSessionGrantAuthority?.issuer,
       options.fetchImpl,
     );
     voiceWorker = initializedVoiceWorker;
-    const clock = options.clock ?? systemClock;
     if (initializedPersistence !== undefined) {
       await sweepExpiredFiles(
         initializedPersistence.fileStore,
@@ -512,6 +554,9 @@ export async function createExecutorRuntime(
     return {
       engine,
       apiKeyAuthenticator,
+      ...(voiceSessionGrantAuthority === undefined
+        ? {}
+        : { voiceSessionGrantVerifier: voiceSessionGrantAuthority.verifier }),
       triggerPollingScheduler,
       ...(initializedPersistence === undefined
         ? {}

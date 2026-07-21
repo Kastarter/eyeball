@@ -19,6 +19,7 @@ import {
   createExecutorRuntime,
   createJobEnvelope,
   createPgliteStoreBundle,
+  createVoiceSessionGrantAuthority,
   executorJobId,
   InMemoryExecutionStore,
   InMemoryFileStore,
@@ -313,6 +314,113 @@ it("migrates the durable voice-agent aggregate with exact revision constraints",
   expect(indexNames.has("voice_agent_session_pointers_scope_created_idx")).toBe(
     true,
   );
+  expect(indexNames.has("voice_agent_session_pointers_grant_id_unique")).toBe(
+    true,
+  );
+  expect(
+    names.has("voice_agent_session_pointers_grant_identity_complete"),
+  ).toBe(true);
+  expect(
+    names.has("voice_agent_session_pointers_revocation_requires_grant"),
+  ).toBe(true);
+});
+
+it("preserves active and revoked grant state across PGlite reconstruction", async () => {
+  const directory = await mkdtemp(join(tmpdir(), "eyeball-grant-restart-"));
+  const secret = "g".repeat(32);
+  const now = new Date("2026-07-21T08:00:00.000Z");
+  const projectId = "project_grant_restart";
+  const userId = "user_grant_restart";
+  const activeSession = "session_aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa";
+  const revokedSession = "session_bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb";
+  let first: PgliteStoreBundle | undefined;
+  let restored: PgliteStoreBundle | undefined;
+  try {
+    first = await createPgliteStoreBundle({ dataDir: directory });
+    const agent = await first.agentStore.createAgent(
+      projectId,
+      contractAgentDraft,
+      now.toISOString(),
+    );
+    const firstAuthority = createVoiceSessionGrantAuthority({
+      secret,
+      store: first.agentStore,
+      clock: { now: () => now },
+    });
+    const active = await firstAuthority.issuer.issue({
+      projectId,
+      userId,
+      sessionId: activeSession,
+      maxDurationSeconds: 300,
+      allowedTools: [],
+    });
+    const revoked = await firstAuthority.issuer.issue({
+      projectId,
+      userId,
+      sessionId: revokedSession,
+      maxDurationSeconds: 300,
+      allowedTools: [],
+    });
+    for (const [sessionId, issued] of [
+      [activeSession, active],
+      [revokedSession, revoked],
+    ] as const) {
+      await first.agentStore.rememberSession({
+        sessionId,
+        projectId,
+        userId,
+        agentId: agent.id,
+        agentRevision: agent.revision,
+        callId: `call_${sessionId}`,
+        createdAt: now.toISOString(),
+        grantId: issued.grantId,
+        grantExpiresAt: issued.expiresAt,
+      });
+    }
+    await first.agentStore.revokeSessionGrant({
+      projectId,
+      userId,
+      sessionId: revokedSession,
+      grantId: revoked.grantId,
+      revokedAt: now.toISOString(),
+    });
+    await first.close();
+    first = undefined;
+
+    restored = await createPgliteStoreBundle({ dataDir: directory });
+    const restoredAuthority = createVoiceSessionGrantAuthority({
+      secret,
+      store: restored.agentStore,
+      clock: { now: () => now },
+    });
+    expect((await restoredAuthority.verifier.verify(active.token)).status).toBe(
+      "valid",
+    );
+    expect(await restoredAuthority.verifier.verify(revoked.token)).toEqual({
+      status: "expired",
+    });
+    const rows = await restored.client.query(
+      "select * from voice_agent_session_pointers where project_id = $1",
+      [projectId],
+    );
+    const persisted = JSON.stringify(rows.rows);
+    expect(persisted).not.toContain(active.token);
+    expect(persisted).not.toContain(revoked.token);
+    expect(persisted).not.toContain(secret);
+
+    const processLocalAuthority = createVoiceSessionGrantAuthority({
+      secret,
+      store: new InMemoryAgentStore(),
+      clock: { now: () => now },
+    });
+    expect(await processLocalAuthority.verifier.verify(active.token)).toEqual({
+      status: "expired",
+    });
+  } finally {
+    await first?.close();
+    await restored?.close();
+    await rm(directory, { recursive: true, force: true });
+  }
 });
 
 it("reconstructs durable agents, pinned metadata, and receipts after restart", async () => {

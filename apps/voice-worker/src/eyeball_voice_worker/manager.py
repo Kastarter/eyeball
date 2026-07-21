@@ -6,9 +6,8 @@ import asyncio
 import hashlib
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass, field
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from typing import Literal, cast
-from uuid import uuid4
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 from pydantic import JsonValue
@@ -22,11 +21,17 @@ from .contracts import (
     SessionEvent,
     StartSessionRequest,
 )
-from .executor import ExecutorClient, ExecutorProtocolError, ExecutorResult
+from .executor import (
+    ExecutorClient,
+    ExecutorProtocolError,
+    ExecutorResult,
+    SessionExecutorCredential,
+)
 from .repository import (
     PendingToolCall,
     SessionNotFoundError,
     StateConflictError,
+    StoredSession,
     VoiceSessionRepository,
 )
 
@@ -45,6 +50,10 @@ class InvalidTransportError(RuntimeError):
 
 
 class SessionPolicyError(RuntimeError):
+    pass
+
+
+class MissingSessionCredentialError(SessionPolicyError):
     pass
 
 
@@ -82,6 +91,13 @@ class SessionManager:
         """Recover fake/chat state and fail live sessions that lost their socket."""
         for stored in self._repository.active():
             managed = self._sessions.setdefault(stored.session.id, ManagedSession())
+            if _remaining_duration(stored) <= 0:
+                self._fail(
+                    stored.session.id,
+                    "The session exceeded maxDurationSeconds.",
+                    code="timeout",
+                )
+                continue
             if stored.pending_tool is not None:
                 await self._dispatch_pending(stored.session.id, stored.pending_tool)
                 stored = self._repository.get(stored.session.id)
@@ -106,7 +122,7 @@ class SessionManager:
         async with self._lock:
             if not self._accepting:
                 raise WorkerDrainingError("The voice worker is draining.")
-            session_id = f"session_{uuid4().hex}"
+            session_id = request.session_id
             transport = cast(
                 Literal["pstn:twilio", "webrtc:livekit", "chat"],
                 {
@@ -202,6 +218,13 @@ class SessionManager:
         )
         if replay is not None:
             return replay
+        if _remaining_duration(stored) <= 0:
+            self._fail(
+                session_id,
+                "The session exceeded maxDurationSeconds.",
+                code="timeout",
+            )
+            raise StateConflictError("The chat session deadline has elapsed.")
         if stored.session.state == "created":
             self._transition(session_id, "in-progress")
         elif stored.session.state != "in-progress":
@@ -380,7 +403,7 @@ class SessionManager:
             if stored.pending_tool is not None:
                 await self._dispatch_pending(session_id, stored.pending_tool)
             transport = cast(FakeTransport, stored.request.transport)
-            max_duration = _max_duration(stored.request)
+            max_duration = _remaining_duration(stored)
             async with asyncio.timeout(max_duration):
                 for index in range(stored.runtime_cursor, len(transport.turns)):
                     if self._managed(session_id).stop_requested.is_set():
@@ -438,7 +461,8 @@ class SessionManager:
             if self.get(session_id).state == "created":
                 self._transition(session_id, "connecting")
             self._transition(session_id, "in-progress")
-            async with asyncio.timeout(_max_duration(self.request(session_id))):
+            stored = self._repository.get(session_id)
+            async with asyncio.timeout(_remaining_duration(stored)):
                 await runtime()
             if self.get(session_id).state == "in-progress":
                 self._transition(session_id, "wrap-up")
@@ -544,6 +568,13 @@ class SessionManager:
                 user_id=stored.request.scope.user_id,
                 tool=pending.tool,
                 input=pending.input,
+                credential=SessionExecutorCredential(
+                    mode=cast(
+                        Literal["session-grant", "static-pinned"],
+                        stored.executor_auth_mode,
+                    ),
+                    grant_token=stored.executor_grant_token,
+                ),
             )
         except ExecutorProtocolError as error:
             return ExecutorResult(
@@ -629,11 +660,18 @@ class SessionManager:
         self._sessions[session_id] = managed
         return managed
 
-    @staticmethod
-    def _validate_request(request: StartSessionRequest) -> None:
+    def _validate_request(self, request: StartSessionRequest) -> None:
         names = [tool.name for tool in request.agent.allowed_tools]
         if len(names) != len(set(names)):
             raise SessionPolicyError("Agent allowedTools must not contain duplicates.")
+        if (
+            names
+            and request.executor_grant is None
+            and not self._executor.has_static_key
+        ):
+            raise MissingSessionCredentialError(
+                "Tool-enabled sessions require executor authorization."
+            )
         if request.transport.kind != "fake":
             mode = request.agent.recording_policy.get("mode", "disabled")
             if mode != "disabled":
@@ -649,6 +687,14 @@ def _max_duration(request: StartSessionRequest) -> float:
     if not isinstance(value, int) or isinstance(value, bool) or value < 1:
         raise SessionPolicyError("guardrails.maxDurationSeconds must be positive.")
     return float(value)
+
+
+def _remaining_duration(stored: StoredSession) -> float:
+    created_at = datetime.fromisoformat(
+        stored.session.created_at.replace("Z", "+00:00")
+    )
+    deadline = created_at + timedelta(seconds=_max_duration(stored.request))
+    return max(0.0, (deadline - datetime.now(tz=UTC)).total_seconds())
 
 
 def _enforce_allowed_hours(request: StartSessionRequest) -> None:
@@ -691,8 +737,11 @@ def _enforce_allowed_hours(request: StartSessionRequest) -> None:
 
 
 def _execution_id(session_id: str, event_key: str) -> str:
-    digest = hashlib.sha256(f"{session_id}\0{event_key}".encode()).hexdigest()[:32]
-    return f"exe_voice_{digest}"
+    session_digest = hashlib.sha256(session_id.encode()).hexdigest()[:32]
+    event_digest = hashlib.sha256(f"{session_id}\0{event_key}".encode()).hexdigest()[
+        :32
+    ]
+    return f"exe_voice_{session_digest}{event_digest}"
 
 
 def _now() -> str:
@@ -701,6 +750,7 @@ def _now() -> str:
 
 __all__ = [
     "InvalidTransportError",
+    "MissingSessionCredentialError",
     "SessionManager",
     "SessionNotFoundError",
     "SessionPolicyError",
