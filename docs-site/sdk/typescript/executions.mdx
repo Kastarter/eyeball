@@ -6,7 +6,7 @@ description: "Retrieve an execution, filter project history, or poll async work 
 ## Get
 
 ```ts
-import { Eyeball } from "@eyeball/sdk";
+import { Eyeball, type ExecutionSource } from "@eyeball/sdk";
 
 const eyeball = new Eyeball({
   apiKey: process.env.EYEBALL_API_KEY!,
@@ -14,6 +14,26 @@ const eyeball = new Eyeball({
 });
 const execution = await eyeball.executions.get("exe_01JZ6WA0Q73ZQ5B51SRYB6M4Z8");
 console.log(execution.status);
+
+if (execution.replayed === true) {
+  console.log("An accepted replay reused this execution ID");
+}
+
+const sourceHandlers = {
+  voice_session(source: Extract<ExecutionSource, { kind: "voice_session" }>) {
+    console.log("Voice session", source.sessionId);
+  },
+} satisfies {
+  [Kind in ExecutionSource["kind"]]: (
+    source: Extract<ExecutionSource, { kind: Kind }>,
+  ) => void;
+};
+
+if (execution.source) sourceHandlers[execution.source.kind](execution.source);
+
+for (const fileId of execution.attachments?.fileIds ?? []) {
+  console.log("Historical staged file", fileId);
+}
 ```
 
 ## List
@@ -53,5 +73,7 @@ console.log(terminal.status);
 ```
 
 `wait` polls until `succeeded` or `failed` and throws a normalized `timeout` error when its local deadline expires.
+
+The optional provenance fields are bounded public metadata: `replayed` records an accepted replay of the same execution, `source` identifies a verified voice session, and `attachments` contains only distinct staged-file IDs and their count. No execution SDK method reveals canonical input, raw or derived idempotency identity, connection selection, or file bytes.
 
 See the generated [Executions API](/sdk/generated/executions) for filters, pagination, polling controls, and execution record unions.

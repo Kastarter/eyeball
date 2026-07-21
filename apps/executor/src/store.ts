@@ -132,6 +132,12 @@ export interface ExecutionStore {
     projectId: string,
     executionId: ExecutionId,
   ): Promise<ExecutionDetailRecord | undefined>;
+  /** Records the first accepted replay observation without rewriting record JSON. */
+  markReplayed(
+    projectId: string,
+    executionId: ExecutionId,
+    observedAt: string,
+  ): Promise<boolean>;
   update(projectId: string, record: ExecutionRecord): Promise<void>;
   waitForTerminal(
     projectId: string,
@@ -194,10 +200,19 @@ interface StoredExecution {
   webhookEventId?: string;
   webhookPublishedAt?: string;
   usageFinalizedAt?: string;
+  replayObservedAt?: string;
 }
 
 function clone<T>(value: T): T {
   return structuredClone(value);
+}
+
+/** Projects the private replay sidecar into the bounded public record shape. */
+export function projectExecutionRecord(
+  record: ExecutionRecord,
+  replayObservedAt: string | null | undefined,
+): ExecutionRecord {
+  return replayObservedAt == null ? record : { ...record, replayed: true };
 }
 
 function idempotencyStorageKey(
@@ -254,6 +269,11 @@ export function assertExecutionTransition(
   previous: ExecutionRecord,
   next: ExecutionRecord,
 ): void {
+  if (next.replayed !== undefined) {
+    throw new Error(
+      "Execution replay provenance must be persisted through markReplayed.",
+    );
+  }
   if (previous.executionId !== next.executionId) {
     throw new Error("Execution update changed its execution ID.");
   }
@@ -262,7 +282,9 @@ export function assertExecutionTransition(
     previous.toolVersion !== next.toolVersion ||
     previous.catalogVersion !== next.catalogVersion ||
     previous.userId !== next.userId ||
-    previous.createdAt !== next.createdAt
+    previous.createdAt !== next.createdAt ||
+    !isDeepStrictEqual(previous.source, next.source) ||
+    !isDeepStrictEqual(previous.attachments, next.attachments)
   ) {
     throw new Error("Execution identity fields are immutable.");
   }
@@ -314,12 +336,22 @@ export class InMemoryExecutionStore implements ExecutionStore {
         "Execution idempotency record references an unknown execution.",
       );
     }
-    return { kind: "replay", record: clone(stored.record) };
+    return {
+      kind: "replay",
+      record: clone(
+        projectExecutionRecord(stored.record, stored.replayObservedAt),
+      ),
+    };
   }
 
   async allocate(
     allocation: ExecutionAllocation,
   ): Promise<ExecutionAllocationResult> {
+    if (allocation.record.replayed !== undefined) {
+      throw new Error(
+        "Execution replay provenance must be persisted through markReplayed().",
+      );
+    }
     const projectExecutions = this.#projectExecutions(allocation.projectId);
     const reservation = allocation.idempotency;
 
@@ -340,7 +372,15 @@ export class InMemoryExecutionStore implements ExecutionStore {
         }
         const existingExecution = projectExecutions.get(existing.executionId);
         if (existingExecution !== undefined) {
-          return { kind: "replay", record: clone(existingExecution.record) };
+          return {
+            kind: "replay",
+            record: clone(
+              projectExecutionRecord(
+                existingExecution.record,
+                existingExecution.replayObservedAt,
+              ),
+            ),
+          };
         }
       }
 
@@ -399,7 +439,9 @@ export class InMemoryExecutionStore implements ExecutionStore {
     executionId: ExecutionId,
   ): Promise<ExecutionRecord | undefined> {
     const stored = this.#executions.get(projectId)?.get(executionId);
-    return stored === undefined ? undefined : clone(stored.record);
+    return stored === undefined
+      ? undefined
+      : clone(projectExecutionRecord(stored.record, stored.replayObservedAt));
   }
 
   async getDetail(
@@ -411,7 +453,7 @@ export class InMemoryExecutionStore implements ExecutionStore {
       return undefined;
     }
     return clone({
-      ...stored.record,
+      ...projectExecutionRecord(stored.record, stored.replayObservedAt),
       projectId,
       input: stored.request.input,
       mode: stored.request.mode,
@@ -428,6 +470,17 @@ export class InMemoryExecutionStore implements ExecutionStore {
     });
   }
 
+  async markReplayed(
+    projectId: string,
+    executionId: ExecutionId,
+    observedAt: string,
+  ): Promise<boolean> {
+    const stored = this.#executions.get(projectId)?.get(executionId);
+    if (stored === undefined) return false;
+    stored.replayObservedAt ??= new Date(observedAt).toISOString();
+    return true;
+  }
+
   async update(projectId: string, record: ExecutionRecord): Promise<void> {
     const stored = this.#executions.get(projectId)?.get(record.executionId);
     if (stored === undefined) {
@@ -439,7 +492,13 @@ export class InMemoryExecutionStore implements ExecutionStore {
       const key = executionStorageKey(projectId, record.executionId);
       const waiters = this.#terminalWaiters.get(key);
       this.#terminalWaiters.delete(key);
-      for (const resolve of waiters ?? []) resolve(clone(record));
+      for (const resolve of waiters ?? []) {
+        resolve(
+          clone(projectExecutionRecord(record, stored.replayObservedAt)) as
+            | (ExecutionRecord & { status: "succeeded" })
+            | (ExecutionRecord & { status: "failed" }),
+        );
+      }
     }
   }
 
@@ -447,12 +506,17 @@ export class InMemoryExecutionStore implements ExecutionStore {
     projectId: string,
     executionId: ExecutionId,
   ): Promise<ExecutionRecord & { status: "succeeded" | "failed" }> {
-    const stored = this.#executions.get(projectId)?.get(executionId)?.record;
+    const stored = this.#executions.get(projectId)?.get(executionId);
     if (stored === undefined) {
       throw new Error(`Unknown execution ID: ${executionId}`);
     }
-    if (stored.status === "succeeded" || stored.status === "failed") {
-      return clone(stored);
+    if (
+      stored.record.status === "succeeded" ||
+      stored.record.status === "failed"
+    ) {
+      return clone(
+        projectExecutionRecord(stored.record, stored.replayObservedAt),
+      ) as ExecutionRecord & { status: "succeeded" | "failed" };
     }
     const key = executionStorageKey(projectId, executionId);
     return new Promise((resolve) => {
@@ -500,7 +564,9 @@ export class InMemoryExecutionStore implements ExecutionStore {
   ): Promise<ExecutionPage> {
     const all = [...(this.#executions.get(projectId)?.values() ?? [])]
       .reverse()
-      .map(({ record }) => record)
+      .map((stored) =>
+        projectExecutionRecord(stored.record, stored.replayObservedAt),
+      )
       .filter(
         (record) =>
           (filters.status === undefined || record.status === filters.status) &&
@@ -538,7 +604,10 @@ export class InMemoryExecutionStore implements ExecutionStore {
       : clone({
           sequence: stored.sequence,
           projectId,
-          record: stored.record,
+          record: projectExecutionRecord(
+            stored.record,
+            stored.replayObservedAt,
+          ),
           request: stored.request,
           ...(stored.resumeContext === undefined
             ? {}

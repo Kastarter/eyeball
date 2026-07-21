@@ -81,6 +81,18 @@ describe("generated SDK reference", () => {
     );
   });
 
+  it("assigns bounded execution provenance types and field documentation", () => {
+    const reference = buildSdkReference(repositoryRoot);
+    const executions = reference.pages.get("executions.mdx");
+    expect(executions).toContain("ExecutionAttachmentSummary");
+    expect(executions).toContain("ExecutionSource");
+    expect(executions).toContain("replayed");
+    expect(executions).toContain("attachments");
+    expect(executions).toContain("voice_session");
+    expect(executions).toContain("Accepted replay observed");
+    expect(executions).toContain("never includes canonical input");
+  });
+
   it("rejects a stale generated checksum without touching the repository", async () => {
     const paths = await fixture();
     try {

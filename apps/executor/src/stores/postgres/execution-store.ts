@@ -29,6 +29,7 @@ import {
   executionCursorAfter,
   executionIdFromCursor,
   InvalidExecutionCursorError,
+  projectExecutionRecord,
   type RecoverableExecution,
 } from "../../store.js";
 import type { EyeballPostgresDatabase } from "./database.js";
@@ -49,7 +50,7 @@ function recoverableFromRow(
   return copy({
     sequence: row.sequence,
     projectId: row.projectId,
-    record: row.record,
+    record: projectExecutionRecord(row.record, row.replayObservedAt),
     request: row.request,
     ...(row.resumeContext === null ? {} : { resumeContext: row.resumeContext }),
     ...(row.dispatchStartedAt === null
@@ -159,7 +160,10 @@ export class PostgresExecutionStore<
       return { kind: "conflict" };
     }
     const [stored] = await this.#database
-      .select({ record: executions.record })
+      .select({
+        record: executions.record,
+        replayObservedAt: executions.replayObservedAt,
+      })
       .from(executions)
       .where(
         executionWhere(
@@ -173,12 +177,22 @@ export class PostgresExecutionStore<
         "Execution idempotency record references an unknown execution.",
       );
     }
-    return { kind: "replay", record: copy(stored.record) };
+    return {
+      kind: "replay",
+      record: copy(
+        projectExecutionRecord(stored.record, stored.replayObservedAt),
+      ),
+    };
   }
 
   async allocate(
     allocation: ExecutionAllocation,
   ): Promise<ExecutionAllocationResult> {
+    if (allocation.record.replayed !== undefined) {
+      throw new Error(
+        "Execution replay provenance must be persisted through markReplayed().",
+      );
+    }
     return this.#database.transaction(async (transaction) => {
       const reservation = allocation.idempotency;
       if (reservation !== undefined) {
@@ -205,7 +219,10 @@ export class PostgresExecutionStore<
             return { kind: "conflict" };
           }
           const [existingExecution] = await transaction
-            .select({ record: executions.record })
+            .select({
+              record: executions.record,
+              replayObservedAt: executions.replayObservedAt,
+            })
             .from(executions)
             .where(
               executionWhere(
@@ -219,7 +236,15 @@ export class PostgresExecutionStore<
               "Execution idempotency record references an unknown execution.",
             );
           }
-          return { kind: "replay", record: copy(existingExecution.record) };
+          return {
+            kind: "replay",
+            record: copy(
+              projectExecutionRecord(
+                existingExecution.record,
+                existingExecution.replayObservedAt,
+              ),
+            ),
+          };
         }
       }
 
@@ -299,7 +324,10 @@ export class PostgresExecutionStore<
         return { kind: "conflict" };
       }
       const [winnerExecution] = await transaction
-        .select({ record: executions.record })
+        .select({
+          record: executions.record,
+          replayObservedAt: executions.replayObservedAt,
+        })
         .from(executions)
         .where(
           executionWhere(
@@ -313,7 +341,15 @@ export class PostgresExecutionStore<
           "Execution idempotency winner references an unknown execution.",
         );
       }
-      return { kind: "replay", record: copy(winnerExecution.record) };
+      return {
+        kind: "replay",
+        record: copy(
+          projectExecutionRecord(
+            winnerExecution.record,
+            winnerExecution.replayObservedAt,
+          ),
+        ),
+      };
     });
   }
 
@@ -322,11 +358,16 @@ export class PostgresExecutionStore<
     executionId: ExecutionId,
   ): Promise<ExecutionRecord | undefined> {
     const [stored] = await this.#database
-      .select({ record: executions.record })
+      .select({
+        record: executions.record,
+        replayObservedAt: executions.replayObservedAt,
+      })
       .from(executions)
       .where(executionWhere(projectId, executionId))
       .limit(1);
-    return stored === undefined ? undefined : copy(stored.record);
+    return stored === undefined
+      ? undefined
+      : copy(projectExecutionRecord(stored.record, stored.replayObservedAt));
   }
 
   async getDetail(
@@ -339,6 +380,7 @@ export class PostgresExecutionStore<
         request: executions.request,
         idempotencyKey: executions.idempotencyKey,
         resolvedConnectionId: executions.resolvedConnectionId,
+        replayObservedAt: executions.replayObservedAt,
       })
       .from(executions)
       .where(executionWhere(projectId, executionId))
@@ -347,7 +389,7 @@ export class PostgresExecutionStore<
     const connectionId =
       stored.resolvedConnectionId ?? stored.request.connectionId;
     return copy({
-      ...stored.record,
+      ...projectExecutionRecord(stored.record, stored.replayObservedAt),
       projectId,
       input: stored.request.input,
       mode: stored.request.mode,
@@ -358,6 +400,30 @@ export class PostgresExecutionStore<
         ? {}
         : { idempotencyKey: stored.idempotencyKey }),
     });
+  }
+
+  async markReplayed(
+    projectId: string,
+    executionId: ExecutionId,
+    observedAt: string,
+  ): Promise<boolean> {
+    const changed = await this.#database
+      .update(executions)
+      .set({ replayObservedAt: new Date(observedAt).toISOString() })
+      .where(
+        and(
+          executionWhere(projectId, executionId),
+          isNull(executions.replayObservedAt),
+        ),
+      )
+      .returning({ executionId: executions.executionId });
+    if (changed.length === 1) return true;
+    const [existing] = await this.#database
+      .select({ executionId: executions.executionId })
+      .from(executions)
+      .where(executionWhere(projectId, executionId))
+      .limit(1);
+    return existing !== undefined;
   }
 
   async update(projectId: string, record: ExecutionRecord): Promise<void> {
@@ -448,14 +514,19 @@ export class PostgresExecutionStore<
       );
     }
     const rows = await this.#database
-      .select({ record: executions.record })
+      .select({
+        record: executions.record,
+        replayObservedAt: executions.replayObservedAt,
+      })
       .from(executions)
       .where(and(...predicates))
       .orderBy(desc(executions.createdAt), desc(executions.sequence))
       .limit(filters.limit + 1);
     const hasMore = rows.length > filters.limit;
     const pageRows = rows.slice(0, filters.limit);
-    const records = pageRows.map(({ record }) => copy(record));
+    const records = pageRows.map(({ record, replayObservedAt }) =>
+      copy(projectExecutionRecord(record, replayObservedAt)),
+    );
     const last = records.at(-1);
     return {
       executions: records,

@@ -11,7 +11,7 @@ pending → running → succeeded
 pending ──────────→ failed
 ```
 
-Terminal records are immutable.
+Terminal lifecycle state, output, error, latency, and timestamps are immutable. A separate monotonic store projection may later add `replayed: true` after an accepted replay without rewriting the terminal record.
 
 ## Synchronous tools
 
@@ -59,6 +59,40 @@ console.log(terminal.status);
 ```
 
 Use [`GET /v1/executions/:id`](/api/executions/get-execution) to poll outside the SDK.
+
+## Bounded execution provenance
+
+Execution detail and list records may carry three optional, deliberately narrow provenance fields:
+
+```ts
+import { Eyeball } from "@eyeball/sdk";
+
+const eyeball = new Eyeball({
+  apiKey: process.env.EYEBALL_API_KEY!,
+  baseUrl: process.env.EYEBALL_EXECUTOR_URL!,
+});
+const terminal = await eyeball.executions.get(
+  "exe_01JZ6WA0Q73ZQ5B51SRYB6M4Z8",
+);
+
+if (terminal.replayed === true) {
+  console.log("An accepted replay reused this execution ID");
+}
+
+if (terminal.source?.kind === "voice_session") {
+  console.log("Voice session", terminal.source.sessionId);
+}
+
+for (const fileId of terminal.attachments?.fileIds ?? []) {
+  console.log("Historical staged file", fileId);
+}
+```
+
+`replayed` appears only after an actual accepted idempotent replay and never carries the key or a derivative. A verified voice child carries its source session ID so the dashboard can navigate back to the exact session; callers cannot create that source metadata with a voice-looking execution ID or an arbitrary header. `attachments` contains only distinct staged Eyeball file IDs and their count. It is historical: the files may have expired, and the summary does not imply that bytes are still available.
+
+Canonical input, connection selection, raw or derived idempotency identity, attachment names and MIME metadata, and file bytes remain private. Staged bytes are resolved only inside the authenticated adapter execution path.
+
+Terminal webhooks receive the safe terminal execution record as projected when delivery work is claimed. A replay observed before that claim can therefore appear in the webhook; a later replay updates future GET/list projections but does not redeliver or rewrite webhook history.
 
 ## Staged files and attachments
 

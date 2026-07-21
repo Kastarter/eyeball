@@ -15,6 +15,7 @@ import {
 const KEY_A = "ey_files_project_a";
 const KEY_B = "ey_files_project_b";
 const KEY_PINNED = "ey_files_pinned";
+const KEY_B_PINNED_OTHER = "ey_files_project_b_other_user";
 const PROJECT_A = "proj_files_a";
 const PROJECT_B = "proj_files_b";
 
@@ -41,6 +42,39 @@ class ResolvingAttachmentAdapter implements ToolkitAdapter {
   }
 }
 
+class ResolvingStorageAdapter implements ToolkitAdapter {
+  readonly toolkitSlug = "google-drive";
+
+  async execute(context: AdapterContext): Promise<JsonValue> {
+    const fileId = context.canonicalInput.fileId;
+    if (typeof fileId !== "string") {
+      throw new Error("Test fixture file ID is missing.");
+    }
+    if (context.tool.name === "google-drive.upload_file") {
+      await context.files.resolve(fileId as `file_${string}`);
+      return {
+        file: {
+          fileId: "provider_uploaded_file",
+          name: "uploaded.bin",
+          mimeType: "application/octet-stream",
+          isFolder: false,
+          createdAt: "2026-07-17T12:00:00.000Z",
+          updatedAt: "2026-07-17T12:00:00.000Z",
+        },
+      };
+    }
+    if (context.tool.name === "google-drive.download_file") {
+      return {
+        fileId,
+        mimeType: "application/octet-stream",
+        content: "cHJvdmlkZXItYnl0ZXM=",
+        contentEncoding: "base64",
+      };
+    }
+    throw new Error(`Unexpected storage test tool ${context.tool.name}.`);
+  }
+}
+
 function createHarness(
   options: {
     ttlMs?: number;
@@ -64,12 +98,26 @@ function createHarness(
         scopes: ["https://www.googleapis.com/auth/gmail.modify"],
       },
     },
+    {
+      match: {
+        projectId: PROJECT_B,
+        userId: "user_b",
+        toolkitSlug: "google-drive",
+      },
+      credential: {
+        type: "oauth2",
+        accessToken: "fixture:google-drive",
+        scopes: [],
+      },
+    },
   ]);
   const engine = new ExecutionEngine({
     clock,
     credentialProvider,
     adapters: new AdapterRegistry(
-      options.withAdapter === true ? [new ResolvingAttachmentAdapter()] : [],
+      options.withAdapter === true
+        ? [new ResolvingAttachmentAdapter(), new ResolvingStorageAdapter()]
+        : [],
     ),
     ...(options.ttlMs === undefined ? {} : { fileTtlMs: options.ttlMs }),
     ...(options.maxFileSizeBytes === undefined
@@ -86,6 +134,10 @@ function createHarness(
       [KEY_A]: PROJECT_A,
       [KEY_B]: PROJECT_B,
       [KEY_PINNED]: { projectId: PROJECT_A, userId: "user_pinned" },
+      [KEY_B_PINNED_OTHER]: {
+        projectId: PROJECT_B,
+        userId: "user_b_other",
+      },
     },
     requestIdFactory: () => "req_files",
   });
@@ -309,6 +361,195 @@ describe.sequential("staged files", () => {
     await expect(oversized.json()).resolves.toMatchObject({
       error: { code: "invalid_input" },
     });
+  });
+
+  it("retains only distinct staged-file IDs as historical execution provenance", async () => {
+    const harness = createHarness({ ttlMs: 1_000, withAdapter: true });
+    const firstUpload = await stage(harness.app, KEY_B, {
+      name: "private-invoice.pdf",
+      mimeType: "application/pdf",
+      content: Buffer.from("private-pdf-bytes", "utf8"),
+    });
+    const secondUpload = await stage(harness.app, KEY_B, {
+      name: "private-receipt.txt",
+      content: Buffer.from("private-receipt-bytes", "utf8"),
+    });
+    const first = (await firstUpload.json()) as { fileId: string };
+    const second = (await secondUpload.json()) as { fileId: string };
+
+    const execution = await harness.app.request("/v1/execute", {
+      method: "POST",
+      headers: {
+        ...authorization(KEY_B),
+        "Idempotency-Key": "attachment-provenance",
+      },
+      body: JSON.stringify({
+        tool: "gmail.send_email",
+        userId: "user_b",
+        mode: "sync",
+        input: {
+          to: ["recipient@example.com"],
+          subject: "Historical summary",
+          body: "The private canonical body stays private.",
+          attachments: [
+            { fileId: first.fileId },
+            { fileId: second.fileId },
+            { fileId: first.fileId },
+          ],
+        },
+      }),
+    });
+    expect(execution.status).toBe(200);
+    const immediate = (await execution.json()) as Record<string, unknown>;
+    expect(immediate).not.toHaveProperty("attachments");
+    const executionId = String(immediate.executionId);
+
+    const detail = await harness.app.request(`/v1/executions/${executionId}`, {
+      headers: authorization(KEY_B),
+    });
+    const record = (await detail.json()) as Record<string, unknown>;
+    expect(record).toMatchObject({
+      attachments: {
+        count: 2,
+        fileIds: [first.fileId, second.fileId],
+      },
+    });
+    const page = await harness.app.request("/v1/executions", {
+      headers: authorization(KEY_B),
+    });
+    await expect(page.json()).resolves.toMatchObject({
+      executions: [
+        {
+          executionId,
+          attachments: {
+            count: 2,
+            fileIds: [first.fileId, second.fileId],
+          },
+        },
+      ],
+    });
+
+    const legacyExecution = await harness.app.request("/v1/execute", {
+      method: "POST",
+      headers: {
+        ...authorization(KEY_B),
+        "Idempotency-Key": "attachment-provenance-legacy",
+      },
+      body: JSON.stringify({
+        tool: "gmail.send_email",
+        userId: "user_b",
+        mode: "sync",
+        input: {
+          to: ["recipient@example.com"],
+          subject: "Legacy summary",
+          body: "Legacy canonical input stays private.",
+          attachments: [
+            {
+              fileId: first.fileId,
+              fileName: "legacy-private-invoice.pdf",
+              contentType: "application/pdf",
+            },
+          ],
+        },
+      }),
+    });
+    expect(legacyExecution.status).toBe(200);
+    const legacyExecutionId = String(
+      ((await legacyExecution.json()) as Record<string, unknown>).executionId,
+    );
+    await expect(
+      (
+        await harness.app.request(`/v1/executions/${legacyExecutionId}`, {
+          headers: authorization(KEY_B),
+        })
+      ).json(),
+    ).resolves.toMatchObject({
+      attachments: { count: 1, fileIds: [first.fileId] },
+    });
+
+    const uploadExecution = await harness.app.request("/v1/execute", {
+      method: "POST",
+      headers: {
+        ...authorization(KEY_B),
+        "Idempotency-Key": "attachment-provenance-upload",
+      },
+      body: JSON.stringify({
+        tool: "google-drive.upload_file",
+        userId: "user_b",
+        mode: "sync",
+        input: { fileId: second.fileId },
+      }),
+    });
+    expect(uploadExecution.status).toBe(200);
+    const uploadExecutionId = String(
+      ((await uploadExecution.json()) as Record<string, unknown>).executionId,
+    );
+    await expect(
+      (
+        await harness.app.request(`/v1/executions/${uploadExecutionId}`, {
+          headers: authorization(KEY_B),
+        })
+      ).json(),
+    ).resolves.toMatchObject({
+      attachments: { count: 1, fileIds: [second.fileId] },
+    });
+
+    const providerFileId = createFileId("provider_resource_looks_staged");
+    const providerRead = await harness.app.request("/v1/execute", {
+      method: "POST",
+      headers: authorization(KEY_B),
+      body: JSON.stringify({
+        tool: "google-drive.download_file",
+        userId: "user_b",
+        mode: "sync",
+        input: { fileId: providerFileId },
+      }),
+    });
+    expect(providerRead.status).toBe(200);
+    const providerReadId = String(
+      ((await providerRead.json()) as Record<string, unknown>).executionId,
+    );
+    const providerReadDetail = await harness.app.request(
+      `/v1/executions/${providerReadId}`,
+      { headers: authorization(KEY_B) },
+    );
+    await expect(providerReadDetail.json()).resolves.not.toHaveProperty(
+      "attachments",
+    );
+
+    const otherUserRead = await harness.app.request(
+      `/v1/executions/${executionId}`,
+      { headers: authorization(KEY_B_PINNED_OTHER) },
+    );
+    expect(otherUserRead.status).toBe(403);
+
+    harness.advance(1_000);
+    expect(
+      (
+        await harness.app.request(`/v1/files/${first.fileId}`, {
+          headers: authorization(KEY_B),
+        })
+      ).status,
+    ).toBe(404);
+    const historical = await harness.app.request(
+      `/v1/executions/${executionId}`,
+      { headers: authorization(KEY_B) },
+    );
+    const serialized = JSON.stringify(await historical.json());
+    expect(serialized).toContain(first.fileId);
+    expect(serialized).toContain(second.fileId);
+    for (const privateSentinel of [
+      "private-invoice.pdf",
+      "private-receipt.txt",
+      "application/pdf",
+      "private-pdf-bytes",
+      "private-receipt-bytes",
+      "The private canonical body stays private.",
+      "canonicalInput",
+      '"input"',
+    ]) {
+      expect(serialized).not.toContain(privateSentinel);
+    }
   });
 
   it("hides files across projects from both HTTP and adapter resolution", async () => {

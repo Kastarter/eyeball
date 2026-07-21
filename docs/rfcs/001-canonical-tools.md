@@ -422,6 +422,17 @@ export interface ExecutionBase {
   status: ExecutionStatus;
 }
 
+export type ExecutionSource =
+  | {
+      readonly kind: "voice_session";
+      readonly sessionId: string;
+    };
+
+export interface ExecutionAttachmentSummary {
+  readonly count: number;
+  readonly fileIds: readonly FileId[];
+}
+
 export type SyncExecuteResponse =
   | ExecutionBase & {
       status: "succeeded";
@@ -443,6 +454,9 @@ export type ExecutionRecord = ExecutionBase & {
   createdAt: string;
   startedAt?: string;
   completedAt?: string;
+  replayed?: true;
+  source?: ExecutionSource;
+  attachments?: ExecutionAttachmentSummary;
 } & (
   | { status: "pending" | "running"; output?: never; error?: never; latencyMs?: never }
   | { status: "succeeded"; output: JsonValue; error?: never; latencyMs: number }
@@ -455,7 +469,11 @@ export type ExecutionRecord = ExecutionBase & {
 `SyncExecuteResponse` with HTTP 200. Async mode allocates once and immediately returns
 `AsyncExecuteResponse` with HTTP 202. `GET /v1/executions/:id` returns the current
 `ExecutionRecord`. Valid transitions are `pending -> running -> succeeded|failed` and
-`pending -> failed`; terminal records are immutable.
+`pending -> failed`. Terminal lifecycle state, output, error, latency, timestamps, verified
+source, and attachment summary are immutable. `replayed: true` is a separate monotonic
+operational projection: it records that at least one accepted replay reused this same execution
+ID, not a reference to another execution. Canonical requests, connection selection, raw or
+derived idempotency identity, and file bytes MUST NOT appear in public execution records.
 
 After API-key authentication, execution order is fixed: resolve the pinned catalog
 definition and provider implementation; default and validate canonical input; apply
@@ -576,6 +594,9 @@ the key, hash, resolved connection, and execution reference for at least 24 hour
 The same key and request return the original `executionId` and latest state. The same
 key with a different request returns HTTP 409 with `invalid_input`. Async retries never
 allocate a second job. Provider-native idempotency may supplement but never replace this.
+After an accepted identical replay, subsequent GET/list projections include `replayed: true`.
+Before an actual replay the field is absent, which is not evidence that the original request
+lacked a key. No key value, prefix, hash, canonical-request hash, or scope tuple is public.
 
 REST callers supply the header directly. SDK direct calls accept `idempotencyKey`; when it
 is omitted for a mutation, the SDK generates a fresh UUID for that invocation. Anthropic and
@@ -613,6 +634,9 @@ export interface ExecutionWebhookEvent {
 Delivery is at least once; receivers deduplicate by event `id`. The sender signs
 `<timestamp>.<raw-body>` with HMAC-SHA256. Any 2xx acknowledges delivery; other results
 receive bounded exponential retries. Endpoint CRUD belongs to the project control plane.
+The event carries the safe terminal `ExecutionRecord` projection present when delivery work is
+claimed. A replay observed later updates future GET/list projections but MUST NOT redeliver the
+webhook or rewrite delivery history.
 
 **Companion decision — signed delivery profile (2026-07-17).** The timestamp is decimal
 Unix seconds and the raw body is the exact UTF-8 JSON byte sequence sent on the wire. The

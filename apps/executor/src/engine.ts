@@ -6,11 +6,13 @@ import {
   createExecutionId,
   createFileId,
   type ExecuteRequest,
+  type ExecutionAttachmentSummary,
   type ExecutionBase,
   type ExecutionId,
   type ExecutionMode,
   type ExecutionRecord,
   type ExecutionResult,
+  type ExecutionSource,
   type ExecutionStatus,
   EyeballError,
   type EyeballErrorOptions,
@@ -20,6 +22,7 @@ import {
   isConnectionId,
   isExecutionId,
   isFileId,
+  isVoiceSessionExecutionIdForSession,
   type JsonValue,
   MockCredentialProvider,
   type NormalizedToolError,
@@ -42,6 +45,7 @@ import {
   type FetchImplementation,
   systemClock,
 } from "./adapters/index.js";
+import { executionAttachmentSummary } from "./execution-provenance.js";
 import {
   createExecutorJobHandlerRegistry,
   InMemoryTaskQueue,
@@ -135,6 +139,8 @@ export interface ExecuteCommand {
   idempotencyKey?: string;
   /** Trusted worker reservation; never accepted from the public HTTP request body. */
   executionId?: ExecutionId;
+  /** Trusted verified execution origin; never accepted from the public body. */
+  source?: ExecutionSource;
 }
 
 export interface ListExecutionsQuery {
@@ -421,6 +427,18 @@ function executeResponse(record: ExecutionRecord): ExecuteHttpResponse {
         latencyMs: record.latencyMs,
       };
   }
+}
+
+function immutableExecutionContext(record: ExecutionRecord): {
+  readonly source?: ExecutionSource;
+  readonly attachments?: ExecutionAttachmentSummary;
+} {
+  return {
+    ...(record.source === undefined ? {} : { source: record.source }),
+    ...(record.attachments === undefined
+      ? {}
+      : { attachments: record.attachments }),
+  };
 }
 
 function normalizedError(error: unknown): NormalizedToolError {
@@ -914,6 +932,19 @@ export class ExecutionEngine {
             `Idempotency-Key is required for mutating tool ${tool.name}.`,
           );
         }
+        if (
+          command.source?.kind === "voice_session" &&
+          (command.executionId === undefined ||
+            canonicalRequest.mode !== "sync" ||
+            !isVoiceSessionExecutionIdForSession(
+              command.executionId,
+              command.source.sessionId,
+            ))
+        ) {
+          return invalidRequest(
+            "Voice-session source does not match the reserved synchronous child execution.",
+          );
+        }
         return {
           canonicalRequest,
           tool,
@@ -924,6 +955,10 @@ export class ExecutionEngine {
       executionTrace.context,
     );
     const { canonicalRequest, tool, manifest, requiredScopes } = validated;
+    const attachments = executionAttachmentSummary(
+      tool,
+      canonicalRequest.input,
+    );
     executionTrace.span?.setAttribute("eyeball.tool", tool.name);
     executionTrace.span?.setAttribute(
       "eyeball.execution.mode",
@@ -986,6 +1021,8 @@ export class ExecutionEngine {
         status: "pending",
         userId: canonicalRequest.userId,
         createdAt: createdAt.toISOString(),
+        ...(command.source === undefined ? {} : { source: command.source }),
+        ...(attachments === undefined ? {} : { attachments }),
       };
       let allocationRequest: ExecutionAllocation = {
         projectId: command.projectId,
@@ -1136,15 +1173,6 @@ export class ExecutionEngine {
         "eyeball.execution.id",
         allocation.record.executionId,
       );
-      this.#logger.info("execution.received", {
-        executionId: allocation.record.executionId,
-        tool: tool.name,
-        projectId: command.projectId,
-        mode: canonicalRequest.mode,
-        inputSizeBytes: jsonByteLength(canonicalRequest.input),
-        inputSchemaValid: true,
-        replayed: allocation.kind === "replay",
-      });
       if (allocation.kind === "replay") {
         if (usageReservation !== undefined) {
           await this.usageGate.release(usageReservation);
@@ -1160,6 +1188,25 @@ export class ExecutionEngine {
             409,
           );
         }
+        const replayMarked = await this.store.markReplayed(
+          command.projectId,
+          allocation.record.executionId,
+          this.#now().toISOString(),
+        );
+        if (!replayMarked) {
+          throw new Error(
+            "Idempotent replay execution disappeared before provenance was persisted.",
+          );
+        }
+        this.#logger.info("execution.received", {
+          executionId: allocation.record.executionId,
+          tool: tool.name,
+          projectId: command.projectId,
+          mode: canonicalRequest.mode,
+          inputSizeBytes: jsonByteLength(canonicalRequest.input),
+          inputSchemaValid: true,
+          replayed: true,
+        });
         const replayRecord =
           canonicalRequest.mode === "sync" &&
           (allocation.record.status === "pending" ||
@@ -1201,6 +1248,16 @@ export class ExecutionEngine {
           deferred: false,
         };
       }
+
+      this.#logger.info("execution.received", {
+        executionId: allocation.record.executionId,
+        tool: tool.name,
+        projectId: command.projectId,
+        mode: canonicalRequest.mode,
+        inputSizeBytes: jsonByteLength(canonicalRequest.input),
+        inputSchemaValid: true,
+        replayed: false,
+      });
 
       if (canonicalRequest.mode === "async") {
         await this.#submitExecutionJob(
@@ -1538,6 +1595,11 @@ export class ExecutionEngine {
       input.projectId,
       input.record.executionId,
     );
+    const record =
+      stored?.record.status === "succeeded" ||
+      stored?.record.status === "failed"
+        ? stored.record
+        : input.record;
     if (stored?.usageFinalizedAt === undefined) {
       const usageReport =
         input.usageReport ??
@@ -1563,14 +1625,14 @@ export class ExecutionEngine {
       if (input.dispatchMayHaveBegun && usageReport !== undefined) {
         await this.usageGate.reportTerminal({
           context: usageReport,
-          record: input.record,
+          record,
         });
       } else if (!input.dispatchMayHaveBegun && reservation !== undefined) {
         await this.usageGate.release(reservation);
       }
       await this.store.markUsageFinalized(
         input.projectId,
-        input.record.executionId,
+        record.executionId,
         this.#now().toISOString(),
       );
     }
@@ -1579,12 +1641,12 @@ export class ExecutionEngine {
     if (eventId !== undefined && stored?.webhookPublishedAt === undefined) {
       await this.webhookDeliverer.enqueueExecution(
         input.projectId,
-        input.record,
+        record,
         eventId,
       );
       await this.store.markWebhookPublished(
         input.projectId,
-        input.record.executionId,
+        record.executionId,
         this.#now().toISOString(),
       );
     }
@@ -1614,6 +1676,7 @@ export class ExecutionEngine {
       status: "failed",
       userId: recoverable.record.userId,
       createdAt: recoverable.record.createdAt,
+      ...immutableExecutionContext(recoverable.record),
       startedAt,
       completedAt: completedAt.toISOString(),
       error: {
@@ -1712,7 +1775,11 @@ export class ExecutionEngine {
     if (recoverable === undefined) return;
     await this.reconcileTerminalExecution({
       projectId,
-      record,
+      record:
+        recoverable.record.status === "succeeded" ||
+        recoverable.record.status === "failed"
+          ? recoverable.record
+          : record,
       ...(recoverable.resumeContext?.usageReport === undefined
         ? {}
         : { usageReport: recoverable.resumeContext.usageReport }),
@@ -1765,19 +1832,17 @@ export class ExecutionEngine {
           ? new Date(pending.startedAt ?? pending.createdAt)
           : this.#now();
       const startedAtIso = startedAt.toISOString();
-      const running: ExecutionRecord & { status: "running" } =
-        pending.status === "running"
-          ? { ...pending, status: "running", startedAt: startedAtIso }
-          : {
-              executionId: pending.executionId,
-              tool: pending.tool,
-              toolVersion: pending.toolVersion,
-              catalogVersion: pending.catalogVersion,
-              status: "running",
-              userId: pending.userId,
-              createdAt: pending.createdAt,
-              startedAt: startedAtIso,
-            };
+      const running: ExecutionRecord & { status: "running" } = {
+        executionId: pending.executionId,
+        tool: pending.tool,
+        toolVersion: pending.toolVersion,
+        catalogVersion: pending.catalogVersion,
+        status: "running",
+        userId: pending.userId,
+        createdAt: pending.createdAt,
+        ...immutableExecutionContext(pending),
+        startedAt: startedAtIso,
+      };
       if (pending.status === "pending") {
         await inTelemetrySpan(
           this.telemetry,
@@ -1929,6 +1994,7 @@ export class ExecutionEngine {
           status: "succeeded",
           userId: running.userId,
           createdAt: running.createdAt,
+          ...immutableExecutionContext(running),
           startedAt: startedAtIso,
           completedAt: completedAt.toISOString(),
           output: canonicalOutput,
@@ -1985,6 +2051,7 @@ export class ExecutionEngine {
           status: "failed",
           userId: running.userId,
           createdAt: running.createdAt,
+          ...immutableExecutionContext(running),
           startedAt: startedAtIso,
           completedAt: completedAt.toISOString(),
           error: normalized,

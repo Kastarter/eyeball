@@ -28,6 +28,7 @@ import {
   type ExecutionStatus,
   ExecutorApiError,
 } from "@/src/lib/api";
+import { voiceSessionHref } from "@/src/lib/voice-session-link";
 
 const PAGE_SIZE = 30;
 const LIVE_REFRESH_MS = 4_000;
@@ -171,11 +172,13 @@ function ExecutionDrawer({
   detail,
   executionId,
   onClose,
+  project,
   state,
 }: {
   detail: ExecutionRecord | undefined;
   executionId: string;
   onClose: () => void;
+  project: string;
   state: RequestState;
 }) {
   const drawerRef = useRef<HTMLDivElement>(null);
@@ -239,7 +242,14 @@ function ExecutionDrawer({
         ) : (
           <div className="execution-detail">
             <div className="execution-detail__status">
-              <Badge status={detail.status} />
+              <div className="execution-provenance-badges">
+                <Badge status={detail.status} />
+                {detail.replayed === true ? (
+                  <span className="taxonomy-badge taxonomy-badge--replay">
+                    Replay
+                  </span>
+                ) : null}
+              </div>
               <span className="mono">
                 {"latencyMs" in detail ? `${detail.latencyMs} ms` : "—"}
               </span>
@@ -266,10 +276,10 @@ function ExecutionDrawer({
                       <dt>Retryable</dt>
                       <dd>{detail.error.retryable ? "yes" : "no"}</dd>
                     </div>
-                    {detail.error.retryAfterSeconds === undefined ? null : (
+                    {detail.error.retryAfter === undefined ? null : (
                       <div>
                         <dt>Retry after</dt>
-                        <dd>{detail.error.retryAfterSeconds}s</dd>
+                        <dd>{detail.error.retryAfter}s</dd>
                       </div>
                     )}
                   </dl>
@@ -315,8 +325,47 @@ function ExecutionDrawer({
                     <dd className="mono">{value}</dd>
                   </div>
                 ))}
+                {detail.source?.kind === "voice_session" ? (
+                  <div>
+                    <dt>Source</dt>
+                    <dd>
+                      <a
+                        className="execution-source-link"
+                        href={voiceSessionHref(
+                          project,
+                          detail.source.sessionId,
+                          detail.userId,
+                        )}
+                      >
+                        Open voice session
+                      </a>
+                    </dd>
+                  </div>
+                ) : null}
               </dl>
             </section>
+
+            {detail.attachments === undefined ? null : (
+              <section className="execution-detail__section execution-attachments">
+                <div className="execution-detail__heading">
+                  <div>
+                    <p className="eyebrow">Historical metadata</p>
+                    <h3>Attachments</h3>
+                  </div>
+                  <span className="execution-attachments__count">
+                    {detail.attachments.count} distinct staged file
+                    {detail.attachments.count === 1 ? "" : "s"}
+                  </span>
+                </div>
+                <ul aria-label="Staged attachment file IDs">
+                  {detail.attachments.fileIds.map((fileId) => (
+                    <li key={fileId}>
+                      <code>{fileId}</code>
+                    </li>
+                  ))}
+                </ul>
+              </section>
+            )}
           </div>
         )}
       </Panel>
@@ -642,7 +691,7 @@ export function ExecutionsScreen({
                   onClick={(event) => {
                     if (
                       event.target instanceof HTMLElement &&
-                      event.target.closest("button") !== null
+                      event.target.closest("button, a") !== null
                     ) {
                       return;
                     }
@@ -652,7 +701,14 @@ export function ExecutionsScreen({
                   tabIndex={0}
                 >
                   <td>
-                    <Badge status={record.status} />
+                    <div className="execution-provenance-badges">
+                      <Badge status={record.status} />
+                      {record.replayed === true ? (
+                        <span className="taxonomy-badge taxonomy-badge--replay">
+                          Replay
+                        </span>
+                      ) : null}
+                    </div>
                   </td>
                   <td>
                     <code className="execution-tool">{record.tool}</code>
@@ -709,6 +765,7 @@ export function ExecutionsScreen({
           detail={detail}
           executionId={selectedId}
           onClose={closeDetail}
+          project={project}
           state={detailState}
         />
       )}

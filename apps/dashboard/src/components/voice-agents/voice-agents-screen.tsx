@@ -25,6 +25,11 @@ import {
   type JsonValue,
 } from "@/src/lib/api";
 import {
+  hydrateVoiceSessionLink,
+  parseVoiceSessionLink,
+  type VoiceSessionLink,
+} from "@/src/lib/voice-session-link";
+import {
   projectTranscriptEvents,
   type TranscriptToolItem,
   type VoiceSessionEvent,
@@ -166,6 +171,8 @@ export interface VoiceAgentsScreenProps {
   initialDefinitions?: Readonly<Record<string, VoiceAgentDefinition>>;
   initialRevision?: number;
   initialSelectedAgent?: string;
+  initialSessionId?: string;
+  initialSessionUserId?: string;
   project: string;
   tools: readonly CatalogToolOption[];
 }
@@ -210,10 +217,11 @@ function delay(milliseconds: number): Promise<void> {
 
 async function terminalExecution(
   execution: ExecuteToolResponse,
+  project?: string,
 ): Promise<ExecuteToolResponse> {
   if (execution.status === "succeeded" || execution.status === "failed")
     return execution;
-  const client = dashboardExecutorClient();
+  const client = dashboardExecutorClient(project);
   for (let attempt = 0; attempt < 30; attempt += 1) {
     await delay(200);
     const detail = await client.getExecution(execution.executionId);
@@ -228,14 +236,15 @@ async function runVoiceTool(
   input: Readonly<Record<string, JsonValue>>,
   mode: "async" | "sync" = "sync",
   mutate = false,
+  identity: { readonly project?: string; readonly userId?: string } = {},
 ): Promise<Readonly<Record<string, unknown>>> {
-  const execution = await dashboardExecutorClient().execute(
-    { tool, userId: DASHBOARD_USER_ID, input, mode },
+  const execution = await dashboardExecutorClient(identity.project).execute(
+    { tool, userId: identity.userId ?? DASHBOARD_USER_ID, input, mode },
     mutate
       ? { idempotencyKey: `dashboard:${tool}:${crypto.randomUUID()}` }
       : {},
   );
-  return outputRecord(await terminalExecution(execution));
+  return outputRecord(await terminalExecution(execution, identity.project));
 }
 
 async function resolveTransportConnectionId(toolkit: string): Promise<string> {
@@ -360,6 +369,8 @@ function voiceUrl(agentId?: string, revision?: number, create = false): string {
   url.searchParams.delete("agent");
   url.searchParams.delete("revision");
   url.searchParams.delete("new");
+  url.searchParams.delete("session");
+  url.searchParams.delete("userId");
   if (create) url.searchParams.set("new", "true");
   if (agentId !== undefined) url.searchParams.set("agent", agentId);
   if (revision !== undefined)
@@ -741,9 +752,15 @@ export function VoiceAgentsScreen({
   initialDefinitions = {},
   initialRevision,
   initialSelectedAgent,
+  initialSessionId,
+  initialSessionUserId,
   project,
   tools,
 }: VoiceAgentsScreenProps) {
+  const initialSessionLink = parseVoiceSessionLink(
+    initialSessionId,
+    initialSessionUserId,
+  );
   const selectableTools = useMemo(
     () => tools.filter(({ name }) => !name.startsWith("voice-agents.")),
     [tools],
@@ -755,10 +772,14 @@ export function VoiceAgentsScreen({
     useState<Readonly<Record<string, VoiceAgentDefinition>>>(
       initialDefinitions,
     );
-  const [selectedId, setSelectedId] = useState(initialSelectedAgent);
-  const [selectedRevision, setSelectedRevision] = useState(initialRevision);
+  const [selectedId, setSelectedId] = useState(
+    initialSessionLink === undefined ? initialSelectedAgent : undefined,
+  );
+  const [selectedRevision, setSelectedRevision] = useState(
+    initialSessionLink === undefined ? initialRevision : undefined,
+  );
   const [createMode, setCreateMode] = useState(
-    initialSelectedAgent === undefined,
+    initialSelectedAgent === undefined && initialSessionLink === undefined,
   );
   const [listState, setListState] = useState<PanelState>(
     initialAgents === undefined ? "loading" : "ready",
@@ -788,6 +809,13 @@ export function VoiceAgentsScreen({
     participantToken: string;
     roomUrl: string;
   }>();
+  const [sessionLink, setSessionLink] = useState<VoiceSessionLink | undefined>(
+    initialSessionLink,
+  );
+  const [sessionLinkState, setSessionLinkState] = useState<
+    "error" | "idle" | "loading" | "ready"
+  >(initialSessionLink === undefined ? "idle" : "loading");
+  const [sessionLinkMessage, setSessionLinkMessage] = useState<string>();
   const pollingRef = useRef(false);
 
   const selectedSummary = agents.find(({ id }) => id === selectedId);
@@ -841,7 +869,8 @@ export function VoiceAgentsScreen({
       if (
         selectedId === undefined &&
         nextAgents[0] !== undefined &&
-        !createMode
+        !createMode &&
+        sessionLink === undefined
       ) {
         setSelectedId(nextAgents[0].id);
       }
@@ -853,11 +882,57 @@ export function VoiceAgentsScreen({
           : "Voice agents could not be loaded.",
       );
     }
-  }, [createMode, selectedId]);
+  }, [createMode, selectedId, sessionLink]);
 
   useEffect(() => {
     void loadAgents();
   }, [loadAgents]);
+
+  useEffect(() => {
+    if (sessionLink === undefined) {
+      setSessionLinkState("idle");
+      setSessionLinkMessage(undefined);
+      return;
+    }
+    let cancelled = false;
+    setSessionLinkState("loading");
+    setSessionLinkMessage(undefined);
+    void hydrateVoiceSessionLink({ project, ...sessionLink })
+      .then((hydrated) => {
+        if (cancelled) return;
+        const linkedSession = parseSession(hydrated.session);
+        const linkedAgent = parseAgent(hydrated.agent);
+        const key = `${linkedAgent.id}:${linkedAgent.revision}`;
+        setDefinitions((current) => ({ ...current, [key]: linkedAgent }));
+        setSelectedId(linkedAgent.id);
+        setSelectedRevision(linkedAgent.revision);
+        setBuilder(builderFromAgent(linkedAgent));
+        setCreateMode(false);
+        setSession(linkedSession);
+        setEvents(hydrated.events as readonly VoiceSessionEvent[]);
+        setArtifact(
+          hydrated.artifact === undefined
+            ? undefined
+            : (hydrated.artifact as TranscriptArtifact),
+        );
+        setJoinGrant(undefined);
+        setTestState("idle");
+        setTestMessage(undefined);
+        setSessionLinkState("ready");
+      })
+      .catch((error: unknown) => {
+        if (cancelled) return;
+        setSessionLinkState("error");
+        setSessionLinkMessage(
+          error instanceof Error
+            ? error.message
+            : "The linked voice session could not be opened.",
+        );
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [project, sessionLink]);
 
   useEffect(() => {
     if (selectedId === undefined || selectedSummary === undefined) return;
@@ -889,8 +964,27 @@ export function VoiceAgentsScreen({
   useEffect(() => {
     function popstate() {
       const query = new URL(window.location.href).searchParams;
+      const linked = parseVoiceSessionLink(
+        query.get("session"),
+        query.get("userId"),
+      );
+      setSessionLink(linked);
+      if (linked !== undefined) {
+        setSelectedId(undefined);
+        setSelectedRevision(undefined);
+        setCreateMode(false);
+        setSession(undefined);
+        setEvents([]);
+        setArtifact(undefined);
+        return;
+      }
       const agentId = query.get("agent") ?? undefined;
       const revision = Number(query.get("revision"));
+      setSession(undefined);
+      setEvents([]);
+      setArtifact(undefined);
+      setJoinGrant(undefined);
+      setTestState("idle");
       setSelectedId(agentId);
       setSelectedRevision(
         Number.isSafeInteger(revision) && revision > 0 ? revision : undefined,
@@ -908,13 +1002,12 @@ export function VoiceAgentsScreen({
       try {
         if (advance && !terminalSession(activeSession.state)) {
           try {
-            await dashboardExecutorClient().advanceVoiceSession(
-              activeSession.id,
-              {
-                userId: DASHBOARD_USER_ID,
-                milliseconds: 1_000,
-              },
-            );
+            await dashboardExecutorClient(
+              activeSession.projectId,
+            ).advanceVoiceSession(activeSession.id, {
+              userId: activeSession.userId,
+              milliseconds: 1_000,
+            });
             setProgressionAvailable(true);
           } catch (error) {
             if (
@@ -928,14 +1021,30 @@ export function VoiceAgentsScreen({
           }
         }
         const [sessionOutput, transcriptOutput] = await Promise.all([
-          runVoiceTool("voice-agents.get_agent_session", {
-            sessionId: activeSession.id,
-            afterSequence: 0,
-            eventLimit: 200,
-          }),
-          runVoiceTool("voice-agents.get_session_transcript", {
-            sessionId: activeSession.id,
-          }),
+          runVoiceTool(
+            "voice-agents.get_agent_session",
+            {
+              sessionId: activeSession.id,
+              afterSequence: 0,
+              eventLimit: 200,
+            },
+            "sync",
+            false,
+            {
+              project: activeSession.projectId,
+              userId: activeSession.userId,
+            },
+          ),
+          runVoiceTool(
+            "voice-agents.get_session_transcript",
+            { sessionId: activeSession.id },
+            "sync",
+            false,
+            {
+              project: activeSession.projectId,
+              userId: activeSession.userId,
+            },
+          ),
         ]);
         const nextSession = parseSession(sessionOutput.session);
         setSession(nextSession);
@@ -965,6 +1074,7 @@ export function VoiceAgentsScreen({
   }, [refreshSession, session, testState]);
 
   function selectAgent(agent: VoiceAgentSummary) {
+    setSessionLink(undefined);
     setSelectedId(agent.id);
     setSelectedRevision(agent.activeRevision);
     setCreateMode(false);
@@ -980,6 +1090,7 @@ export function VoiceAgentsScreen({
   }
 
   function createAgent() {
+    setSessionLink(undefined);
     setCreateMode(true);
     setSelectedId(undefined);
     setSelectedRevision(undefined);
@@ -1052,6 +1163,7 @@ export function VoiceAgentsScreen({
           ? `Created ${agent.name} at immutable revision 1.`
           : `Published immutable revision ${agent.revision}.`,
       );
+      setSessionLink(undefined);
       window.history.replaceState(null, "", voiceUrl(agent.id, agent.revision));
       await loadAgents();
     } catch (error) {
@@ -1067,6 +1179,7 @@ export function VoiceAgentsScreen({
 
   function chooseRevision(revision: number) {
     if (selectedId === undefined) return;
+    setSessionLink(undefined);
     setSelectedRevision(revision);
     window.history.pushState(null, "", voiceUrl(selectedId, revision));
   }
@@ -1170,11 +1283,14 @@ export function VoiceAgentsScreen({
   async function endCall() {
     if (session === undefined) return;
     try {
-      await dashboardExecutorClient().advanceVoiceSession(session.id, {
-        userId: DASHBOARD_USER_ID,
-        milliseconds: 1_000,
-        end: true,
-      });
+      await dashboardExecutorClient(session.projectId).advanceVoiceSession(
+        session.id,
+        {
+          userId: session.userId,
+          milliseconds: 1_000,
+          end: true,
+        },
+      );
       await refreshSession(session, false);
       setTestState("idle");
     } catch (error) {
@@ -1212,6 +1328,9 @@ export function VoiceAgentsScreen({
         },
         "async",
         true,
+        continuingSessionId === undefined || session === undefined
+          ? { project, userId: DASHBOARD_USER_ID }
+          : { project: session.projectId, userId: session.userId },
       );
       const nextSession = parseSession(output.session);
       setSession(nextSession);
@@ -1257,6 +1376,41 @@ export function VoiceAgentsScreen({
         eyebrow={`Project / ${project}`}
         title="Voice Agents"
       />
+
+      {sessionLink === undefined ? null : (
+        <div
+          aria-live="polite"
+          className={
+            sessionLinkState === "error"
+              ? "offline-banner"
+              : "offline-banner offline-banner--warning"
+          }
+        >
+          <Icon name="voice" />
+          <div>
+            <strong>
+              {sessionLinkState === "loading"
+                ? "Opening linked voice session"
+                : sessionLinkState === "error"
+                  ? "Linked voice session could not be opened"
+                  : "Linked voice session opened"}
+            </strong>
+            <p>
+              {sessionLinkMessage ??
+                `Session ${sessionLink.sessionId} for ${sessionLink.userId}`}
+            </p>
+          </div>
+          {sessionLinkState === "error" ? (
+            <Button
+              onClick={() => setSessionLink({ ...sessionLink })}
+              size="small"
+              variant="secondary"
+            >
+              Retry
+            </Button>
+          ) : null}
+        </div>
+      )}
 
       {listState !== "ready" && listState !== "loading" ? (
         <div

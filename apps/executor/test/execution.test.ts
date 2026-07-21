@@ -14,7 +14,9 @@ import {
   type QualifiedToolName,
   type ResolvedCredential,
   TOOL_ERROR_CODES,
+  VOICE_SESSION_ID_HEADER,
   VOICE_WORKER_EXECUTION_ID_HEADER,
+  voiceSessionExecutionId,
 } from "@eyeball/core";
 import { VoiceSessionDriverError } from "@eyeball/toolkits";
 import { Hono } from "hono";
@@ -414,6 +416,7 @@ function postExecute(
     idempotencyKey?: string;
     reservedExecutionId?: string;
     userIdHeader?: string;
+    voiceSessionId?: string;
   } = {},
 ): Promise<Response> {
   const headers: Record<string, string> = {
@@ -428,6 +431,9 @@ function postExecute(
   }
   if (options.userIdHeader !== undefined) {
     headers["X-Eyeball-User-Id"] = options.userIdHeader;
+  }
+  if (options.voiceSessionId !== undefined) {
+    headers[VOICE_SESSION_ID_HEADER] = options.voiceSessionId;
   }
   return app.request("/v1/execute", {
     method: "POST",
@@ -617,6 +623,9 @@ describe("RFC 001 execution API", () => {
       executionId: "exe_test1",
       status: "pending",
     });
+    await expect(
+      harness.store.get(PROJECT_A, createExecutionId("test1")),
+    ).resolves.toMatchObject({ replayed: true });
     await harness.queue.onIdle();
     await expect(
       harness.store.get(PROJECT_A, createExecutionId("test1")),
@@ -653,13 +662,26 @@ describe("RFC 001 execution API", () => {
     const first = await postExecute(harness.app, request, {
       idempotencyKey: "same-request",
     });
+    const firstBody = (await first.json()) as Record<string, unknown>;
+    const originalDetail = await authenticatedGet(
+      harness.app,
+      "/v1/executions/exe_test1",
+    );
+    const originalRecord = (await originalDetail.json()) as Record<
+      string,
+      unknown
+    >;
+    expect(originalRecord).not.toHaveProperty("replayed");
     const second = await postExecute(harness.app, request, {
       idempotencyKey: "same-request",
     });
+    const secondBody = (await second.json()) as Record<string, unknown>;
 
     expect(first.status).toBe(200);
     expect(second.status).toBe(200);
-    expect((await first.json()) as object).toEqual(await second.json());
+    expect(firstBody).toEqual(secondBody);
+    expect(secondBody).not.toHaveProperty("replayed");
+    expect(secondBody).not.toHaveProperty("idempotencyKey");
     expect(harness.calls).toHaveLength(1);
     expect(harness.credentialResolveCalls).toBe(1);
     const detail = await authenticatedGet(
@@ -671,11 +693,24 @@ describe("RFC 001 execution API", () => {
       executionId: "exe_test1",
       userId: USER_1,
       status: "succeeded",
+      replayed: true,
     });
-    expect(record).not.toHaveProperty("projectId");
-    expect(record).not.toHaveProperty("idempotencyKey");
-    expect(record).not.toHaveProperty("input");
-    expect(record).not.toHaveProperty("mode");
+    const list = await authenticatedGet(harness.app, "/v1/executions");
+    await expect(list.json()).resolves.toMatchObject({
+      executions: [{ executionId: "exe_test1", replayed: true }],
+    });
+    for (const privateField of [
+      "projectId",
+      "input",
+      "mode",
+      "connectionId",
+      "idempotencyKey",
+      "idempotencyKeyHash",
+      "requestHash",
+      "canonicalRequestHash",
+    ]) {
+      expect(record).not.toHaveProperty(privateField);
+    }
   });
 
   it("reconciles terminal side effects when an idempotent client retries", async () => {
@@ -748,6 +783,9 @@ describe("RFC 001 execution API", () => {
     expect(second.status).toBe(200);
     expect(await first.json()).toEqual(await second.json());
     expect(harness.calls).toHaveLength(1);
+    await expect(
+      harness.store.get(PROJECT_A, createExecutionId("test1")),
+    ).resolves.toMatchObject({ replayed: true });
   });
 
   it("rejects overlapping sync dispatch at the manifest concurrency cap", async () => {
@@ -926,16 +964,7 @@ describe("RFC 001 execution API", () => {
       idempotencyKey: "voice-session:session_1:event:7",
       executionId: reservedId,
     });
-    const replay = await harness.engine.execute({
-      projectId: PROJECT_A,
-      request,
-      idempotencyKey: "voice-session:session_1:event:7",
-      executionId: reservedId,
-    });
-
     expect(first.response.executionId).toBe(reservedId);
-    expect(replay.response.executionId).toBe(reservedId);
-    expect(replay.replayed).toBe(true);
     await expect(
       harness.engine.execute({
         projectId: PROJECT_A,
@@ -948,11 +977,31 @@ describe("RFC 001 execution API", () => {
       message:
         "Reserved execution ID does not match the existing idempotent execution.",
     });
+    await expect(
+      harness.store.get(PROJECT_A, reservedId),
+    ).resolves.not.toHaveProperty("replayed");
+    const replay = await harness.engine.execute({
+      projectId: PROJECT_A,
+      request,
+      idempotencyKey: "voice-session:session_1:event:7",
+      executionId: reservedId,
+    });
+    expect(replay.response.executionId).toBe(reservedId);
+    expect(replay.replayed).toBe(true);
+    await expect(
+      harness.store.get(PROJECT_A, reservedId),
+    ).resolves.toMatchObject({
+      replayed: true,
+    });
     expect(harness.calls).toHaveLength(1);
   });
 
   it("accepts reserved child identities only from a pinned synchronous worker", async () => {
-    const reservedExecutionId = createExecutionId("voice_http_event_7");
+    const voiceSessionId = "session_1";
+    const reservedExecutionId = voiceSessionExecutionId(
+      voiceSessionId,
+      "test:event:7",
+    );
     const projectScoped = createHarness();
     const forbidden = await postExecute(
       projectScoped.app,
@@ -960,6 +1009,7 @@ describe("RFC 001 execution API", () => {
       {
         idempotencyKey: "voice-session:session_1:event:7",
         reservedExecutionId,
+        voiceSessionId,
       },
     );
     expect(forbidden.status).toBe(403);
@@ -971,7 +1021,7 @@ describe("RFC 001 execution API", () => {
     const missingIdempotency = await postExecute(
       pinned.app,
       executeRequest("reserved"),
-      { reservedExecutionId },
+      { reservedExecutionId, voiceSessionId },
     );
     expect(missingIdempotency.status).toBe(422);
 
@@ -981,6 +1031,7 @@ describe("RFC 001 execution API", () => {
       {
         idempotencyKey: "voice-session:session_1:event:7",
         reservedExecutionId,
+        voiceSessionId,
       },
     );
     expect(asynchronous.status).toBe(422);
@@ -988,6 +1039,7 @@ describe("RFC 001 execution API", () => {
     const accepted = await postExecute(pinned.app, executeRequest("reserved"), {
       idempotencyKey: "voice-session:session_1:event:7",
       reservedExecutionId,
+      voiceSessionId,
     });
     expect(accepted.status).toBe(200);
     await expect(accepted.json()).resolves.toMatchObject({
@@ -1017,9 +1069,13 @@ describe("RFC 001 execution API", () => {
       requestId: "req_test",
     });
     const list = await authenticatedGet(harness.app, "/v1/executions");
-    expect((await list.json()) as { executions: unknown[] }).toMatchObject({
+    const page = (await list.json()) as {
+      executions: Array<Record<string, unknown>>;
+    };
+    expect(page).toMatchObject({
       executions: [expect.objectContaining({ executionId: "exe_test1" })],
     });
+    expect(page.executions[0]).not.toHaveProperty("replayed");
   });
 
   it("requires idempotency for mutating tools before allocation", async () => {

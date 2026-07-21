@@ -8,23 +8,40 @@ curl "$EYEBALL_EXECUTOR_URL/v1/executions/exe_01JZ6WA0Q73ZQ5B51SRYB6M4Z8" \
   -H "Authorization: Bearer $EYEBALL_API_KEY"
 ```
 
-The route returns the project-scoped public execution record. Canonical input, connection selection, idempotency keys, and internal project fields are deliberately not exposed:
+The route returns the project-scoped public execution record. Canonical input, connection selection, raw or derived idempotency identity, internal project fields, and file bytes are deliberately not exposed:
 
 ```json
 {
   "executionId": "exe_01JZ6WA0Q73ZQ5B51SRYB6M4Z8",
-  "tool": "gmail.search_emails",
+  "tool": "gmail.send_email",
   "toolVersion": "1.0.0",
   "catalogVersion": "1.1",
   "status": "succeeded",
   "userId": "demo_user",
   "createdAt": "2026-07-17T12:00:00.000Z",
+  "replayed": true,
+  "source": {
+    "kind": "voice_session",
+    "sessionId": "session_01JZ6VY4C84B1Q0Q4T4T1Z6V8M"
+  },
+  "attachments": {
+    "count": 2,
+    "fileIds": [
+      "file_01JZ7F4Y8E7H48H3Y2NQ4J5H8P",
+      "file_01JZ7F5EBN28Y3Z1P4F7A6M0VK"
+    ]
+  },
   "output": {
-    "emails": [],
-    "nextPageToken": "page_2"
+    "messageId": "msg_01JZ7F7NPKJ27R5Y4C3PZ8B6DE"
   },
   "latencyMs": 31
 }
 ```
 
-A missing or cross-project ID returns `not_found`. Poll until `succeeded` or `failed`; terminal records do not change.
+All three provenance fields are optional:
+
+- `replayed: true` means at least one accepted identical, in-scope idempotent replay has been observed. The replay reuses this execution ID; it does not create or reference another execution. Until an actual replay is accepted the field is absent, which is not evidence that the original request lacked an idempotency key. No raw key, prefix, hash, request hash, or scope tuple is included.
+- `source` is present only when the executor verified a voice-session child and contains only its source session ID.
+- `attachments` contains the distinct staged Eyeball file IDs referenced by the validated request, in first-seen order. `count` always equals `fileIds.length`. It is historical metadata, so the staged files may already have expired; names, MIME types, sizes, paths, content, and bytes are not included.
+
+A missing or cross-project ID returns `not_found`. Poll until `succeeded` or `failed`. Terminal lifecycle state, output, error, latency, and timestamps remain immutable. The store may later project the bounded, monotonic `replayed: true` observation without rewriting that terminal record.

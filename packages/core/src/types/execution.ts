@@ -135,11 +135,50 @@ export type ExecutionResult = SyncExecuteResponse | AsyncExecuteResponse;
 /** The RFC 001 async allocation envelope returned with HTTP 202. */
 export type AsyncExecutionEnvelope = AsyncExecuteResponse;
 
+/**
+ * Verified public origin metadata for an execution.
+ *
+ * A voice-session source is recorded only when the executor has verified the
+ * session identity and its cryptographic binding to the reserved child
+ * execution ID. Session grants, control tokens, and private worker headers are
+ * never included.
+ */
+export type ExecutionSource = {
+  readonly kind: "voice_session";
+  readonly sessionId: string;
+};
+
+/**
+ * Historical metadata-only summary of staged Eyeball files referenced by an
+ * execution's validated canonical input.
+ *
+ * `count` is always the number of distinct IDs in `fileIds`. The summary does
+ * not include names, MIME types, sizes, expiry timestamps, input paths, inline
+ * content, decoded content, or file bytes, and it can outlive the staged files.
+ */
+export interface ExecutionAttachmentSummary {
+  readonly count: number;
+  readonly fileIds: readonly FileId[];
+}
+
 export type ExecutionRecord = ExecutionBase & {
   userId: string;
   createdAt: string;
   startedAt?: string;
   completedAt?: string;
+  /**
+   * Present as literal `true` after at least one accepted idempotent replay has
+   * been observed for this execution.
+   *
+   * A replay reuses this record's execution ID. Absence does not show whether
+   * the original request carried an idempotency key. No raw idempotency key,
+   * prefix, hash, scope, or other derivative is included.
+   */
+  readonly replayed?: true;
+  /** Verified bounded origin metadata, when the execution has one. */
+  readonly source?: ExecutionSource;
+  /** Distinct staged-file IDs referenced by the validated execution input. */
+  readonly attachments?: ExecutionAttachmentSummary;
 } & (
     | {
         status: "pending" | "running";

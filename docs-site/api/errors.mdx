@@ -71,7 +71,11 @@ Provider HTTP 429 responses happen after allocation instead. They are normalized
 | `RateLimit-Limit` | Token-bucket burst capacity, or the fixed-window quota |
 | `RateLimit-Remaining` | Whole requests remaining at response time |
 | `RateLimit-Reset` | Unix timestamp in seconds when the bucket fully refills or the quota window resets |
-| `Retry-After` | Whole seconds to wait; present on HTTP 429 responses |
+| `Retry-After` | Whole seconds to wait when the executor has a retry duration |
+
+The same-origin dashboard executor proxy preserves exactly these four rate and retry headers: `RateLimit-Limit`, `RateLimit-Remaining`, `RateLimit-Reset`, and `Retry-After`. It does not use wildcard prefix forwarding; unrelated upstream headers remain stripped and responses remain `Cache-Control: no-store`.
+
+`Retry-After` is not guaranteed on every HTTP 429. The executor includes it when a retry duration is known; usage-gate quota denial intentionally may omit it. Failed execution records use the normalized JSON field `error.retryAfter`, measured in seconds.
 
 ### Environment configuration
 

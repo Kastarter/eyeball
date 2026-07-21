@@ -14,7 +14,7 @@ export interface NormalizedToolError {
   code: string;
   message: string;
   retryable: boolean;
-  retryAfterSeconds?: number;
+  retryAfter?: number;
   provider?: {
     toolkit: string;
     status?: number;
@@ -38,6 +38,15 @@ interface ExecutionRecordBase {
   userId: string;
   startedAt?: string;
   completedAt?: string;
+  replayed?: true;
+  source?: {
+    kind: "voice_session";
+    sessionId: string;
+  };
+  attachments?: {
+    count: number;
+    fileIds: readonly string[];
+  };
 }
 
 export type ExecutionRecord = ExecutionRecordBase &

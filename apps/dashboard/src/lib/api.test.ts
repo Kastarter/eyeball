@@ -53,6 +53,68 @@ describe("ExecutorClient", () => {
     );
   });
 
+  it("preserves bounded execution provenance and canonical retryAfter wire data", async () => {
+    const safeRecord = {
+      executionId: "exe_safe_provenance",
+      tool: "gmail.send_email",
+      toolVersion: "1.0.0",
+      catalogVersion: "2026.07.21",
+      userId: "user_safe",
+      status: "succeeded",
+      createdAt: "2026-07-21T12:00:00.000Z",
+      completedAt: "2026-07-21T12:00:00.010Z",
+      latencyMs: 10,
+      output: { messageId: "msg_safe" },
+      replayed: true,
+      source: { kind: "voice_session", sessionId: "session_safe" },
+      attachments: {
+        count: 2,
+        fileIds: ["file_safe_one", "file_safe_two"],
+      },
+    };
+    const fetch: typeof globalThis.fetch = async (input) => {
+      const url = new URL(String(input));
+      if (url.pathname === "/v1/executions") {
+        return Response.json({ executions: [safeRecord] });
+      }
+      return Response.json({
+        ...safeRecord,
+        status: "failed",
+        output: undefined,
+        error: {
+          code: "provider_rate_limited",
+          message: "Retry later.",
+          retryable: true,
+          retryAfter: 12,
+        },
+      });
+    };
+    const client = new ExecutorClient({
+      baseUrl: "https://executor.example",
+      fetch,
+    });
+
+    await expect(client.listExecutions()).resolves.toMatchObject({
+      executions: [
+        {
+          replayed: true,
+          source: { kind: "voice_session", sessionId: "session_safe" },
+          attachments: {
+            count: 2,
+            fileIds: ["file_safe_one", "file_safe_two"],
+          },
+        },
+      ],
+    });
+    await expect(
+      client.getExecution("exe_safe_provenance"),
+    ).resolves.toMatchObject({
+      status: "failed",
+      error: { retryAfter: 12 },
+      replayed: true,
+    });
+  });
+
   it("rejects malformed health envelopes without treating them as online", async () => {
     const fetch: typeof globalThis.fetch = async () =>
       Response.json({ service: "unknown", status: "ok" });
@@ -187,7 +249,6 @@ describe("ExecutorClient", () => {
       }
       return Response.json({
         executionId: "exe_detail",
-        projectId: "proj_demo",
         tool: "gmail.send_email",
         toolVersion: "1.0.0",
         catalogVersion: "1.1",
@@ -196,8 +257,9 @@ describe("ExecutorClient", () => {
         createdAt: "2026-07-17T09:00:00.000Z",
         completedAt: "2026-07-17T09:00:00.100Z",
         latencyMs: 100,
-        input: { to: ["sam@example.com"] },
-        mode: "sync",
+        replayed: true,
+        source: { kind: "voice_session", sessionId: "session_demo" },
+        attachments: { count: 1, fileIds: ["file_invoice_1"] },
         output: { messageId: "msg_1" },
       });
     };
@@ -207,8 +269,9 @@ describe("ExecutorClient", () => {
     });
 
     await expect(client.getExecution("exe_detail")).resolves.toMatchObject({
-      projectId: "proj_demo",
-      input: { to: ["sam@example.com"] },
+      replayed: true,
+      source: { kind: "voice_session", sessionId: "session_demo" },
+      attachments: { count: 1, fileIds: ["file_invoice_1"] },
     });
     await expect(
       client.advanceVoiceSession("session_demo", {

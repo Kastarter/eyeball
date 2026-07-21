@@ -1,7 +1,7 @@
 # eyeball — Planned work
 
 State as of 2026-07-21. The 0.2.0 source cut is complete, M5 is underway with
-M5.4 complete, and two audit sweeps
+M5.5 complete, and two audit sweeps
 (cross-feature wiring; dashboard/SDK/docs parity) produced a milestone-ordered
 gap ledger. Milestones **M1 (hosted execution slice)**, **M2 (billing as a
 product)**, **M3 (restart-state durability)**, and **M4 (voice hardening)** are
@@ -73,14 +73,15 @@ change. Never bind ports in tests; use in-process apps (`app.request`, PGlite).
   join grant, and a Numbers inventory section drives buy/attach/detach/release
   through the canonical number tools with detach-before-release intact.
   A-05 and A-06 closed.
+- M5.5 Execution provenance + rate-limit visibility: public execution records
+  expose bounded replay provenance, verified voice-session source metadata, and
+  staged-file ID/count summaries only; the dashboard renders canonical
+  `retryAfter` seconds and the executor proxy forwards the explicit
+  `RateLimit-*`/`Retry-After` allowlist. Raw idempotency keys, canonical inputs,
+  and file bytes remain private. A-07..A-10 closed.
 
 ## M5 — Local dashboard surfaces (demo mode; executor APIs mostly exist)
 
-10. **M5.5 Execution provenance + rate-limit visibility.** Safe replay
-    metadata (never the raw idempotency key), voice-session source link on
-    child executions, attachments summary (metadata only), fix
-    `retryAfter` field mismatch and forward `RateLimit-*`/`Retry-After`
-    through the proxy. A-07..A-10.
 11. **M5.6 XS polish batch.** Drawer/search/connection error-state fidelity
     (A-11..A-14); **A-15: the overview quickstart sends `text` instead of
     `body` — the advertised first execution fails schema validation** (fix +

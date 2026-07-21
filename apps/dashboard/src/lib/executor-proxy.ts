@@ -7,6 +7,14 @@ export interface ExecutorProxyRouteContext {
   params: Promise<{ path: string[] }>;
 }
 
+const EXECUTOR_RESPONSE_HEADER_ALLOWLIST = [
+  "Content-Type",
+  "RateLimit-Limit",
+  "RateLimit-Remaining",
+  "RateLimit-Reset",
+  "Retry-After",
+] as const;
+
 export function isAllowedExecutorProxyRequest(
   method: string,
   path: readonly string[],
@@ -154,9 +162,9 @@ export async function proxyExecutorRequest(
       redirect: "manual",
     });
     const responseHeaders = new Headers();
-    const responseContentType = response.headers.get("Content-Type");
-    if (responseContentType !== null) {
-      responseHeaders.set("Content-Type", responseContentType);
+    for (const name of EXECUTOR_RESPONSE_HEADER_ALLOWLIST) {
+      const value = response.headers.get(name);
+      if (value !== null) responseHeaders.set(name, value);
     }
     responseHeaders.set("Cache-Control", "no-store");
     return new Response(response.body, {

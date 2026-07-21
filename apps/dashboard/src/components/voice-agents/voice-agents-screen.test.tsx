@@ -102,6 +102,29 @@ describe("VoiceAgentsScreen server rendering", () => {
     expect(markup).toContain("Maximum duration (seconds)");
     expect(markup).toContain("Ready for a test session");
   });
+
+  it("prioritizes an exact historical session link over generic agent selection", () => {
+    const markup = renderToStaticMarkup(
+      <VoiceAgentsScreen
+        initialAgents={[summary]}
+        initialDefinitions={{
+          [`${summary.id}:${summary.activeRevision}`]: definition,
+        }}
+        initialSelectedAgent={summary.id}
+        initialSessionId="session_historical_7"
+        initialSessionUserId="execution_user_7"
+        project="restaurant-demo"
+        tools={catalogTools}
+      />,
+    );
+
+    expect(markup).toContain("Opening linked voice session");
+    expect(markup).toContain("session_historical_7");
+    expect(markup).toContain("execution_user_7");
+    expect(markup).not.toContain("Create voice agent");
+    expect(markup).not.toContain("Start test call");
+  });
+
   it("offers a working WebRTC web-session test instead of the stale activation note", () => {
     const webrtcSummary = {
       ...summary,

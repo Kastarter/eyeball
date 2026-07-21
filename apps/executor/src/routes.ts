@@ -3,6 +3,7 @@ import {
   type ApiKeyringInput,
   CredentialProviderError,
   createErrorEnvelope,
+  type ExecutionSource,
   type ExecutionStatus,
   EyeballError,
   fromRestrictedToolName,
@@ -66,6 +67,15 @@ const EXECUTION_STATUSES = new Set<ExecutionStatus>([
 
 const MAX_TRIGGER_INGEST_BODY_BYTES = 1024 * 1024;
 const FILE_UPLOAD_JSON_OVERHEAD_BYTES = 16 * 1024;
+
+function isVoiceSessionIdempotencyKey(
+  key: string | undefined,
+  sessionId: string,
+): boolean {
+  if (key === undefined) return false;
+  const prefix = `voice-session:${sessionId}:event:`;
+  return key.startsWith(prefix) && /^[1-9]\d*$/u.test(key.slice(prefix.length));
+}
 
 export { parseApiKeyring } from "@eyeball/core";
 
@@ -1390,6 +1400,7 @@ export function createExecutorApp(options: ExecutorAppOptions = {}): Hono<{
         VOICE_WORKER_EXECUTION_ID_HEADER,
       );
       const authPrincipal = context.get("authPrincipal");
+      let source: ExecutionSource | undefined;
       if (authPrincipal.kind === "voice_session_grant") {
         if (
           bodyUserId !== authPrincipal.userId ||
@@ -1401,10 +1412,10 @@ export function createExecutorApp(options: ExecutorAppOptions = {}): Hono<{
             reservedExecutionId,
             authPrincipal.sessionId,
           ) ||
-          idempotencyKey === undefined ||
-          !new RegExp(
-            `^voice-session:${authPrincipal.sessionId}:event:[1-9]\\d*$`,
-          ).test(idempotencyKey) ||
+          !isVoiceSessionIdempotencyKey(
+            idempotencyKey,
+            authPrincipal.sessionId,
+          ) ||
           !isRecord(request) ||
           request.mode !== "sync" ||
           typeof request.tool !== "string" ||
@@ -1414,6 +1425,10 @@ export function createExecutorApp(options: ExecutorAppOptions = {}): Hono<{
           return grantScopeFailure(context);
         }
         request = { ...request, userId: authPrincipal.userId };
+        source = {
+          kind: "voice_session",
+          sessionId: authPrincipal.sessionId,
+        };
       }
       if (
         reservedExecutionId !== undefined &&
@@ -1455,6 +1470,28 @@ export function createExecutorApp(options: ExecutorAppOptions = {}): Hono<{
           `${VOICE_WORKER_EXECUTION_ID_HEADER} is restricted to synchronous child executions.`,
         );
       }
+      if (
+        authPrincipal.kind === "api_key" &&
+        reservedExecutionId !== undefined
+      ) {
+        const sessionId = context.req.header(VOICE_SESSION_ID_HEADER);
+        const pinnedUserId = context.get("pinnedUserId");
+        if (
+          sessionId === undefined ||
+          pinnedUserId === undefined ||
+          bodyUserId !== pinnedUserId ||
+          !isRecord(request) ||
+          request.mode !== "sync" ||
+          !isVoiceSessionExecutionIdForSession(
+            reservedExecutionId,
+            sessionId,
+          ) ||
+          !isVoiceSessionIdempotencyKey(idempotencyKey, sessionId)
+        ) {
+          return grantScopeFailure(context);
+        }
+        source = { kind: "voice_session", sessionId };
+      }
       const outcome = await engine.execute({
         projectId: context.get("projectId"),
         request,
@@ -1462,6 +1499,7 @@ export function createExecutorApp(options: ExecutorAppOptions = {}): Hono<{
         ...(reservedExecutionId === undefined
           ? {}
           : { executionId: reservedExecutionId }),
+        ...(source === undefined ? {} : { source }),
       });
       return context.json(outcome.response, outcome.statusCode);
     } catch (error) {

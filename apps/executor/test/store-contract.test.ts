@@ -335,6 +335,28 @@ it("migrates the durable voice-agent aggregate with exact revision constraints",
   ).toBe(true);
 });
 
+it("migrates the private execution replay-observation sidecar", async () => {
+  const bundle = await pgliteStores();
+  const columns = await bundle.client.query<{
+    column_name: string;
+    is_nullable: string;
+    data_type: string;
+  }>(
+    `select column_name, is_nullable, data_type
+       from information_schema.columns
+      where table_schema = 'public'
+        and table_name = 'executions'
+        and column_name = 'replay_observed_at'`,
+  );
+  expect(columns.rows).toEqual([
+    {
+      column_name: "replay_observed_at",
+      is_nullable: "YES",
+      data_type: "timestamp with time zone",
+    },
+  ]);
+});
+
 it("preserves active and revoked grant state across PGlite reconstruction", async () => {
   const directory = await mkdtemp(join(tmpdir(), "eyeball-grant-restart-"));
   const secret = "g".repeat(32);
@@ -837,6 +859,14 @@ it("rebuilds execution, selection, and scheduled delivery jobs after a PGlite re
     status: "pending",
     userId: "user_restart_recovery",
     createdAt,
+    source: {
+      kind: "voice_session",
+      sessionId: "session_restart_recovery",
+    },
+    attachments: {
+      count: 1,
+      fileIds: [createFileId("restart_recovery")],
+    },
   };
   let first: PgliteStoreBundle | undefined;
   try {
@@ -862,6 +892,13 @@ it("rebuilds execution, selection, and scheduled delivery jobs after a PGlite re
         },
       },
     });
+    await expect(
+      first.executionStore.markReplayed(
+        projectId,
+        executionId,
+        "2026-07-18T05:00:00.500Z",
+      ),
+    ).resolves.toBe(true);
     await first.webhookWorkStore.ensureEvent({
       projectId,
       eventId: "evt_restart_selection",
@@ -914,6 +951,24 @@ it("rebuilds execution, selection, and scheduled delivery jobs after a PGlite re
 
     const restored = await createPgliteStoreBundle({ dataDir: directory });
     try {
+      await expect(
+        restored.executionStore.get(projectId, executionId),
+      ).resolves.toMatchObject({
+        replayed: true,
+        source: pending.source,
+        attachments: pending.attachments,
+      });
+      const persisted = await restored.client.query<{
+        record: Record<string, unknown>;
+        replay_observed_at: string | Date | null;
+      }>(
+        `select record, replay_observed_at
+           from executions
+          where project_id = $1 and execution_id = $2`,
+        [projectId, executionId],
+      );
+      expect(persisted.rows[0]?.record).not.toHaveProperty("replayed");
+      expect(persisted.rows[0]?.replay_observed_at).not.toBeNull();
       const clock = { now: () => new Date("2026-07-18T05:01:00.000Z") };
       const recovery = {
         jobStore: restored.jobStore,

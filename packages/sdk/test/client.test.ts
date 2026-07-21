@@ -516,6 +516,98 @@ describe("Eyeball SDK", () => {
     });
   });
 
+  it("preserves safe execution provenance and retryAfter across get, list, and wait", async () => {
+    let waitReads = 0;
+    let now = 0;
+    const safe = {
+      executionId: "exe_sdk_safe",
+      tool: "gmail.send_email",
+      toolVersion: "1.0.0",
+      catalogVersion: "2026.07.21",
+      userId: "user_sdk",
+      createdAt: "2026-07-21T12:00:00.000Z",
+      completedAt: "2026-07-21T12:00:00.010Z",
+      latencyMs: 10,
+      status: "succeeded",
+      output: { messageId: "msg_sdk_safe" },
+      replayed: true,
+      source: { kind: "voice_session", sessionId: "session_sdk_safe" },
+      attachments: {
+        count: 2,
+        fileIds: ["file_sdk_one", "file_sdk_two"],
+      },
+    };
+    const eb = client(
+      testFetch((request) => {
+        const path = new URL(request.url).pathname;
+        if (path === "/v1/executions") {
+          return jsonResponse({ executions: [safe] });
+        }
+        if (path.endsWith("/exe_sdk_wait")) {
+          waitReads += 1;
+          if (waitReads === 1) {
+            return jsonResponse({
+              ...safe,
+              executionId: "exe_sdk_wait",
+              status: "running",
+              completedAt: undefined,
+              latencyMs: undefined,
+              output: undefined,
+            });
+          }
+          return jsonResponse({
+            executionId: "exe_sdk_wait",
+            tool: safe.tool,
+            toolVersion: safe.toolVersion,
+            catalogVersion: safe.catalogVersion,
+            userId: safe.userId,
+            createdAt: safe.createdAt,
+            completedAt: safe.completedAt,
+            latencyMs: safe.latencyMs,
+            status: "failed",
+            error: {
+              code: "provider_rate_limited",
+              message: "Retry later.",
+              retryable: true,
+              retryAfter: 12,
+            },
+            replayed: true,
+            source: safe.source,
+            attachments: safe.attachments,
+          });
+        }
+        return jsonResponse(safe);
+      }),
+      {
+        clock: { now: () => now },
+        sleep: async (milliseconds) => {
+          now += milliseconds;
+        },
+      },
+    );
+
+    await expect(eb.executions.get("exe_sdk_safe")).resolves.toMatchObject({
+      replayed: true,
+      source: { kind: "voice_session", sessionId: "session_sdk_safe" },
+      attachments: {
+        count: 2,
+        fileIds: ["file_sdk_one", "file_sdk_two"],
+      },
+    });
+    await expect(eb.executions.list()).resolves.toMatchObject({
+      executions: [{ replayed: true, attachments: safe.attachments }],
+    });
+    await expect(
+      eb.executions.wait("exe_sdk_wait", { pollMs: 1, timeoutMs: 10 }),
+    ).resolves.toMatchObject({
+      status: "failed",
+      error: { retryAfter: 12 },
+      replayed: true,
+      source: safe.source,
+      attachments: safe.attachments,
+    });
+  });
+
   it("bounds polling with a timeout and maps normalized API errors", async () => {
     const sleeps: number[] = [];
     let now = 0;

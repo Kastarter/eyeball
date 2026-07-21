@@ -1,9 +1,18 @@
+import { voiceSessionExecutionId } from "@eyeball/core";
 import { describe, expect, it } from "vitest";
 import { runRestaurantVoiceDemo } from "../demo/restaurant.js";
 
 describe("restaurant voice-agent E2E", () => {
   it("dispatches calendar and email tools through the ordinary executor", async () => {
     const result = await runRestaurantVoiceDemo();
+    const calendarExecutionId = voiceSessionExecutionId(
+      result.session.id,
+      "event:6",
+    );
+    const emailExecutionId = voiceSessionExecutionId(
+      result.session.id,
+      "event:10",
+    );
 
     expect(result).toMatchObject({
       agent: { id: "va_000001", revision: 1 },
@@ -13,12 +22,12 @@ describe("restaurant voice-agent E2E", () => {
     });
     expect(result.childExecutions).toEqual([
       {
-        executionId: "exe_session_000001_0006",
+        executionId: calendarExecutionId,
         tool: "google-calendar.create_event",
         status: "succeeded",
       },
       {
-        executionId: "exe_session_000001_0010",
+        executionId: emailExecutionId,
         tool: "gmail.send_email",
         status: "succeeded",
       },
@@ -36,11 +45,19 @@ describe("restaurant voice-agent E2E", () => {
       ({ speaker }) => speaker === "tool",
     );
     expect(toolTurns.map(({ executionId }) => executionId)).toEqual([
-      "exe_session_000001_0006",
-      "exe_session_000001_0006",
-      "exe_session_000001_0010",
-      "exe_session_000001_0010",
+      calendarExecutionId,
+      calendarExecutionId,
+      emailExecutionId,
+      emailExecutionId,
     ]);
+    const storedExecutionIds = new Set<string>(
+      result.childExecutions.map(({ executionId }) => executionId),
+    );
+    expect(
+      toolTurns.every(({ executionId }) =>
+        storedExecutionIds.has(String(executionId)),
+      ),
+    ).toBe(true);
     expect(toolTurns.map(({ tool }) => tool)).toEqual([
       "google-calendar.create_event",
       "google-calendar.create_event",

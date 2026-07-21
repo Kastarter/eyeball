@@ -176,6 +176,64 @@ describe("executor proxy cloud credential selection", () => {
     expect(await response.json()).toEqual({ executions: [] });
   });
 
+  it.each([
+    { status: 200, remaining: "47", retryAfter: "9" },
+    { status: 429, remaining: "0", retryAfter: "31" },
+  ])("forwards only the explicit executor response allowlist for HTTP $status", async ({
+    status,
+    remaining,
+    retryAfter,
+  }) => {
+    const fetchImpl: typeof globalThis.fetch = async () =>
+      new Response(JSON.stringify({ status }), {
+        status,
+        headers: {
+          "content-TYPE": "application/problem+json",
+          "ratelimit-LIMIT": "60",
+          "RateLimit-remaining": remaining,
+          "RATELIMIT-RESET": "2026-07-21T18:00:00.000Z",
+          "retry-AFTER": retryAfter,
+          Location: "https://attacker.example.test/collect",
+          "Set-Cookie": "session=private; Secure",
+          Authorization: "Bearer private-response-token",
+          "RateLimit-Provider-Bucket": "private-provider-bucket",
+          "X-Internal-Trace": "private-trace",
+          "X-Provider-Request-Id": "private-provider-request",
+        },
+      });
+    const response = await proxyExecutorRequest(
+      new Request("https://dashboard.example.test/api/executor/v1/executions"),
+      { params: Promise.resolve({ path: ["v1", "executions"] }) },
+      {
+        EYEBALL_API_KEY: "demo-key",
+        EYEBALL_EXECUTOR_URL: "https://executor.example.test",
+      },
+      fetchImpl,
+    );
+
+    expect(response.status).toBe(status);
+    expect(response.headers.get("Content-Type")).toBe(
+      "application/problem+json",
+    );
+    expect(response.headers.get("RateLimit-Limit")).toBe("60");
+    expect(response.headers.get("RateLimit-Remaining")).toBe(remaining);
+    expect(response.headers.get("RateLimit-Reset")).toBe(
+      "2026-07-21T18:00:00.000Z",
+    );
+    expect(response.headers.get("Retry-After")).toBe(retryAfter);
+    expect(response.headers.get("Cache-Control")).toBe("no-store");
+    for (const forbidden of [
+      "Location",
+      "Set-Cookie",
+      "Authorization",
+      "RateLimit-Provider-Bucket",
+      "X-Internal-Trace",
+      "X-Provider-Request-Id",
+    ]) {
+      expect(response.headers.get(forbidden)).toBeNull();
+    }
+  });
+
   it("exports only endpoint-update PATCH requests with the selected cloud key", async () => {
     const projectKey = "eyb_live_webhook_project_key";
     const cookie =

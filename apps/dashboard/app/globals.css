@@ -2562,9 +2562,21 @@ select.field__control {
 .execution-filters,
 .executions-footer,
 .execution-detail__status,
-.execution-detail__heading {
+.execution-detail__heading,
+.execution-provenance-badges {
   display: flex;
   align-items: center;
+}
+
+.execution-provenance-badges {
+  flex-wrap: wrap;
+  gap: 6px;
+}
+
+.taxonomy-badge--replay {
+  border-color: color-mix(in srgb, var(--accent) 38%, var(--border-subtle));
+  background: var(--accent-soft);
+  color: var(--text-primary);
 }
 
 .execution-live-actions {
@@ -2917,6 +2929,47 @@ select.field__control {
 
 .execution-metadata dd {
   overflow-wrap: anywhere;
+}
+
+.execution-source-link {
+  color: var(--accent);
+  font-weight: 600;
+  text-underline-offset: 3px;
+}
+
+.execution-source-link:hover {
+  color: var(--accent-hover);
+}
+
+.execution-attachments__count {
+  color: var(--text-muted-readable);
+  font-family: var(--font-code);
+  font-size: 10px;
+}
+
+.execution-attachments ul {
+  display: flex;
+  min-width: 0;
+  flex-wrap: wrap;
+  gap: 8px;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.execution-attachments li {
+  min-width: 0;
+  max-width: 100%;
+  padding: 6px 8px;
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--radius-sm);
+  background: var(--bg-subtle);
+}
+
+.execution-attachments code {
+  overflow-wrap: anywhere;
+  color: var(--text-secondary);
+  font-size: 10px;
 }
 
 /* Voice agent builder and live session lab */

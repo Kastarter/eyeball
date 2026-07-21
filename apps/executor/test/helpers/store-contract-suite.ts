@@ -761,6 +761,151 @@ export function registerStoreContractSuite(
         });
       });
 
+      it("projects replay provenance monotonically while preserving immutable context", async () => {
+        const scope = namespace(implementation.name);
+        const projectId = `project_${scope}`;
+        const clock = new MutableClock("2026-07-18T01:30:00.000Z");
+        const executionId = createExecutionId(`${scope}_provenance`);
+        const base = allocation(projectId, executionId, clock, {
+          key: `idem_${scope}`,
+          requestHash: "same",
+        });
+        const first: ExecutionAllocation = {
+          ...base,
+          record: {
+            ...base.record,
+            source: {
+              kind: "voice_session",
+              sessionId: `session_${scope}`,
+            },
+            attachments: {
+              count: 2,
+              fileIds: [
+                createFileId(`${scope}_attachment_a`),
+                createFileId(`${scope}_attachment_b`),
+              ],
+            },
+          },
+        };
+        await stores.executionStore.allocate(first);
+        await expect(
+          stores.executionStore.get(projectId, executionId),
+        ).resolves.not.toHaveProperty("replayed");
+        await expect(
+          stores.executionStore.markReplayed(
+            `missing_${projectId}`,
+            executionId,
+            clock.now().toISOString(),
+          ),
+        ).resolves.toBe(false);
+
+        const observed = await Promise.all([
+          stores.executionStore.markReplayed(
+            projectId,
+            executionId,
+            "2026-07-18T01:30:01.000Z",
+          ),
+          stores.executionStore.markReplayed(
+            projectId,
+            executionId,
+            "2026-07-18T01:30:02.000Z",
+          ),
+        ]);
+        expect(observed).toEqual([true, true]);
+        await expect(
+          stores.executionStore.get(projectId, executionId),
+        ).resolves.toMatchObject({
+          replayed: true,
+          source: first.record.source,
+          attachments: first.record.attachments,
+        });
+        await expect(
+          stores.executionStore.getDetail(projectId, executionId),
+        ).resolves.toMatchObject({ replayed: true });
+        await expect(
+          stores.executionStore.list(projectId, { limit: 10 }),
+        ).resolves.toMatchObject({
+          executions: [{ executionId, replayed: true }],
+        });
+        await expect(
+          stores.executionStore.getRecoverable(projectId, executionId),
+        ).resolves.toMatchObject({ record: { executionId, replayed: true } });
+        await expect(
+          stores.executionStore.listRecoveryCandidates({ limit: 100 }),
+        ).resolves.toMatchObject({
+          candidates: expect.arrayContaining([
+            expect.objectContaining({
+              record: expect.objectContaining({ executionId, replayed: true }),
+            }),
+          ]),
+        });
+
+        const replay = allocation(
+          projectId,
+          createExecutionId(`${scope}_provenance_replay`),
+          clock,
+          { key: `idem_${scope}`, requestHash: "same" },
+        );
+        await expect(
+          stores.executionStore.inspectAllocation(replay),
+        ).resolves.toMatchObject({
+          kind: "replay",
+          record: { executionId, replayed: true },
+        });
+        await expect(
+          stores.executionStore.allocate(replay),
+        ).resolves.toMatchObject({
+          kind: "replay",
+          record: { executionId, replayed: true },
+        });
+
+        const projected = await stores.executionStore.get(
+          projectId,
+          executionId,
+        );
+        if (projected?.status !== "pending") {
+          throw new Error("Expected pending execution provenance fixture.");
+        }
+        const projectedPending = projected as ExecutionRecord & {
+          status: "pending";
+        };
+        await expect(
+          stores.executionStore.update(projectId, running(projectedPending)),
+        ).rejects.toThrow("markReplayed");
+        await expect(
+          stores.executionStore.update(projectId, {
+            ...running(first.record),
+            source: {
+              kind: "voice_session",
+              sessionId: `session_other_${scope}`,
+            },
+          }),
+        ).rejects.toThrow("identity fields are immutable");
+        await expect(
+          stores.executionStore.update(projectId, {
+            ...running(first.record),
+            attachments: {
+              count: 1,
+              fileIds: [createFileId(`${scope}_attachment_other`)],
+            },
+          }),
+        ).rejects.toThrow("identity fields are immutable");
+
+        const runningRecord = running(first.record);
+        await stores.executionStore.update(projectId, runningRecord);
+        const terminalPromise = stores.executionStore.waitForTerminal(
+          projectId,
+          executionId,
+        );
+        await stores.executionStore.update(projectId, succeeded(runningRecord));
+        await expect(terminalPromise).resolves.toMatchObject({
+          status: "succeeded",
+          replayed: true,
+          source: first.record.source,
+          attachments: first.record.attachments,
+        });
+      });
+
       it("atomically allocates one execution for concurrent idempotency claims", async () => {
         const scope = namespace(implementation.name);
         const projectId = `project_${scope}`;

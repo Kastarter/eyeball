@@ -507,6 +507,12 @@ describe("voice-session grant route confinement", () => {
       }),
     );
     expect(allowedA.status).toBe(200);
+    const allowedABody = (await allowedA.json()) as { executionId: string };
+    await expect(
+      harness.engine.getExecution(PROJECT, allowedABody.executionId),
+    ).resolves.toMatchObject({
+      source: { kind: "voice_session", sessionId: SESSION_A },
+    });
     const allocationsAfterA = harness.adapter.execute.mock.calls.length;
 
     for (const request of [
@@ -558,6 +564,10 @@ describe("voice-session grant route confinement", () => {
     });
     expect(bRecords.executions).toHaveLength(1);
     expect(bRecords.executions[0]?.userId).toBe(USER_B);
+    expect(bRecords.executions[0]?.source).toEqual({
+      kind: "voice_session",
+      sessionId: SESSION_B,
+    });
 
     await harness.grantStore.revokeSessionGrant({
       projectId: PROJECT,
@@ -618,6 +628,26 @@ describe("voice-session grant route confinement", () => {
       "Idempotency-Key",
       `voice-session:${SESSION_B}:event:1`,
     );
+    const nonPositiveSequence = executeRequest({
+      token: issued.token,
+      sessionId: SESSION_A,
+      userId: USER_A,
+      tool: TOOL_A,
+    });
+    nonPositiveSequence.headers.set(
+      "Idempotency-Key",
+      `voice-session:${SESSION_A}:event:0`,
+    );
+    const malformedSequence = executeRequest({
+      token: issued.token,
+      sessionId: SESSION_A,
+      userId: USER_A,
+      tool: TOOL_A,
+    });
+    malformedSequence.headers.set(
+      "Idempotency-Key",
+      `voice-session:${SESSION_A}:event:01`,
+    );
     const mutations: Request[] = [
       new Request(base, {
         headers: new Headers(
@@ -642,6 +672,8 @@ describe("voice-session grant route confinement", () => {
       }),
       withoutIdempotency,
       crossSessionRetryKey,
+      nonPositiveSequence,
+      malformedSequence,
     ];
     for (const request of mutations) {
       const response = await harness.app.request(request);
@@ -652,6 +684,9 @@ describe("voice-session grant route confinement", () => {
     });
     expect(wrongRoute.status).toBe(403);
     expect(harness.adapter.execute).not.toHaveBeenCalled();
+    await expect(harness.engine.listExecutions(PROJECT)).resolves.toEqual({
+      executions: [],
+    });
   });
 
   it("prevents one grant from preclaiming another session's execution ID", async () => {
@@ -674,6 +709,9 @@ describe("voice-session grant route confinement", () => {
     );
     expect(preclaim.status).toBe(403);
     expect(harness.adapter.execute).not.toHaveBeenCalled();
+    await expect(harness.engine.listExecutions(PROJECT)).resolves.toEqual({
+      executions: [],
+    });
 
     const legitimate = await harness.app.request(
       executeRequest({
@@ -702,16 +740,71 @@ describe("voice-session grant route confinement", () => {
       }),
     );
     expect(allowed.status).toBe(200);
-    const denied = await harness.app.request(
-      executeRequest({
-        token: "static-pinned-a",
-        sessionId: SESSION_A,
-        sequence: 2,
-        userId: USER_B,
-        tool: TOOL_A,
-      }),
+    const allowedBody = (await allowed.json()) as { executionId: string };
+    await expect(
+      harness.engine.getExecution(PROJECT, allowedBody.executionId),
+    ).resolves.toMatchObject({
+      source: { kind: "voice_session", sessionId: SESSION_A },
+    });
+    const crossUser = executeRequest({
+      token: "static-pinned-a",
+      sessionId: SESSION_A,
+      sequence: 2,
+      userId: USER_B,
+      tool: TOOL_A,
+    });
+    const missingSessionHeader = executeRequest({
+      token: "static-pinned-a",
+      sessionId: SESSION_A,
+      sequence: 3,
+      userId: USER_A,
+      tool: TOOL_A,
+    });
+    missingSessionHeader.headers.delete(VOICE_SESSION_ID_HEADER);
+    const crossSessionId = executeRequest({
+      token: "static-pinned-a",
+      sessionId: SESSION_A,
+      sequence: 4,
+      userId: USER_A,
+      tool: TOOL_A,
+      executionId: voiceSessionExecutionId(SESSION_B, "test:event:4"),
+    });
+    const mismatchedKey = executeRequest({
+      token: "static-pinned-a",
+      sessionId: SESSION_A,
+      sequence: 5,
+      userId: USER_A,
+      tool: TOOL_A,
+    });
+    mismatchedKey.headers.set(
+      "Idempotency-Key",
+      `voice-session:${SESSION_B}:event:5`,
     );
-    expect(denied.status).toBe(403);
+    for (const request of [
+      crossUser,
+      missingSessionHeader,
+      crossSessionId,
+      mismatchedKey,
+    ]) {
+      const denied = await harness.app.request(request);
+      expect(denied.status).toBe(403);
+    }
+    await expect(
+      harness.engine.getExecution(PROJECT, allowedBody.executionId),
+    ).resolves.toMatchObject({
+      userId: USER_A,
+      source: { kind: "voice_session", sessionId: SESSION_A },
+    });
+    await expect(harness.engine.listExecutions(PROJECT)).resolves.toMatchObject(
+      {
+        executions: [
+          {
+            executionId: allowedBody.executionId,
+            source: { kind: "voice_session", sessionId: SESSION_A },
+          },
+        ],
+      },
+    );
   });
 
   it("authenticates an exact grant-looking static key before grant or Cloud dispatch", async () => {

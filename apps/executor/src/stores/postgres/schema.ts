@@ -390,6 +390,7 @@ export const executions = pgTable(
     webhookEventId: text("webhook_event_id"),
     webhookPublishedAt: timestampColumn("webhook_published_at"),
     usageFinalizedAt: timestampColumn("usage_finalized_at"),
+    replayObservedAt: timestampColumn("replay_observed_at"),
   },
   (table) => [
     primaryKey({ columns: [table.projectId, table.executionId] }),

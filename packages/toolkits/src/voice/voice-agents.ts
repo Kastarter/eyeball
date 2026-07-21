@@ -35,7 +35,10 @@ import {
   stringValue,
   unsupportedTool,
 } from "../messaging/common.js";
-import type { VoiceSessionDriver } from "./session-driver.js";
+import {
+  canonicalizeDevelopmentVoiceSessionEvents,
+  type VoiceSessionDriver,
+} from "./session-driver.js";
 import { voiceTranscriptFromEvents } from "./transcript.js";
 import { resolveOutboundTransport } from "./transport-resolver.js";
 
@@ -747,8 +750,8 @@ async function eventPage(
       "Pipecat returned an invalid event page flag.",
     );
   }
-  const events = records(body.events).map((event) =>
-    eventFromProvider(context, event),
+  const events = canonicalizeDevelopmentVoiceSessionEvents(
+    records(body.events).map((event) => eventFromProvider(context, event)),
   );
   let expectedSequence = afterSequence + 1;
   for (const event of events) {

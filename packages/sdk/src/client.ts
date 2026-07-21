@@ -315,9 +315,24 @@ export class ExecutionsClient {
   /**
    * Retrieves one execution record by identifier.
    *
+   * The public record may include bounded replay, verified voice-session source,
+   * and staged-file ID/count provenance. It never includes canonical input, raw
+   * or derived idempotency identity, or staged-file bytes.
+   *
    * @param executionId Execution identifier returned by `tools.execute`.
    * @returns The current durable execution record.
    * @throws EyeballError when the execution is unavailable or the request fails.
+   * @example
+   * const execution = await eyeball.executions.get(
+   *   "exe_01JZ6WA0Q73ZQ5B51SRYB6M4Z8",
+   * );
+   * if (execution.replayed === true) console.log("Accepted replay observed");
+   * if (execution.source?.kind === "voice_session") {
+   *   console.log(execution.source.sessionId);
+   * }
+   * for (const fileId of execution.attachments?.fileIds ?? []) {
+   *   console.log(fileId);
+   * }
    */
   get(executionId: string): Promise<ExecutionRecord> {
     return this.#context.http.request(
@@ -327,6 +342,8 @@ export class ExecutionsClient {
 
   /**
    * Lists execution history with optional status, tool, user, and cursor filters.
+   * Items preserve the same optional bounded provenance as {@link get}; canonical
+   * input, idempotency identity, and file bytes remain private.
    *
    * @param options Filters and pagination for the project execution history.
    * @returns One execution page and an optional continuation cursor.
@@ -364,6 +381,8 @@ export class ExecutionsClient {
 
   /**
    * Polls an execution until it succeeds or fails, bounded by a local deadline.
+   * The terminal record preserves optional replay, verified source, and staged-file
+   * summary fields without exposing canonical input, idempotency identity, or bytes.
    *
    * @param executionId Execution identifier returned by `tools.execute`.
    * @param options Poll interval and total timeout in milliseconds.

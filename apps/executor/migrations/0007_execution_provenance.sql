@@ -1,0 +1,1 @@
+ALTER TABLE "executions" ADD COLUMN "replay_observed_at" timestamp with time zone;

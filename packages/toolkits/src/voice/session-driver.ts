@@ -1,8 +1,10 @@
 import {
   type ExecutionId,
+  type ExecutionSource,
   EyeballError,
   isCanonicalToolName,
   isExecutionId,
+  isVoiceSessionExecutionIdForSession,
   type JsonValue,
   type NormalizedToolError,
   type QualifiedToolName,
@@ -16,6 +18,7 @@ import {
   type VoiceWorkerEventPage,
   type VoiceWorkerStartSessionRequest,
   type VoiceWorkerStopSessionRequest,
+  voiceSessionExecutionId,
 } from "@eyeball/core";
 
 const TERMINAL_SESSION_STATES = new Set<VoiceAgentSessionState>([
@@ -104,6 +107,7 @@ export interface VoiceSessionExecutionEngine {
       mode: "sync";
     };
     idempotencyKey: string;
+    source: ExecutionSource;
   }): Promise<{ response: VoiceSessionExecutionResponse }>;
 }
 
@@ -678,6 +682,53 @@ export function voiceSessionIdempotencyKey(
   return `voice-session:${sessionId}:event:${eventSequence}`;
 }
 
+/**
+ * Rewrites legacy development-Pipecat tool provenance to the session-bound
+ * execution identity used by the in-process engine. Remote-worker events are
+ * already canonical and pass through unchanged.
+ */
+export function canonicalizeDevelopmentVoiceSessionEvents(
+  events: readonly VoiceAgentSessionEvent[],
+): readonly VoiceAgentSessionEvent[] {
+  return events.map((event) => {
+    if (event.data.type !== "tool_call" && event.data.type !== "tool_result") {
+      return event;
+    }
+    if (
+      isVoiceSessionExecutionIdForSession(
+        event.data.executionId,
+        event.sessionId,
+      )
+    ) {
+      return event;
+    }
+
+    const legacyPrefix = `exe_${event.sessionId}_`;
+    if (!event.data.executionId.startsWith(legacyPrefix)) {
+      return event;
+    }
+    const sequenceText = event.data.executionId.slice(legacyPrefix.length);
+    if (!/^\d+$/u.test(sequenceText)) {
+      return event;
+    }
+    const toolCallSequence = Number(sequenceText);
+    if (!Number.isSafeInteger(toolCallSequence) || toolCallSequence < 1) {
+      return event;
+    }
+
+    return {
+      ...event,
+      data: {
+        ...event.data,
+        executionId: voiceSessionExecutionId(
+          event.sessionId,
+          `event:${toolCallSequence}`,
+        ),
+      },
+    };
+  });
+}
+
 function executionTarget(
   options: VoiceSessionExecutionTargetOptions,
 ): "engine" | "client" {
@@ -707,10 +758,24 @@ export async function dispatchVoiceSessionToolCall(
     };
   }
 
+  const target = executionTarget(options);
+  // Development Pipecat fixtures predate session-bound child IDs. Preserve
+  // their event ID for provider correlation, but store a canonical child ID.
+  const executionId =
+    target === "engine" &&
+    !isVoiceSessionExecutionIdForSession(
+      toolCall.eventExecutionId,
+      toolCall.sessionId,
+    )
+      ? voiceSessionExecutionId(
+          toolCall.sessionId,
+          `event:${toolCall.sequence}`,
+        )
+      : toolCall.eventExecutionId;
   const request = {
     projectId: agentRevision.projectId,
     userId: agentRevision.userId,
-    executionId: toolCall.eventExecutionId,
+    executionId,
     tool: toolCall.tool,
     input: toolCall.input,
     idempotencyKey: voiceSessionIdempotencyKey(
@@ -721,7 +786,7 @@ export async function dispatchVoiceSessionToolCall(
 
   let execution: VoiceSessionExecutionResponse;
   try {
-    if (executionTarget(options) === "engine") {
+    if (target === "engine") {
       const outcome = await options.executionEngine?.execute({
         projectId: request.projectId,
         executionId: request.executionId,
@@ -732,6 +797,10 @@ export async function dispatchVoiceSessionToolCall(
           mode: "sync",
         },
         idempotencyKey: request.idempotencyKey,
+        source: {
+          kind: "voice_session",
+          sessionId: toolCall.sessionId,
+        },
       });
       if (outcome === undefined) {
         throw new Error("Execution engine was not configured.");
@@ -749,7 +818,7 @@ export async function dispatchVoiceSessionToolCall(
   }
 
   if (
-    execution.executionId !== toolCall.eventExecutionId ||
+    execution.executionId !== request.executionId ||
     execution.tool !== toolCall.tool
   ) {
     return {
@@ -837,6 +906,8 @@ async function postToolResult(
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({
+        // The legacy fixture requires its original ID for pending-call
+        // correlation. Eyeball canonicalizes the emitted event provenance.
         executionId: toolCall.eventExecutionId,
         tool: toolCall.tool,
         ...(result.status === "succeeded"
@@ -1165,11 +1236,14 @@ export async function runVoiceSessionDriverTick(
     state: after.state,
     lastSequence: cursor,
     terminal: terminalState(after.state),
-    events: [...observedEvents.values()]
-      .filter(
-        (event) => event.sequence > initialSequence && event.sequence <= cursor,
-      )
-      .sort((left, right) => left.sequence - right.sequence),
+    events: canonicalizeDevelopmentVoiceSessionEvents(
+      [...observedEvents.values()]
+        .filter(
+          (event) =>
+            event.sequence > initialSequence && event.sequence <= cursor,
+        )
+        .sort((left, right) => left.sequence - right.sequence),
+    ),
     dispatches,
     agentTurns,
   };
@@ -1374,12 +1448,14 @@ export async function runVoiceSessionDriver(
         sessionId: after.id,
         state: after.state,
         lastSequence: cursor,
-        events: [...observedEvents.values()]
-          .filter(
-            (event) =>
-              event.sequence > initialSequence && event.sequence <= cursor,
-          )
-          .sort((left, right) => left.sequence - right.sequence),
+        events: canonicalizeDevelopmentVoiceSessionEvents(
+          [...observedEvents.values()]
+            .filter(
+              (event) =>
+                event.sequence > initialSequence && event.sequence <= cursor,
+            )
+            .sort((left, right) => left.sequence - right.sequence),
+        ),
         dispatches,
         agentTurns,
       };

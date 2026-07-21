@@ -31,10 +31,20 @@ Response:
       "status": "failed",
       "userId": "demo_user",
       "createdAt": "2026-07-17T12:00:00.000Z",
+      "replayed": true,
+      "source": {
+        "kind": "voice_session",
+        "sessionId": "session_01JZ6VY4C84B1Q0Q4T4T1Z6V8M"
+      },
+      "attachments": {
+        "count": 1,
+        "fileIds": ["file_01JZ7F4Y8E7H48H3Y2NQ4J5H8P"]
+      },
       "error": {
         "code": "provider_unavailable",
         "message": "The provider is temporarily unavailable.",
-        "retryable": true
+        "retryable": true,
+        "retryAfter": 12
       },
       "latencyMs": 120
     }
@@ -42,5 +52,7 @@ Response:
   "nextCursor": "eyJvZmZzZXQiOjI1fQ"
 }
 ```
+
+List items use the same safe `ExecutionRecord` projection as [execution detail](/api/executions/get-execution). The optional `replayed`, verified voice `source`, and historical staged-file `attachments` fields do not add list filters or expose canonical input, idempotency identity, connection selection, or file bytes.
 
 The list is authenticated-project scoped. Invalid filters return `invalid_input`.

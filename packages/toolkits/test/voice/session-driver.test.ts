@@ -1,4 +1,8 @@
-import type { QualifiedToolName } from "@eyeball/core";
+import {
+  isVoiceSessionExecutionIdForSession,
+  type QualifiedToolName,
+  voiceSessionExecutionId,
+} from "@eyeball/core";
 import { describe, expect, it, vi } from "vitest";
 import { createPipecatMock } from "../../../../mocks/packages/mocks-voice/dist/index.js";
 import {
@@ -217,9 +221,13 @@ describe("voice session tool dispatch", () => {
   });
 
   it("pins trusted scope and derives idempotency from session event identity", async () => {
+    const eventExecutionId = voiceSessionExecutionId(
+      "session_dispatch",
+      "event:7",
+    );
     const execute = vi.fn(async () => ({
       response: {
-        executionId: "exe_event_execution_7" as const,
+        executionId: eventExecutionId,
         tool: "gmail.send_email" as QualifiedToolName,
         status: "succeeded" as const,
         output: { messageId: "msg_voice_child" },
@@ -238,7 +246,7 @@ describe("voice session tool dispatch", () => {
         toolCall: {
           sessionId: "session_dispatch",
           sequence: 7,
-          eventExecutionId: "exe_event_execution_7",
+          eventExecutionId,
           tool: "gmail.send_email",
           input: {
             to: ["guest@example.com"],
@@ -250,12 +258,13 @@ describe("voice session tool dispatch", () => {
       }),
     ).resolves.toEqual({
       status: "succeeded",
-      executionId: "exe_event_execution_7",
+      executionId: eventExecutionId,
       output: { messageId: "msg_voice_child" },
     });
     expect(execute).toHaveBeenCalledWith({
       projectId: PROJECT_ID,
-      executionId: "exe_event_execution_7",
+      executionId: eventExecutionId,
+      source: { kind: "voice_session", sessionId: "session_dispatch" },
       request: {
         tool: "gmail.send_email",
         userId: USER_ID,
@@ -268,5 +277,8 @@ describe("voice session tool dispatch", () => {
       },
       idempotencyKey: voiceSessionIdempotencyKey("session_dispatch", 7),
     });
+    expect(
+      isVoiceSessionExecutionIdForSession(eventExecutionId, "session_dispatch"),
+    ).toBe(true);
   });
 });

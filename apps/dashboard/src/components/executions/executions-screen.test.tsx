@@ -16,10 +16,19 @@ const failedExecution = {
       requestId: "provider_req_123",
       detail: { quota: "messages_per_minute" },
     },
-    retryAfterSeconds: 12,
+    retryAfter: 12,
     retryable: true,
   },
   executionId: "exe_failed_123",
+  replayed: true,
+  source: {
+    kind: "voice_session",
+    sessionId: "session/linked one",
+  },
+  attachments: {
+    count: 2,
+    fileIds: ["file_invoice_123", "file_receipt_456"],
+  },
   latencyMs: 145,
   startedAt: "2026-07-17T09:00:00.010Z",
   status: "failed",
@@ -47,6 +56,7 @@ describe("ExecutionsScreen server rendering", () => {
     expect(markup).toContain("Live refresh paused");
     expect(markup).toContain("Load more");
     expect(markup).toContain("Clear 2");
+    expect(markup).toContain("Replay");
   });
 
   it("renders a deep-linked detail drawer with the public execution record", () => {
@@ -63,7 +73,28 @@ describe("ExecutionsScreen server rendering", () => {
     expect(markup).toContain("provider_rate_limited");
     expect(markup).toContain("Provider detail");
     expect(markup).toContain("Retryable");
+    expect(markup).toContain("12s");
     expect(markup).toContain("Execution context");
+    expect(markup.match(/Replay/gu)).toHaveLength(2);
+    expect(markup).toContain("Open voice session");
+    expect(markup).toContain(
+      "/restaurant-demo/voice-agents?session=session%2Flinked+one&amp;userId=user_sam",
+    );
+    expect(markup).toContain("2 distinct staged files");
+    expect(markup.match(/file_invoice_123/gu)).toHaveLength(1);
+    expect(markup.match(/file_receipt_456/gu)).toHaveLength(1);
     expect(markup).not.toContain("Canonical request");
+    for (const privateSentinel of [
+      "voice-session:session/linked one:event:4",
+      "idempotency_hash_private",
+      "canonical_input_private",
+      "conn_private_selection",
+      "base64_private_content",
+      "raw_file_bytes_private",
+      "invoice-private.pdf",
+      "application/pdf",
+    ]) {
+      expect(markup).not.toContain(privateSentinel);
+    }
   });
 });

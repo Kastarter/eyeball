@@ -4,15 +4,17 @@ import {
   type Clock,
   type CredentialProvider,
   createExecutionId,
+  createFileId,
   JSON_SCHEMA_DRAFT_2020_12,
   type JsonValue,
   type ProviderManifest,
   verifyWebhookSignature,
+  voiceSessionExecutionId,
   WEBHOOK_ID_HEADER,
   type WebhookDelivery,
 } from "@eyeball/core";
 import { type Handler, Hono } from "hono";
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import {
   type AdapterContext,
   AdapterRegistry,
@@ -37,8 +39,8 @@ const USER_ID = "user_webhooks";
 const START = "2026-07-17T12:00:00.000Z";
 
 const contract: CapabilityToolContract = {
-  capability: "ai_media_utilities",
-  name: "run",
+  capability: "email",
+  name: "send_email",
   description: "Return a deterministic webhook test response.",
   inputSchema: {
     $schema: JSON_SCHEMA_DRAFT_2020_12,
@@ -46,7 +48,22 @@ const contract: CapabilityToolContract = {
     type: "object",
     additionalProperties: false,
     required: ["message"],
-    properties: { message: { type: "string", minLength: 1 } },
+    properties: {
+      message: { type: "string", minLength: 1 },
+      attachments: {
+        type: "array",
+        items: {
+          type: "object",
+          additionalProperties: false,
+          required: ["fileId"],
+          properties: {
+            fileId: { type: "string", pattern: "^file_[A-Za-z0-9_-]+$" },
+            name: { type: "string", minLength: 1 },
+            mimeType: { type: "string", minLength: 1 },
+          },
+        },
+      },
+    },
   },
   outputSchema: {
     $schema: JSON_SCHEMA_DRAFT_2020_12,
@@ -81,10 +98,10 @@ const manifest: ProviderManifest = {
   },
   implements: [
     {
-      capability: "ai_media_utilities",
-      canonicalTool: "run",
+      capability: "email",
+      canonicalTool: "send_email",
       canonicalVersion: "1.0.0",
-      operationId: "webhook-fixture.run",
+      operationId: "webhook-fixture.send_email",
     },
   ],
 };
@@ -235,7 +252,7 @@ function execute(engine: ExecutionEngine, message = "delivered") {
   return engine.execute({
     projectId: PROJECT_ID,
     request: {
-      tool: "webhook-fixture.run",
+      tool: "webhook-fixture.send_email",
       userId: USER_ID,
       input: { message },
       mode: "sync",
@@ -409,7 +426,32 @@ describe("signed webhook delivery", () => {
     const endpoint = await createEndpoint(harness);
     secret = endpoint.secret;
 
-    const outcome = await execute(harness.engine);
+    const sessionId = "session_webhook_source";
+    const executionId = voiceSessionExecutionId(sessionId, "webhook:event:1");
+    const idempotencyKey = `voice-session:${sessionId}:event:1`;
+    const attachmentId = createFileId("webhook_attachment");
+    const command = {
+      projectId: PROJECT_ID,
+      executionId,
+      idempotencyKey,
+      source: { kind: "voice_session" as const, sessionId },
+      request: {
+        tool: "webhook-fixture.send_email" as const,
+        userId: USER_ID,
+        input: {
+          message: "delivered",
+          attachments: [
+            {
+              fileId: attachmentId,
+              name: "private-webhook-attachment.pdf",
+              mimeType: "application/pdf",
+            },
+          ],
+        },
+        mode: "sync" as const,
+      },
+    };
+    const outcome = await harness.engine.execute(command);
     expect(outcome.response.status).toBe("succeeded");
     await harness.webhookDeliverer.onIdle();
 
@@ -420,13 +462,30 @@ describe("signed webhook delivery", () => {
       id: string;
       type: string;
       projectId: string;
-      data: { status: string };
+      data: Record<string, unknown> & { status: string };
     };
     expect(event).toMatchObject({
       type: "execution.succeeded",
       projectId: PROJECT_ID,
-      data: { status: "succeeded" },
+      data: {
+        status: "succeeded",
+        source: { kind: "voice_session", sessionId },
+        attachments: { count: 1, fileIds: [attachmentId] },
+      },
     });
+    for (const privateField of [
+      "projectId",
+      "input",
+      "mode",
+      "connectionId",
+      "idempotencyKey",
+      "requestHash",
+    ]) {
+      expect(event.data).not.toHaveProperty(privateField);
+    }
+    expect(received[0]?.body).not.toContain(idempotencyKey);
+    expect(received[0]?.body).not.toContain("private-webhook-attachment.pdf");
+    expect(received[0]?.body).not.toContain("application/pdf");
     expect(received[0]?.webhookId).toBe(event.id);
 
     const logResponse = await harness.app.request(
@@ -445,6 +504,65 @@ describe("signed webhook delivery", () => {
         },
       ],
     });
+    const replay = await harness.engine.execute(command);
+    expect(replay.replayed).toBe(true);
+    await harness.webhookDeliverer.onIdle();
+    expect(received).toHaveLength(1);
+    await expect(
+      harness.engine.getExecution(PROJECT_ID, executionId),
+    ).resolves.toMatchObject({ replayed: true });
+    const afterReplay = await harness.app.request(
+      `/v1/webhooks/${endpoint.endpointId}/deliveries`,
+      { headers: auth() },
+    );
+    const history = JSON.stringify(await afterReplay.json());
+    expect(history.match(/whd_/gu)).toHaveLength(1);
+    expect(history).not.toContain("payload");
+    expect(history).not.toContain(idempotencyKey);
+  });
+
+  it("projects replay provenance when a replay repairs webhook admission", async () => {
+    const received: string[] = [];
+    const receiver = new Hono();
+    receiver.post("/hook", async (context) => {
+      received.push(await context.req.text());
+      return context.body(null, 204);
+    });
+    const harness = createHarness({ receiver });
+    await createEndpoint(harness);
+    vi.spyOn(
+      harness.webhookDeliverer.workStore,
+      "ensureEvent",
+    ).mockRejectedValueOnce(new Error("Injected webhook admission failure."));
+    const idempotencyKey = "webhook-replay-before-claim";
+    const run = () =>
+      harness.engine.execute({
+        projectId: PROJECT_ID,
+        idempotencyKey,
+        request: {
+          tool: "webhook-fixture.send_email",
+          userId: USER_ID,
+          input: { message: "replay-before-claim" },
+          mode: "sync",
+        },
+      });
+
+    await expect(run()).rejects.toThrow("Injected webhook admission failure.");
+    expect(received).toHaveLength(0);
+
+    const replay = await run();
+    expect(replay.replayed).toBe(true);
+    await harness.webhookDeliverer.onIdle();
+
+    expect(received).toHaveLength(1);
+    const event = JSON.parse(received[0] ?? "{}") as {
+      data: Record<string, unknown>;
+    };
+    expect(event.data).toMatchObject({
+      status: "succeeded",
+      replayed: true,
+    });
+    expect(received[0]).not.toContain(idempotencyKey);
   });
 
   it("follows the injected retry schedule and succeeds on the third attempt", async () => {
@@ -562,7 +680,7 @@ describe("signed webhook delivery", () => {
 
     await harness.webhookDeliverer.enqueueExecution(PROJECT_ID, {
       executionId: createExecutionId("future_webhook"),
-      tool: "webhook-fixture.run",
+      tool: "webhook-fixture.send_email",
       toolVersion: "1.0.0",
       catalogVersion: "2.0",
       status: "succeeded",
