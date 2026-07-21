@@ -3,6 +3,7 @@ import type {
   ExecutionRecord,
   JsonValue,
   TriggerSubscriptionStatus,
+  VoiceAgentDefinition,
   WebhookDeliveryStatus,
   WebhookEventType,
   WebhookSubscriptionEventType,
@@ -22,6 +23,7 @@ import {
   primaryKey,
   text,
   timestamp,
+  uniqueIndex,
 } from "drizzle-orm/pg-core";
 import type { JobState } from "../../jobs/store.js";
 import type { ExecutorJob } from "../../jobs/types.js";
@@ -40,6 +42,158 @@ const bytea = customType<{ data: Uint8Array; driverData: Uint8Array }>({
   toDriver: (value) => Buffer.from(value),
   fromDriver: (value) => Uint8Array.from(value),
 });
+
+export const voiceAgents = pgTable(
+  "voice_agents",
+  {
+    projectId: text("project_id").notNull(),
+    agentId: text("agent_id").notNull(),
+    activeRevision: integer("active_revision").notNull(),
+    createdAt: timestampColumn("created_at").notNull(),
+    updatedAt: timestampColumn("updated_at").notNull(),
+    deletedAt: timestampColumn("deleted_at"),
+  },
+  (table) => [
+    primaryKey({ columns: [table.projectId, table.agentId] }),
+    index("voice_agents_project_created_idx").on(
+      table.projectId,
+      table.createdAt,
+      table.agentId,
+    ),
+    check(
+      "voice_agents_active_revision_positive",
+      sql`${table.activeRevision} >= 1`,
+    ),
+  ],
+);
+
+export const voiceAgentRevisions = pgTable(
+  "voice_agent_revisions",
+  {
+    projectId: text("project_id").notNull(),
+    agentId: text("agent_id").notNull(),
+    revision: integer("revision").notNull(),
+    definition: jsonb("definition").$type<VoiceAgentDefinition>().notNull(),
+    createdAt: timestampColumn("created_at").notNull(),
+  },
+  (table) => [
+    primaryKey({
+      columns: [table.projectId, table.agentId, table.revision],
+    }),
+    foreignKey({
+      columns: [table.projectId, table.agentId],
+      foreignColumns: [voiceAgents.projectId, voiceAgents.agentId],
+      name: "voice_agent_revisions_agent_fk",
+    }),
+    check(
+      "voice_agent_revisions_revision_positive",
+      sql`${table.revision} >= 1`,
+    ),
+    check(
+      "voice_agent_revisions_definition_id_check",
+      sql`${table.definition}->>'id' = ${table.agentId}`,
+    ),
+    check(
+      "voice_agent_revisions_definition_revision_check",
+      sql`(${table.definition}->>'revision')::integer = ${table.revision}`,
+    ),
+  ],
+);
+
+export const voiceAgentNumberBindings = pgTable(
+  "voice_agent_number_bindings",
+  {
+    projectId: text("project_id").notNull(),
+    phoneNumber: text("phone_number").notNull(),
+    bindingId: text("binding_id").notNull(),
+    userId: text("user_id").notNull(),
+    agentId: text("agent_id").notNull(),
+    revision: integer("revision").notNull(),
+    transportConnectionId: text("transport_connection_id").notNull(),
+    createdAt: timestampColumn("created_at").notNull(),
+  },
+  (table) => [
+    primaryKey({ columns: [table.projectId, table.phoneNumber] }),
+    uniqueIndex("voice_agent_number_bindings_binding_id_uidx").on(
+      table.bindingId,
+    ),
+    index("voice_agent_number_bindings_project_phone_idx").on(
+      table.projectId,
+      table.phoneNumber,
+      table.bindingId,
+    ),
+    foreignKey({
+      columns: [table.projectId, table.agentId, table.revision],
+      foreignColumns: [
+        voiceAgentRevisions.projectId,
+        voiceAgentRevisions.agentId,
+        voiceAgentRevisions.revision,
+      ],
+      name: "voice_agent_number_bindings_revision_fk",
+    }),
+    check(
+      "voice_agent_number_bindings_revision_positive",
+      sql`${table.revision} >= 1`,
+    ),
+  ],
+);
+
+export const voiceAgentSessionPointers = pgTable(
+  "voice_agent_session_pointers",
+  {
+    sessionId: text("session_id").primaryKey(),
+    projectId: text("project_id").notNull(),
+    userId: text("user_id").notNull(),
+    agentId: text("agent_id").notNull(),
+    agentRevision: integer("agent_revision").notNull(),
+    callId: text("call_id").notNull(),
+    createdAt: timestampColumn("created_at").notNull(),
+  },
+  (table) => [
+    foreignKey({
+      columns: [table.projectId, table.agentId, table.agentRevision],
+      foreignColumns: [
+        voiceAgentRevisions.projectId,
+        voiceAgentRevisions.agentId,
+        voiceAgentRevisions.revision,
+      ],
+      name: "voice_agent_session_pointers_revision_fk",
+    }),
+    index("voice_agent_session_pointers_scope_created_idx").on(
+      table.projectId,
+      table.userId,
+      table.createdAt.desc(),
+      table.sessionId.desc(),
+    ),
+    check(
+      "voice_agent_session_pointers_revision_positive",
+      sql`${table.agentRevision} >= 1`,
+    ),
+  ],
+);
+
+export const voiceAgentMessageReceipts = pgTable(
+  "voice_agent_message_receipts",
+  {
+    projectId: text("project_id").notNull(),
+    userId: text("user_id").notNull(),
+    sessionId: text("session_id").notNull(),
+    clientMessageId: text("client_message_id").notNull(),
+    message: text("message").notNull(),
+    userMessageId: text("user_message_id").notNull(),
+    assistantMessage: text("assistant_message").notNull(),
+  },
+  (table) => [
+    primaryKey({
+      columns: [
+        table.projectId,
+        table.userId,
+        table.sessionId,
+        table.clientMessageId,
+      ],
+    }),
+  ],
+);
 
 export const stagedFiles = pgTable(
   "staged_files",
@@ -425,6 +579,11 @@ export const triggerDedupClaims = pgTable(
 );
 
 export const postgresSchema = {
+  voiceAgents,
+  voiceAgentRevisions,
+  voiceAgentNumberBindings,
+  voiceAgentSessionPointers,
+  voiceAgentMessageReceipts,
   stagedFiles,
   executions,
   executionIdempotency,

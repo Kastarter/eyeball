@@ -17,7 +17,11 @@ import {
   parseJsonRpc,
   type ToolDiscoveryMode,
 } from "./protocol.js";
-import type { SessionStore } from "./session-store.js";
+import { InMemorySessionStore, type SessionStore } from "./session-store.js";
+import {
+  createPgMcpGatewayStoreBundle,
+  type PgMcpGatewayStoreBundle,
+} from "./stores/postgres/factory.js";
 
 const DEFAULT_EXECUTOR_URL = "http://127.0.0.1:3000";
 const USER_ID_HEADER = "X-Eyeball-User-Id";
@@ -48,10 +52,30 @@ export interface McpGatewayOptions {
   eventIdFactory?: () => string;
 }
 
+export interface McpGatewayPersistence {
+  sessionStore: SessionStore;
+  close(): Promise<void>;
+}
+
+export interface McpGatewayRuntime {
+  app: Hono;
+  sessionStore: SessionStore;
+  persistence?: McpGatewayPersistence;
+  dispose(): void;
+  close(): Promise<void>;
+}
+
+export interface McpGatewayRuntimeOptions extends McpGatewayOptions {
+  persistenceFactory?: (
+    connectionString: string,
+  ) => Promise<McpGatewayPersistence>;
+}
+
 interface AuthenticatedRequest {
   executorApiKey: string;
   authBinding: string;
   principal?: ApiKeyPrincipal;
+  requestUserId?: string;
 }
 
 function bearerToken(value: string | undefined): string | undefined {
@@ -209,8 +233,18 @@ function requestId(value: unknown): string | number | null {
     : null;
 }
 
-function authFingerprint(apiKey: string): string {
-  return createHash("sha256").update(apiKey).digest("base64url");
+function authFingerprint(
+  apiKey: string,
+  projectId: string | undefined,
+  userId: string | undefined,
+): string {
+  const authorityScope = JSON.stringify([
+    "eyeball-mcp-session-auth-v2",
+    apiKey,
+    projectId ?? null,
+    userId ?? null,
+  ]);
+  return createHash("sha256").update(authorityScope).digest("base64url");
 }
 
 function originAllowed(
@@ -379,7 +413,10 @@ function sessionSseResponse(
   );
 }
 
-export function createMcpGatewayApp(options: McpGatewayOptions = {}): Hono {
+function createMcpGatewayComposition(options: McpGatewayOptions = {}): {
+  app: Hono;
+  protocol: McpProtocol;
+} {
   const env = options.env ?? process.env;
   const configuredApiKey = options.apiKey ?? env.EYEBALL_API_KEY;
   const downstreamApiKey =
@@ -466,10 +503,24 @@ export function createMcpGatewayApp(options: McpGatewayOptions = {}): Hono {
     ) {
       return unauthorized(context);
     }
+    const requestUserId =
+      configuredUserId ?? context.req.header(USER_ID_HEADER);
+    if (
+      principal?.userId !== undefined &&
+      requestUserId !== undefined &&
+      requestUserId !== principal.userId
+    ) {
+      return forbidden(context);
+    }
     return {
       executorApiKey: downstreamApiKey ?? inboundApiKey,
-      authBinding: authFingerprint(inboundApiKey),
+      authBinding: authFingerprint(
+        inboundApiKey,
+        principal?.projectId,
+        principal?.userId ?? configuredUserId,
+      ),
       ...(principal === undefined ? {} : { principal }),
+      ...(requestUserId === undefined ? {} : { requestUserId }),
     };
   };
 
@@ -498,6 +549,9 @@ export function createMcpGatewayApp(options: McpGatewayOptions = {}): Hono {
       apiKey: authenticated.executorApiKey,
       authBinding: authenticated.authBinding,
       sessionId,
+      ...(authenticated.requestUserId === undefined
+        ? {}
+        : { userId: authenticated.requestUserId }),
       ...(authenticated.principal?.userId === undefined
         ? {}
         : { pinnedUserId: authenticated.principal.userId }),
@@ -561,19 +615,12 @@ export function createMcpGatewayApp(options: McpGatewayOptions = {}): Hono {
       activeSession = true;
     }
 
-    const requestUserId =
-      configuredUserId ?? context.req.header(USER_ID_HEADER);
-    if (
-      authenticated.principal?.userId !== undefined &&
-      requestUserId !== undefined &&
-      requestUserId !== authenticated.principal.userId
-    ) {
-      return forbidden(context);
-    }
     const requestContext = {
       apiKey: authenticated.executorApiKey,
       authBinding: authenticated.authBinding,
-      ...(requestUserId === undefined ? {} : { userId: requestUserId }),
+      ...(authenticated.requestUserId === undefined
+        ? {}
+        : { userId: authenticated.requestUserId }),
       ...(authenticated.principal?.userId === undefined
         ? {}
         : { pinnedUserId: authenticated.principal.userId }),
@@ -627,12 +674,68 @@ export function createMcpGatewayApp(options: McpGatewayOptions = {}): Hono {
       : forbiddenOrigin(context),
   );
 
-  return app;
+  return { app, protocol };
+}
+
+export function createMcpGatewayApp(options: McpGatewayOptions = {}): Hono {
+  return createMcpGatewayComposition(options).app;
+}
+
+/**
+ * Builds the stock gateway composition. Direct app construction stays synchronous
+ * and in-memory, while the server opts into durable sessions when a database URL
+ * is configured.
+ */
+export async function createMcpGatewayRuntime(
+  options: McpGatewayRuntimeOptions = {},
+): Promise<McpGatewayRuntime> {
+  const { persistenceFactory, ...appOptions } = options;
+  const env = appOptions.env ?? process.env;
+  let persistence: McpGatewayPersistence | undefined;
+  const sessionStore =
+    appOptions.sessionStore ??
+    (await (async (): Promise<SessionStore> => {
+      const connectionString = env.EYEBALL_DATABASE_URL?.trim();
+      if (connectionString === undefined || connectionString.length === 0) {
+        return new InMemorySessionStore();
+      }
+      const factory =
+        persistenceFactory ??
+        (async (value: string): Promise<PgMcpGatewayStoreBundle> =>
+          createPgMcpGatewayStoreBundle({ connectionString: value }));
+      persistence = await factory(connectionString);
+      return persistence.sessionStore;
+    })());
+
+  let composition: ReturnType<typeof createMcpGatewayComposition>;
+  try {
+    composition = createMcpGatewayComposition({ ...appOptions, sessionStore });
+  } catch (error) {
+    await persistence?.close();
+    throw error;
+  }
+
+  const { app, protocol } = composition;
+  let closePromise: Promise<void> | undefined;
+  const dispose = (): void => protocol.dispose();
+  const runtime: McpGatewayRuntime = {
+    app,
+    sessionStore,
+    ...(persistence === undefined ? {} : { persistence }),
+    dispose,
+    close: () => {
+      dispose();
+      closePromise ??= persistence?.close() ?? Promise.resolve();
+      return closePromise;
+    },
+  };
+  return runtime;
 }
 
 export * from "./executor.js";
 export * from "./protocol.js";
 export * from "./search-tool.js";
 export * from "./session-store.js";
+export * from "./stores/postgres/index.js";
 
 export const app = createMcpGatewayApp();

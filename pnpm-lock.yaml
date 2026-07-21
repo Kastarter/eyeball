@@ -220,6 +220,9 @@ importers:
 
   apps/mcp-gateway:
     dependencies:
+      '@electric-sql/pglite':
+        specifier: ^0.5.4
+        version: 0.5.4
       '@eyeball/catalog':
         specifier: workspace:*
         version: link:../../packages/catalog
@@ -232,9 +235,22 @@ importers:
       '@hono/node-server':
         specifier: ^1.16.0
         version: 1.19.14(hono@4.12.30)
+      drizzle-orm:
+        specifier: ^0.45.2
+        version: 0.45.2(@electric-sql/pglite@0.5.4)(@opentelemetry/api@1.9.0)(@types/pg@8.20.0)(pg@8.22.0)
       hono:
         specifier: ^4.8.10
         version: 4.12.30
+      pg:
+        specifier: ^8.22.0
+        version: 8.22.0
+    devDependencies:
+      '@types/pg':
+        specifier: ^8.20.0
+        version: 8.20.0
+      drizzle-kit:
+        specifier: ^0.31.10
+        version: 0.31.10
 
   packages/bridge:
     dependencies:

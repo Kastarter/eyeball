@@ -98,6 +98,8 @@ deployment error.
 | Trigger-ingest secrets are 32 random bytes, stored only as SHA-256 hashes, compared in constant time, returned only in create/rotate URLs, and immediately invalidated on rotation. | `apps/executor/src/triggers/service.ts`; [`apps/executor/test/triggers.test.ts`](../apps/executor/test/triggers.test.ts). |
 | A user-pinned key cannot assert a different user or read another user's executions, connections, webhooks, or triggers. | Executor authorization in `apps/executor/src/routes.ts`; [`apps/executor/test/execution.test.ts`](../apps/executor/test/execution.test.ts) and [`apps/executor/test/triggers.test.ts`](../apps/executor/test/triggers.test.ts). Staged-file ownership is a separately documented gap. |
 | Staged files are project-isolated, remain available across Postgres/PGlite executor reconstruction until expiry, expired durable rows are reclaimed online in bounded batches, persistence failures do not retain byte-bearing driver errors, and metadata routes never return content. | Shared memory/PGlite FileStore contracts, restart and continuous-runtime reclamation regressions, and forced-insert-failure error-chain coverage in [`apps/executor/test/store-contract.test.ts`](../apps/executor/test/store-contract.test.ts); HTTP isolation, metadata-only, expiry, and authorization coverage in [`apps/executor/test/files.test.ts`](../apps/executor/test/files.test.ts). |
+| Historical voice-agent revisions are immutable; number bindings and executor-side session pointers pin exact revisions; project/user scopes are enforced; and definitions, bindings, pointers, and message receipts survive PGlite reconstruction. | Shared memory/PGlite AgentStore contracts and durable runtime/restart reconstruction in [`apps/executor/test/store-contract.test.ts`](../apps/executor/test/store-contract.test.ts); pinned development-session coverage in [`apps/executor/test/dev-voice-sessions.test.ts`](../apps/executor/test/dev-voice-sessions.test.ts). |
+| MCP session updates are atomic in memory and Postgres/PGlite, negotiated sessions and task records survive reconstruction, and persistence stores only a one-way binding over the inbound credential plus configured project/pinned-user authority rather than either bearer credential or plaintext authority. | Shared SessionStore contracts and migration/restart coverage in [`apps/mcp-gateway/test/session-store-contract.test.ts`](../apps/mcp-gateway/test/session-store-contract.test.ts); authenticated restart, authority-remap rejection, and raw-row credential-absence regressions in [`apps/mcp-gateway/test/streamable-http.test.ts`](../apps/mcp-gateway/test/streamable-http.test.ts). |
 | Caller-supplied reserved child execution IDs require a user-pinned key, synchronous mode, and an idempotency key. | `apps/executor/src/routes.ts`; [`apps/executor/test/execution.test.ts`](../apps/executor/test/execution.test.ts). |
 | The dashboard forwards only allowlisted cloud cookies/headers and stores executor keys in project-scoped HttpOnly, SameSite=Strict cookies. Cloud and executor redirects are not followed. | `apps/dashboard/src/lib/cloud-proxy.ts` and `executor-proxy.ts`; [`apps/dashboard/src/lib/cloud-proxy.test.ts`](../apps/dashboard/src/lib/cloud-proxy.test.ts) and [`apps/dashboard/src/lib/executor-key-route.test.ts`](../apps/dashboard/src/lib/executor-key-route.test.ts). |
 | The remote voice client requires HTTPS outside loopback, rejects URL credentials/query/fragment, refuses short supplied bearer tokens, and does not follow authenticated redirects. | `packages/toolkits/src/voice/remote-session-driver.ts`; [`packages/toolkits/test/voice/remote-session-driver.test.ts`](../packages/toolkits/test/voice/remote-session-driver.test.ts). |
@@ -323,10 +325,18 @@ The following are explicit limitations, not implied guarantees:
 - Postgres does not make trigger polling distributed. Polling still needs
   distributed leases, replay/backfill, provider signature verification, and an
   atomic claim/outbox.
-- Voice agent definitions/bindings and executor-side session pointers remain
-  process-local. Live carrier/provider paths are not real-provider certified.
-- MCP sessions and task pollers are process-local; stock SSE replay and executor
-  cancellation are not implemented.
+- With `EYEBALL_DATABASE_URL`, voice-agent definitions and immutable revisions,
+  number bindings, executor-side session pointers, and message receipts are
+  durable. Without a database they remain process-local. Live worker session
+  state/events remain worker-owned, remote observation remains process-local,
+  and carrier/provider paths are not real-provider certified.
+- With `EYEBALL_DATABASE_URL`, MCP negotiated-session and task records are
+  durable and atomic; only a one-way binding over the inbound credential and
+  configured project/pinned-user authority is stored, not either bearer or
+  plaintext authority.
+  After restart, the next correctly authenticated request supplies the downstream
+  credential and rearms polling. Timer handles and SSE subscribers remain
+  process-local; stock SSE replay and executor cancellation are not implemented.
 - Staged files are project-scoped bearer capabilities, not user-owned records,
   until SEC-017 is remediated.
 - Provider-level idempotency propagation is separate from executor replay
@@ -350,7 +360,7 @@ The following are explicit limitations, not implied guarantees:
 | Auditability | Structured redacted executor telemetry and tenant-scoped cloud audit events. | Central immutable retention, administrator/data-access events, clock/ingestion monitoring, alert coverage, review cadence, and evidence exports. |
 | Key management | AES-GCM local/cloud vaults, versioned cloud KEK wrappers, reveal-once keys, secret rotation APIs for webhooks/triggers. | Documented custodians, KMS/HSM integration, rotation cadence/SLOs, automated KEK rewrap job, dual-control, inventory, expiry alerts, and completed rotation evidence. |
 | Vulnerability management | Lockfiles, exact sensitive pins, SHA-pinned actions, offline secret scanner, this register. | Scheduled gitleaks/SCA/pip-audit/SBOM, advisory SLA, signed provenance, dependency update cadence, external penetration test, and remediation evidence. |
-| Availability and recovery | Durable Postgres/PGlite records, lease-fenced execution/webhook jobs, startup recovery, conservative post-dispatch fencing, and restart-durable staged-file metadata/`bytea` content until expiry. | Production backup schedule, storage monitoring and vacuum policy for potentially large `bytea` rows, encryption/key escrow, restore drills covering staged files, RPO/RTO, regional/replica strategy, multi-replica load/chaos evidence, and dependency outage runbooks. |
+| Availability and recovery | Durable Postgres/PGlite records, lease-fenced execution/webhook jobs, startup recovery, conservative post-dispatch fencing, restart-durable staged-file metadata/`bytea` content until expiry, durable voice-agent resources/receipts, and restart-durable MCP sessions/tasks. | Production backup schedule, storage monitoring and vacuum policy for potentially large `bytea` rows and lazily reclaimed MCP sessions, encryption/key escrow, restore drills covering staged files plus all voice-agent and MCP session/task tables, RPO/RTO, regional/replica strategy, multi-replica load/chaos evidence, and dependency outage runbooks. |
 | Incident response | [`INCIDENT-RESPONSE.md`](./INCIDENT-RESPONSE.md) skeleton and revocation order. | Named on-call/incident roles, paging and forensic tooling, tabletop exercise, counsel/insurer contacts, customer status channel, and postmortem evidence. |
 | Change management | Pull-request CI, scoped tests, immutable action pins, release changesets. | Required review/branch protections evidence, production segregation of duties, deployment approvals, rollback evidence, and emergency-change procedure. |
 | Vendor and data governance | Provider manifests and a partial license/provenance review. | Vendor risk register, subprocessors, DPAs, data-flow inventory, retention/deletion policy, data classification, privacy request process, and license sign-off. |

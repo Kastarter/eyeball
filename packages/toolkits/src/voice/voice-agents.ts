@@ -85,69 +85,69 @@ export interface AgentStore {
     projectId: string,
     draft: VoiceAgentDraft,
     createdAt: string,
-  ): VoiceAgentDefinition;
+  ): Promise<VoiceAgentDefinition>;
   getAgent(
     projectId: string,
     agentId: string,
     revision?: number,
-  ): VoiceAgentDefinition;
+  ): Promise<VoiceAgentDefinition>;
   getRunnableAgent(
     projectId: string,
     agentId: string,
     revision?: number,
-  ): VoiceAgentDefinition;
+  ): Promise<VoiceAgentDefinition>;
   listAgents(
     projectId: string,
     includeDeleted: boolean,
-  ): readonly VoiceAgentSummary[];
+  ): Promise<readonly VoiceAgentSummary[]>;
   updateAgent(
     projectId: string,
     agentId: string,
     expectedRevision: number,
     draft: VoiceAgentDraft,
     createdAt: string,
-  ): VoiceAgentDefinition;
+  ): Promise<VoiceAgentDefinition>;
   deleteAgent(
     projectId: string,
     agentId: string,
     expectedRevision: number,
     deletedAt: string,
-  ): { agentId: string; deletedAt: string };
+  ): Promise<{ agentId: string; deletedAt: string }>;
   attachNumber(
     input: Omit<VoiceAgentBinding, "bindingId" | "createdAt">,
     createdAt: string,
-  ): VoiceAgentBinding;
+  ): Promise<VoiceAgentBinding>;
   getNumberBinding(
     projectId: string,
     phoneNumber: string,
-  ): VoiceAgentBinding | undefined;
-  listNumberBindings(projectId: string): readonly VoiceAgentBinding[];
+  ): Promise<VoiceAgentBinding | undefined>;
+  listNumberBindings(projectId: string): Promise<readonly VoiceAgentBinding[]>;
   detachNumber(
     projectId: string,
     userId: string,
     phoneNumber: string,
-  ): VoiceAgentBinding | undefined;
-  rememberSession(pointer: VoiceAgentSessionPointer): void;
+  ): Promise<VoiceAgentBinding | undefined>;
+  rememberSession(pointer: VoiceAgentSessionPointer): Promise<void>;
   getSession(
     projectId: string,
     userId: string,
     sessionId: string,
-  ): VoiceAgentSessionPointer;
+  ): Promise<VoiceAgentSessionPointer>;
   listSessions(
     projectId: string,
     userId: string,
-  ): readonly VoiceAgentSessionPointer[];
+  ): Promise<readonly VoiceAgentSessionPointer[]>;
   getMessage(
     projectId: string,
     userId: string,
     sessionId: string,
     clientMessageId: string,
-  ): VoiceAgentMessageReceipt | undefined;
+  ): Promise<VoiceAgentMessageReceipt | undefined>;
   rememberMessage(
     projectId: string,
     userId: string,
     receipt: VoiceAgentMessageReceipt,
-  ): void;
+  ): Promise<void>;
 }
 
 interface AgentResource {
@@ -183,11 +183,11 @@ export class InMemoryAgentStore implements AgentStore {
   #agentSequence = 0;
   #bindingSequence = 0;
 
-  createAgent(
+  async createAgent(
     projectId: string,
     draft: VoiceAgentDraft,
     createdAt: string,
-  ): VoiceAgentDefinition {
+  ): Promise<VoiceAgentDefinition> {
     this.#agentSequence += 1;
     const id = `va_${String(this.#agentSequence).padStart(6, "0")}`;
     const definition: VoiceAgentDefinition = {
@@ -207,11 +207,11 @@ export class InMemoryAgentStore implements AgentStore {
     return copy(definition);
   }
 
-  getAgent(
+  async getAgent(
     projectId: string,
     agentId: string,
     revision?: number,
-  ): VoiceAgentDefinition {
+  ): Promise<VoiceAgentDefinition> {
     const resource = this.#resource(projectId, agentId);
     const resolvedRevision = revision ?? resource.activeRevision;
     const definition = resource.revisions.get(resolvedRevision);
@@ -224,11 +224,11 @@ export class InMemoryAgentStore implements AgentStore {
     return copy(definition);
   }
 
-  getRunnableAgent(
+  async getRunnableAgent(
     projectId: string,
     agentId: string,
     revision?: number,
-  ): VoiceAgentDefinition {
+  ): Promise<VoiceAgentDefinition> {
     const resource = this.#resource(projectId, agentId);
     if (resource.deletedAt !== undefined) {
       return storeError(
@@ -236,13 +236,13 @@ export class InMemoryAgentStore implements AgentStore {
         `Voice agent ${agentId} is deleted and cannot start new sessions.`,
       );
     }
-    return this.getAgent(projectId, agentId, revision);
+    return await this.getAgent(projectId, agentId, revision);
   }
 
-  listAgents(
+  async listAgents(
     projectId: string,
     includeDeleted: boolean,
-  ): readonly VoiceAgentSummary[] {
+  ): Promise<readonly VoiceAgentSummary[]> {
     return [...this.#agents.values()]
       .filter(
         (resource) =>
@@ -276,13 +276,13 @@ export class InMemoryAgentStore implements AgentStore {
       .map(copy);
   }
 
-  updateAgent(
+  async updateAgent(
     projectId: string,
     agentId: string,
     expectedRevision: number,
     draft: VoiceAgentDraft,
     createdAt: string,
-  ): VoiceAgentDefinition {
+  ): Promise<VoiceAgentDefinition> {
     const resource = this.#resource(projectId, agentId);
     if (resource.deletedAt !== undefined) {
       return storeError(
@@ -309,12 +309,12 @@ export class InMemoryAgentStore implements AgentStore {
     return copy(definition);
   }
 
-  deleteAgent(
+  async deleteAgent(
     projectId: string,
     agentId: string,
     expectedRevision: number,
     deletedAt: string,
-  ): { agentId: string; deletedAt: string } {
+  ): Promise<{ agentId: string; deletedAt: string }> {
     const resource = this.#resource(projectId, agentId);
     if (resource.deletedAt !== undefined) {
       return { agentId, deletedAt: resource.deletedAt };
@@ -330,10 +330,10 @@ export class InMemoryAgentStore implements AgentStore {
     return { agentId, deletedAt };
   }
 
-  attachNumber(
+  async attachNumber(
     input: Omit<VoiceAgentBinding, "bindingId" | "createdAt">,
     createdAt: string,
-  ): VoiceAgentBinding {
+  ): Promise<VoiceAgentBinding> {
     const key = scopedKey(input.projectId, input.phoneNumber);
     const existing = this.#bindings.get(key);
     if (existing !== undefined) {
@@ -360,15 +360,17 @@ export class InMemoryAgentStore implements AgentStore {
     return copy(binding);
   }
 
-  getNumberBinding(
+  async getNumberBinding(
     projectId: string,
     phoneNumber: string,
-  ): VoiceAgentBinding | undefined {
+  ): Promise<VoiceAgentBinding | undefined> {
     const binding = this.#bindings.get(scopedKey(projectId, phoneNumber));
     return binding === undefined ? undefined : copy(binding);
   }
 
-  listNumberBindings(projectId: string): readonly VoiceAgentBinding[] {
+  async listNumberBindings(
+    projectId: string,
+  ): Promise<readonly VoiceAgentBinding[]> {
     return [...this.#bindings.values()]
       .filter((binding) => binding.projectId === projectId)
       .sort(
@@ -379,11 +381,11 @@ export class InMemoryAgentStore implements AgentStore {
       .map(copy);
   }
 
-  detachNumber(
+  async detachNumber(
     projectId: string,
     userId: string,
     phoneNumber: string,
-  ): VoiceAgentBinding | undefined {
+  ): Promise<VoiceAgentBinding | undefined> {
     const key = scopedKey(projectId, phoneNumber);
     const binding = this.#bindings.get(key);
     if (binding === undefined) return undefined;
@@ -397,7 +399,7 @@ export class InMemoryAgentStore implements AgentStore {
     return copy(binding);
   }
 
-  rememberSession(pointer: VoiceAgentSessionPointer): void {
+  async rememberSession(pointer: VoiceAgentSessionPointer): Promise<void> {
     const existing = this.#sessions.get(pointer.sessionId);
     if (
       existing !== undefined &&
@@ -409,11 +411,11 @@ export class InMemoryAgentStore implements AgentStore {
     this.#sessions.set(pointer.sessionId, copy(pointer));
   }
 
-  getSession(
+  async getSession(
     projectId: string,
     userId: string,
     sessionId: string,
-  ): VoiceAgentSessionPointer {
+  ): Promise<VoiceAgentSessionPointer> {
     const pointer = this.#sessions.get(sessionId);
     if (
       pointer === undefined ||
@@ -428,10 +430,10 @@ export class InMemoryAgentStore implements AgentStore {
     return copy(pointer);
   }
 
-  listSessions(
+  async listSessions(
     projectId: string,
     userId: string,
-  ): readonly VoiceAgentSessionPointer[] {
+  ): Promise<readonly VoiceAgentSessionPointer[]> {
     return [...this.#sessions.values()]
       .filter(
         (pointer) =>
@@ -445,23 +447,23 @@ export class InMemoryAgentStore implements AgentStore {
       .map(copy);
   }
 
-  getMessage(
+  async getMessage(
     projectId: string,
     userId: string,
     sessionId: string,
     clientMessageId: string,
-  ): VoiceAgentMessageReceipt | undefined {
+  ): Promise<VoiceAgentMessageReceipt | undefined> {
     const receipt = this.#messages.get(
       scopedKey(projectId, userId, sessionId, clientMessageId),
     );
     return receipt === undefined ? undefined : copy(receipt);
   }
 
-  rememberMessage(
+  async rememberMessage(
     projectId: string,
     userId: string,
     receipt: VoiceAgentMessageReceipt,
-  ): void {
+  ): Promise<void> {
     this.#messages.set(
       scopedKey(projectId, userId, receipt.sessionId, receipt.clientMessageId),
       copy(receipt),
@@ -810,7 +812,7 @@ export class VoiceAgentsAdapter implements ToolkitAdapter {
   async execute(context: AdapterContext): Promise<JsonValue> {
     switch (context.tool.name) {
       case "voice-agents.create_voice_agent": {
-        const agent = this.store.createAgent(
+        const agent = await this.store.createAgent(
           context.projectId,
           draftFromInput(context),
           context.clock.now().toISOString(),
@@ -818,7 +820,7 @@ export class VoiceAgentsAdapter implements ToolkitAdapter {
         return asJson({ agent });
       }
       case "voice-agents.get_voice_agent": {
-        const agent = this.store.getAgent(
+        const agent = await this.store.getAgent(
           context.projectId,
           requiredInputString(context, "agentId"),
           optionalInteger(context.canonicalInput, "revision"),
@@ -827,15 +829,15 @@ export class VoiceAgentsAdapter implements ToolkitAdapter {
       }
       case "voice-agents.list_voice_agents": {
         const transport = stringValue(context.canonicalInput, "transport");
-        const summaries = this.store
-          .listAgents(
+        const summaries = (
+          await this.store.listAgents(
             context.projectId,
             booleanValue(context.canonicalInput, "includeDeleted") ?? false,
           )
-          .filter(
-            (summary) =>
-              transport === undefined || summary.transport === transport,
-          );
+        ).filter(
+          (summary) =>
+            transport === undefined || summary.transport === transport,
+        );
         const current = page(
           summaries,
           cursorOffset(context, stringValue(context.canonicalInput, "cursor")),
@@ -849,7 +851,7 @@ export class VoiceAgentsAdapter implements ToolkitAdapter {
         });
       }
       case "voice-agents.update_voice_agent": {
-        const agent = this.store.updateAgent(
+        const agent = await this.store.updateAgent(
           context.projectId,
           requiredInputString(context, "agentId"),
           requiredInteger(context, "expectedRevision"),
@@ -860,7 +862,7 @@ export class VoiceAgentsAdapter implements ToolkitAdapter {
       }
       case "voice-agents.delete_voice_agent":
         return asJson(
-          this.store.deleteAgent(
+          await this.store.deleteAgent(
             context.projectId,
             requiredInputString(context, "agentId"),
             requiredInteger(context, "expectedRevision"),
@@ -876,7 +878,7 @@ export class VoiceAgentsAdapter implements ToolkitAdapter {
       case "voice-agents.list_numbers":
         return this.listNumbers(context);
       case "voice-agents.attach_agent_to_number": {
-        const agent = this.store.getRunnableAgent(
+        const agent = await this.store.getRunnableAgent(
           context.projectId,
           requiredInputString(context, "agentId"),
           optionalInteger(context.canonicalInput, "revision"),
@@ -906,7 +908,7 @@ export class VoiceAgentsAdapter implements ToolkitAdapter {
             });
           }
         }
-        const binding = this.store.attachNumber(
+        const binding = await this.store.attachNumber(
           {
             projectId: context.projectId,
             userId: context.userId,
@@ -926,7 +928,7 @@ export class VoiceAgentsAdapter implements ToolkitAdapter {
       }
       case "voice-agents.detach_number": {
         const phoneNumber = requiredInputString(context, "phoneNumber");
-        const binding = this.store.detachNumber(
+        const binding = await this.store.detachNumber(
           context.projectId,
           context.userId,
           phoneNumber,
@@ -984,12 +986,15 @@ export class VoiceAgentsAdapter implements ToolkitAdapter {
     return output;
   }
 
-  private numberWithBinding(
+  private async numberWithBinding(
     context: AdapterContext,
     number: Readonly<Record<string, unknown>>,
-  ): Readonly<Record<string, unknown>> {
+  ): Promise<Readonly<Record<string, unknown>>> {
     const phoneNumber = requiredStringField(context, number, "phoneNumber");
-    const binding = this.store.getNumberBinding(context.projectId, phoneNumber);
+    const binding = await this.store.getNumberBinding(
+      context.projectId,
+      phoneNumber,
+    );
     return {
       ...copy(number),
       bindingStatus: binding === undefined ? "unbound" : "bound",
@@ -1022,7 +1027,9 @@ export class VoiceAgentsAdapter implements ToolkitAdapter {
     if (!isRecord(output.number)) {
       throw providerError(context, "Twilio omitted the acquired number.");
     }
-    return asJson({ number: this.numberWithBinding(context, output.number) });
+    return asJson({
+      number: await this.numberWithBinding(context, output.number),
+    });
   }
 
   private async listNumbers(context: AdapterContext): Promise<JsonValue> {
@@ -1041,8 +1048,10 @@ export class VoiceAgentsAdapter implements ToolkitAdapter {
       },
     );
     return asJson({
-      numbers: records(output.numbers).map((number) =>
-        this.numberWithBinding(context, number),
+      numbers: await Promise.all(
+        records(output.numbers).map((number) =>
+          this.numberWithBinding(context, number),
+        ),
       ),
       ...(typeof output.nextPageToken === "string"
         ? { nextPageToken: output.nextPageToken }
@@ -1052,7 +1061,10 @@ export class VoiceAgentsAdapter implements ToolkitAdapter {
 
   private async releaseNumber(context: AdapterContext): Promise<JsonValue> {
     const phoneNumber = requiredInputString(context, "phoneNumber");
-    const binding = this.store.getNumberBinding(context.projectId, phoneNumber);
+    const binding = await this.store.getNumberBinding(
+      context.projectId,
+      phoneNumber,
+    );
     if (binding !== undefined) {
       throw new EyeballError({
         code: TOOL_ERROR_CODES.INVALID_INPUT,
@@ -1113,11 +1125,11 @@ export class VoiceAgentsAdapter implements ToolkitAdapter {
     };
   }
 
-  private rememberRemoteSession(
+  private async rememberRemoteSession(
     context: AdapterContext,
     agent: VoiceAgentDefinition,
     session: VoiceAgentSession,
-  ): VoiceAgentSessionPointer {
+  ): Promise<VoiceAgentSessionPointer> {
     const pointer: VoiceAgentSessionPointer = {
       sessionId: session.id,
       projectId: context.projectId,
@@ -1128,7 +1140,7 @@ export class VoiceAgentsAdapter implements ToolkitAdapter {
       createdAt: session.createdAt,
     };
     assertTrustedSession(context, session, pointer);
-    this.store.rememberSession(pointer);
+    await this.store.rememberSession(pointer);
     return pointer;
   }
 
@@ -1176,7 +1188,7 @@ export class VoiceAgentsAdapter implements ToolkitAdapter {
   }
 
   private async createWebSession(context: AdapterContext): Promise<JsonValue> {
-    const agent = this.store.getRunnableAgent(
+    const agent = await this.store.getRunnableAgent(
       context.projectId,
       requiredInputString(context, "agentId"),
       optionalInteger(context.canonicalInput, "revision"),
@@ -1251,7 +1263,7 @@ export class VoiceAgentsAdapter implements ToolkitAdapter {
           ...(metadata === undefined ? {} : { metadata }),
         }),
       );
-      this.rememberRemoteSession(context, agent, session);
+      await this.rememberRemoteSession(context, agent, session);
     } else {
       const body = await pipecatObject(
         this.sessionRuntimeContext(context),
@@ -1285,7 +1297,7 @@ export class VoiceAgentsAdapter implements ToolkitAdapter {
         createdAt: session.createdAt,
       };
       assertTrustedSession(context, session, pointer);
-      this.store.rememberSession(pointer);
+      await this.store.rememberSession(pointer);
     }
 
     return asJson({
@@ -1300,7 +1312,7 @@ export class VoiceAgentsAdapter implements ToolkitAdapter {
   }
 
   private async startAgentCall(context: AdapterContext): Promise<JsonValue> {
-    const agent = this.store.getRunnableAgent(
+    const agent = await this.store.getRunnableAgent(
       context.projectId,
       requiredInputString(context, "agentId"),
       optionalInteger(context.canonicalInput, "revision"),
@@ -1318,14 +1330,12 @@ export class VoiceAgentsAdapter implements ToolkitAdapter {
     );
     const transport = resolveOutboundTransport({
       mode: this.#sessionDriver === undefined ? "development" : "remote-worker",
-      bindings: this.store
-        .listNumberBindings(context.projectId)
-        .filter(
-          (binding) =>
-            binding.userId === context.userId &&
-            binding.agentId === agent.id &&
-            binding.revision === agent.revision,
-        ),
+      bindings: (await this.store.listNumberBindings(context.projectId)).filter(
+        (binding) =>
+          binding.userId === context.userId &&
+          binding.agentId === agent.id &&
+          binding.revision === agent.revision,
+      ),
       ...(requestedFrom === undefined ? {} : { from: requestedFrom }),
       ...(requestedConnectionId === undefined
         ? {}
@@ -1351,7 +1361,7 @@ export class VoiceAgentsAdapter implements ToolkitAdapter {
           ...(metadata === undefined ? {} : { metadata }),
         }),
       );
-      const pointer = this.rememberRemoteSession(context, agent, session);
+      const pointer = await this.rememberRemoteSession(context, agent, session);
       return asJson({
         session,
         callId: pointer.callId,
@@ -1396,7 +1406,7 @@ export class VoiceAgentsAdapter implements ToolkitAdapter {
       createdAt: session.createdAt,
     };
     assertTrustedSession(context, session, pointer);
-    this.store.rememberSession(pointer);
+    await this.store.rememberSession(pointer);
     return asJson({
       session,
       callId: pointer.callId,
@@ -1411,7 +1421,7 @@ export class VoiceAgentsAdapter implements ToolkitAdapter {
     session: VoiceAgentSession;
     pointer: VoiceAgentSessionPointer;
   }> {
-    const pointer = this.store.getSession(
+    const pointer = await this.store.getSession(
       context.projectId,
       context.userId,
       sessionId,
@@ -1481,10 +1491,13 @@ export class VoiceAgentsAdapter implements ToolkitAdapter {
   private async listAgentSessions(context: AdapterContext): Promise<JsonValue> {
     const requestedAgentId = stringValue(context.canonicalInput, "agentId");
     const requestedState = stringValue(context.canonicalInput, "state");
+    const pointers = await this.store.listSessions(
+      context.projectId,
+      context.userId,
+    );
     const sessions = (
       await Promise.all(
-        this.store
-          .listSessions(context.projectId, context.userId)
+        pointers
           .filter(
             (pointer) =>
               requestedAgentId === undefined ||
@@ -1517,7 +1530,7 @@ export class VoiceAgentsAdapter implements ToolkitAdapter {
   ): Promise<JsonValue> {
     const sessionId = requiredInputString(context, "sessionId");
     const { session } = await this.readSession(context, sessionId);
-    const agent = this.store.getAgent(
+    const agent = await this.store.getAgent(
       context.projectId,
       session.agentId,
       session.agentRevision,
@@ -1565,7 +1578,7 @@ export class VoiceAgentsAdapter implements ToolkitAdapter {
     const suppliedSessionId = stringValue(context.canonicalInput, "sessionId");
 
     if (suppliedSessionId === undefined) {
-      const agent = this.store.getRunnableAgent(
+      const agent = await this.store.getRunnableAgent(
         context.projectId,
         agentId,
         revision,
@@ -1586,7 +1599,11 @@ export class VoiceAgentsAdapter implements ToolkitAdapter {
         const session = await this.#sessionDriver.startSession(
           this.remoteStartRequest(context, agent, { kind: "chat" }),
         );
-        const pointer = this.rememberRemoteSession(context, agent, session);
+        const pointer = await this.rememberRemoteSession(
+          context,
+          agent,
+          session,
+        );
         let turn: Omit<VoiceWorkerChatTurnResponse, "contractVersion">;
         try {
           turn = await this.#sessionDriver.sendTurn(session.id, {
@@ -1611,7 +1628,11 @@ export class VoiceAgentsAdapter implements ToolkitAdapter {
           userMessageId: turn.turnId,
           assistantMessage: turn.assistantMessage,
         };
-        this.store.rememberMessage(context.projectId, context.userId, receipt);
+        await this.store.rememberMessage(
+          context.projectId,
+          context.userId,
+          receipt,
+        );
         return asJson({
           session: turn.session,
           userMessageId: turn.turnId,
@@ -1644,7 +1665,7 @@ export class VoiceAgentsAdapter implements ToolkitAdapter {
         createdAt: session.createdAt,
       };
       assertTrustedSession(context, session, pointer);
-      this.store.rememberSession(pointer);
+      await this.store.rememberSession(pointer);
       const receipt: VoiceAgentMessageReceipt = {
         sessionId: session.id,
         clientMessageId,
@@ -1652,7 +1673,11 @@ export class VoiceAgentsAdapter implements ToolkitAdapter {
         userMessageId: `message_${clientMessageId}`,
         assistantMessage: "",
       };
-      this.store.rememberMessage(context.projectId, context.userId, receipt);
+      await this.store.rememberMessage(
+        context.projectId,
+        context.userId,
+        receipt,
+      );
       return asJson({
         session,
         userMessageId: receipt.userMessageId,
@@ -1673,8 +1698,12 @@ export class VoiceAgentsAdapter implements ToolkitAdapter {
         message: `${context.tool.name}: sessionId is pinned to a different agent revision.`,
       });
     }
-    this.store.getAgent(context.projectId, agentId, pointer.agentRevision);
-    const existing = this.store.getMessage(
+    await this.store.getAgent(
+      context.projectId,
+      agentId,
+      pointer.agentRevision,
+    );
+    const existing = await this.store.getMessage(
       context.projectId,
       context.userId,
       suppliedSessionId,
@@ -1737,7 +1766,11 @@ export class VoiceAgentsAdapter implements ToolkitAdapter {
       userMessageId,
       assistantMessage: remoteTurn?.assistantMessage ?? message,
     };
-    this.store.rememberMessage(context.projectId, context.userId, receipt);
+    await this.store.rememberMessage(
+      context.projectId,
+      context.userId,
+      receipt,
+    );
     return asJson({
       session,
       userMessageId,

@@ -2,9 +2,9 @@
 
 State as of 2026-07-20. The 0.2.0 source cut is complete, and two audit sweeps
 (cross-feature wiring; dashboard/SDK/docs parity) produced a milestone-ordered
-gap ledger. Milestones **M1 (hosted execution slice)** and **M2 (billing as a
-product)** are DONE. This file lists what remains, in the intended order. Each
-item was scoped from audit findings with `file:line` evidence — search the
+gap ledger. Milestones **M1 (hosted execution slice)**, **M2 (billing as a
+product)**, and **M3 (restart-state durability)** are DONE. This file lists what
+remains, in the intended order. Each item was scoped from audit findings with `file:line` evidence — search the
 audit IDs (A-xx, SEC-xxx, CLOUD-xxx) in `docs/SECURITY.md`, `cloud/SECURITY.md`,
 and the git history for full context.
 
@@ -30,17 +30,13 @@ change. Never bind ports in tests; use in-process apps (`app.request`, PGlite).
 - M3.2 Durable FileStore and files list: Postgres `bytea` content behind the
   existing seam, durable runtime wiring, paginated `GET /v1/files`, and
   `eyeball.files.list`. Audit finding 8 + A-04.
-
-## M3 — Restart and replica safety (executor durability)
-
-Until M3.3 lands, deploy ONE executor replica and ONE MCP gateway
-replica.
-
-3. **M3.3 Durable AgentStore + MCP SessionStore.** Voice agent definitions,
-   bindings, and session pointers are process-local because `AgentStore` is
-   synchronous — convert the seam to async, add the Postgres impl. Add the
-   Postgres MCP `SessionStore` implementation behind the existing async seam.
-   Audit finding 7 tail; CLAUDE.md Known Issues.
+- M3.3 Durable AgentStore + MCP SessionStore: async `AgentStore`; stable durable
+  agent heads with immutable revisions; revision-pinned number bindings and
+  executor session pointers; durable message receipts; one-way-bound durable MCP
+  sessions/tasks; and zero-database memory fallbacks. Audit finding 7 tail.
+  M3 closes restart-state loss for these records, not general multi-replica
+  certification: distributed trigger polling, global rate/concurrency limits,
+  remote voice observation, backup/restore, and load/chaos evidence remain open.
 
 ## M4 — Voice hardening (multi-tenant + observability)
 

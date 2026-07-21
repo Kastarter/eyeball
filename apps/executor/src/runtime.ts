@@ -2,6 +2,7 @@ import { randomUUID } from "node:crypto";
 import { defaultCatalog } from "@eyeball/catalog";
 import { type CredentialProvider, EyeballError } from "@eyeball/core";
 import {
+  type AgentStore,
   defaultToolkitAdapters,
   InMemoryAgentStore,
   RemoteVoiceSessionDriver,
@@ -222,6 +223,7 @@ function configuredUsage(
 function configuredVoiceWorker(
   env: Readonly<Record<string, string | undefined>>,
   catalog: RuntimeCatalog,
+  agentStore: AgentStore,
   fetchImpl?: typeof fetch,
 ): {
   adapters: AdapterRegistry;
@@ -268,7 +270,6 @@ function configuredVoiceWorker(
             });
           },
         });
-  const agentStore = new InMemoryAgentStore();
   const voiceAgents = new VoiceAgentsAdapter({
     store: agentStore,
     ...(driver === undefined ? {} : { sessionDriver: driver }),
@@ -351,7 +352,6 @@ export async function createExecutorRuntime(
         ? {}
         : { fetchImpl: options.fetchImpl }),
     });
-  const voiceWorker = configuredVoiceWorker(env, catalog, options.fetchImpl);
   const otel = await initializeOpenTelemetry(env);
   const configuredTracer = options.telemetry?.tracer ?? otel.tracer;
   const configuredMeter = options.telemetry?.meter ?? otel.meter;
@@ -368,6 +368,7 @@ export async function createExecutorRuntime(
   let taskSystem: ExecutorTaskSystem | undefined;
   let usage: ConfiguredUsage | undefined;
   let fileExpirySweeper: FileExpirySweeper | undefined;
+  let voiceWorker: ReturnType<typeof configuredVoiceWorker> | undefined;
   try {
     const durable = databaseUrl !== undefined && databaseUrl.length > 0;
     if (durable) {
@@ -378,6 +379,15 @@ export async function createExecutorRuntime(
       )(databaseUrl);
     }
     const initializedPersistence = persistence;
+    const agentStore =
+      initializedPersistence?.agentStore ?? new InMemoryAgentStore();
+    const initializedVoiceWorker = configuredVoiceWorker(
+      env,
+      catalog,
+      agentStore,
+      options.fetchImpl,
+    );
+    voiceWorker = initializedVoiceWorker;
     const clock = options.clock ?? systemClock;
     if (initializedPersistence !== undefined) {
       await sweepExpiredFiles(
@@ -449,9 +459,9 @@ export async function createExecutorRuntime(
     const engine = new ExecutionEngine({
       env,
       catalog,
-      ...(voiceWorker.adapters === undefined
+      ...(initializedVoiceWorker.adapters === undefined
         ? {}
-        : { adapters: voiceWorker.adapters }),
+        : { adapters: initializedVoiceWorker.adapters }),
       credentialProvider,
       queue: taskSystem,
       ...(initializedPersistence === undefined
@@ -469,7 +479,7 @@ export async function createExecutorRuntime(
         ? {}
         : { fetchImpl: options.fetchImpl }),
     });
-    voiceWorker.bind(engine);
+    initializedVoiceWorker.bind(engine);
     taskSystem.bindHandlers(
       createExecutorJobHandlerRegistry({ engine, webhookDeliverer }),
     );
@@ -513,7 +523,7 @@ export async function createExecutorRuntime(
         usage?.flusher.stop();
         try {
           await fileExpirySweeper?.onIdle();
-          await voiceWorker.driver?.close();
+          await initializedVoiceWorker.driver?.close();
           await drainRuntime(runningTaskSystem, triggerPollingScheduler);
           await engine.usageGate.onIdle();
           if (usage !== undefined) {
@@ -534,7 +544,7 @@ export async function createExecutorRuntime(
     await fileExpirySweeper?.onIdle();
     await taskSystem?.stopClaiming();
     await taskSystem?.drainOwned();
-    await voiceWorker.driver?.close();
+    await voiceWorker?.driver?.close();
     await persistence?.close();
     await otel.shutdown();
     throw error;

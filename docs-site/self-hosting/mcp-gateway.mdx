@@ -8,6 +8,7 @@ pnpm --filter @eyeball/mcp-gateway build
 EYEBALL_API_KEYS="mcp_host_key:proj_local:demo_user" \
 EYEBALL_EXECUTOR_API_KEY="eyeball_local_key" \
 EYEBALL_EXECUTOR_URL="http://127.0.0.1:3000" \
+EYEBALL_DATABASE_URL="postgresql://eyeball:eyeball_dev@127.0.0.1:5432/eyeball" \
 EYEBALL_USER_ID="demo_user" \
 EYEBALL_MCP_DISCOVERY="search" \
 EYEBALL_MCP_ALLOWED_ORIGINS="https://agent.example.com" \
@@ -24,6 +25,7 @@ pnpm --filter @eyeball/mcp-gateway start
 | `EYEBALL_API_KEYS` | Inbound `key:projectId[:userId]` policy; pin keys delegated to less-trusted hosts |
 | `EYEBALL_EXECUTOR_API_KEY` | Separate server-side key forwarded to the executor after inbound authentication |
 | `EYEBALL_EXECUTOR_URL` | Executor origin; defaults to `http://127.0.0.1:3000` |
+| `EYEBALL_DATABASE_URL` | Optional Postgres connection for durable negotiated sessions and task records; blank or absent selects memory |
 | `EYEBALL_USER_ID` | Optional default external user |
 | `EYEBALL_MCP_DISCOVERY` | `catalog` or `search` |
 | `EYEBALL_MCP_ALLOWED_ORIGINS` | Comma-separated browser-origin allowlist; requests carrying `Origin` are rejected when this is unset |
@@ -36,7 +38,15 @@ pnpm --filter @eyeball/mcp-gateway start
 
 The gateway supports JSON responses and SSE responses on `POST /mcp`, a notification stream on `GET /mcp`, and authenticated session teardown on `DELETE /mcp`. It rejects unknown or expired session IDs with 404 and hashes the inbound credential before binding it to stored state. Browser requests with an untrusted `Origin` are rejected before authentication.
 
-The default `InMemorySessionStore` and task pollers are process-local. Inject a durable `SessionStore` when negotiated sessions must survive a gateway restart; its `update` implementation must be atomic. After restart, the next authenticated request resumes polling for durable non-terminal tasks. SSE subscribers and timer handles are intentionally never persisted.
+The stock server selects `PostgresSessionStore` when `EYEBALL_DATABASE_URL` is nonblank, runs the gateway's committed migrations before listening, and closes active SSE listeners and process-local timers before draining HTTP connections and closing its pool during graceful shutdown. Blank or absent configuration selects `InMemorySessionStore`; direct `createMcpGatewayApp()` composition remains synchronous and in-memory unless a store is injected.
+
+The gateway owns an independent Drizzle migration history. Its migration ledger lives in `eyeball_mcp_gateway.__drizzle_migrations`, so sharing one physical database with the executor cannot cause either application's `0000` migration to suppress the other. Each service applies only its own migrations at boot; root `pnpm db:migrate` applies both histories before a coordinated deployment.
+
+Postgres stores the negotiated session and its task map atomically in one row. Sessions and non-terminal task records survive gateway reconstruction, but polling is not attempted at boot because the downstream executor key is deliberately not persisted. The next correctly authenticated GET or POST supplies that credential and rearms durable `working` or `input_required` tasks. A different inbound credential or configured project/pinned-user authority hashes to a different binding and cannot attach to the session.
+
+Only the SHA-256/base64url `authBinding` is persisted. Its v2 input commits to the inbound credential and configured project/pinned-user authority, so neither bearer nor plaintext authority is stored and a remapped principal cannot restore the session. The downstream executor key, authorization header, request context, timer handles, SSE listeners, and event bodies are also not stored. Logical expiry is still enforced by the protocol on access. An untouched expired row may remain physically present until operational cleanup; index cleanup work by `mcp_sessions.expires_at` and preserve the protocol's lazy deletion behavior.
+
+SSE subscribers and timer handles remain process-local, and no replay log is provided.
 
 The stock `HttpMcpExecutor` allocates async work and reads execution status through the SDK. It does not advertise `tasks/cancel` because the executor has no cancellation route; a custom `McpExecutor` may implement the optional cancellation seam.
 

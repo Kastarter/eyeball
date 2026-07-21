@@ -8,9 +8,10 @@ Agent / MCP client
         │
         ▼
 MCP gateway ──────► Executor API ──────► Adapter ──────► Provider
-                         │                   ▲
-                         ▼                   │
-                Execution store/queue   CredentialProvider
+     │                   │   │               ▲
+     ▼                   ▼   ▼               │
+ SessionStore    Execution store/queue   CredentialProvider
+                         AgentStore
 
 Dashboard ─────────────► Executor API
 Mocks replace only the provider side of the adapter boundary.
@@ -23,6 +24,6 @@ Mocks replace only the provider side of the adapter boundary.
 | Credential provider | Selects a credential by project, user, toolkit, connection |
 | Adapter | Translates canonical JSON to provider HTTP and normalizes results |
 
-The default execution store and queue are in-memory. For durable production work, implement the exported store/queue interfaces and preserve terminal immutability and idempotency semantics.
+The default executor and gateway compositions are in memory. With `EYEBALL_DATABASE_URL`, the stock executor selects the provided Postgres execution/file/webhook/trigger/usage/agent stores and the stock gateway selects its Postgres session/task store. The two applications own independent committed migration histories, while root `pnpm db:migrate` applies both. Custom deployments may replace any exported storage seam, but must preserve terminal immutability, idempotency, immutable agent revisions, exact revision pinning, one-way session credential binding, and atomic session updates.
 
 Expose the gateway and dashboard through your own TLS, authentication, and rate limiting layer. The executor provides [redacted structured logs and optional OpenTelemetry signals](/self-hosting/observability); collectors, retention, dashboards, alerts, and access control remain deployment responsibilities.

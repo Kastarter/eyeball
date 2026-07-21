@@ -983,10 +983,12 @@ are rejected because the HTTP `Host` value is not a DNS-rebinding trust anchor.
 Initialization returns a cryptographically random `Mcp-Session-Id`. Subsequent stateful
 requests MUST supply that server-issued ID and the negotiated protocol header; invented,
 expired, deleted, or differently authenticated IDs return HTTP 404. The default session TTL
-is 24 hours. Session state is stored through `SessionStore`; the stock implementation is
-process-local, while injected durable implementations MUST make read-modify-write updates
-atomic. Stored sessions contain a one-way inbound-credential binding, never the credential.
-SSE listeners, polling timers, and bearer credentials remain process-local. Event IDs are
+is 24 hours. Session state is stored through `SessionStore`; direct or injected application
+composition remains in memory by default, while the stock server selects the Postgres
+implementation when `EYEBALL_DATABASE_URL` is configured. Durable read-modify-write updates
+MUST be atomic. Stored sessions contain a one-way inbound-credential binding, never either
+bearer credential. SSE listeners, polling timers, and bearer credentials remain process-local.
+After restart, polling resumes on the next correctly authenticated request. Event IDs are
 emitted for Streamable HTTP framing, but this source profile does not persist an event replay
 log and therefore does not promise `Last-Event-ID` redelivery.
 

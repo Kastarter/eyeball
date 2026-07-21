@@ -7,9 +7,13 @@ import {
 import { describe, expect, it, vi } from "vitest";
 import {
   createMcpGatewayApp,
+  createPgliteMcpGatewayStoreBundle,
+  InMemorySessionStore,
   MCP_PROTOCOL_VERSION,
+  type McpClock,
   type McpExecuteRequest,
   type McpExecutor,
+  type SessionStore,
   type TerminalExecution,
 } from "../src/index.js";
 
@@ -17,6 +21,61 @@ const API_KEY = "ey_test_mcp_tasks";
 const USER_ID = "user_mcp_tasks";
 const SESSION_ID = "mcp_tasks_session";
 const TASK_ID = createExecutionId("mcp_task");
+
+class ManualClock implements McpClock {
+  value = Date.parse("2026-07-19T00:00:00.000Z");
+  readonly handles = new Map<object, { callback: () => void; runAt: number }>();
+
+  now(): number {
+    return this.value;
+  }
+
+  setTimeout(callback: () => void, delayMs: number): object {
+    const handle = {};
+    this.handles.set(handle, { callback, runAt: this.value + delayMs });
+    return handle;
+  }
+
+  clearTimeout(handle: unknown): void {
+    if (typeof handle === "object" && handle !== null) {
+      this.handles.delete(handle);
+    }
+  }
+
+  advance(milliseconds: number): void {
+    this.value += milliseconds;
+    while (true) {
+      const due = [...this.handles].find(
+        ([, scheduled]) => scheduled.runAt <= this.value,
+      );
+      if (due === undefined) return;
+      this.handles.delete(due[0]);
+      due[1].callback();
+    }
+  }
+}
+
+interface TestSessionStore {
+  store: SessionStore;
+  close(): Promise<void>;
+}
+
+const sessionStores = [
+  {
+    name: "memory",
+    create: async (): Promise<TestSessionStore> => ({
+      store: new InMemorySessionStore(),
+      close: async () => undefined,
+    }),
+  },
+  {
+    name: "PGlite",
+    create: async (): Promise<TestSessionStore> => {
+      const bundle = await createPgliteMcpGatewayStoreBundle();
+      return { store: bundle.sessionStore, close: () => bundle.close() };
+    },
+  },
+] as const;
 
 function pending(): ExecutionResult {
   return {
@@ -424,47 +483,90 @@ describe("negotiated MCP Tasks", () => {
     });
   });
 
-  it("does not let an in-flight status refresh overwrite cancellation", async () => {
-    let resolveStatus: ((record: ExecutionRecord) => void) | undefined;
-    const get = vi.fn(
-      () =>
-        new Promise<ExecutionRecord>((resolve) => {
-          resolveStatus = resolve;
-        }),
-    );
-    const execution = {
-      ...taskExecutor(),
-      get,
-      cancel: vi.fn(async () => undefined),
-    };
-    const app = createMcpGatewayApp({
-      executor: execution,
-      apiKey: API_KEY,
-      userId: USER_ID,
-      sessionIdFactory: () => SESSION_ID,
-      taskPollMs: 60_000,
-    });
-    await initialize(app);
-    await post(app, taskCall, SESSION_ID);
+  it.each(
+    sessionStores,
+  )("does not let an in-flight status refresh overwrite cancellation with $name", async ({
+    create,
+  }) => {
+    const sessions = await create();
+    try {
+      let resolveStatus: ((record: ExecutionRecord) => void) | undefined;
+      const get = vi.fn(
+        () =>
+          new Promise<ExecutionRecord>((resolve) => {
+            resolveStatus = resolve;
+          }),
+      );
+      const execution = {
+        ...taskExecutor(),
+        get,
+        cancel: vi.fn(async () => undefined),
+      };
+      const app = createMcpGatewayApp({
+        executor: execution,
+        apiKey: API_KEY,
+        userId: USER_ID,
+        sessionIdFactory: () => SESSION_ID,
+        taskPollMs: 60_000,
+        sessionStore: sessions.store,
+      });
+      await initialize(app);
+      await post(app, taskCall, SESSION_ID);
 
-    const refreshing = post(
-      app,
-      rpc("tasks/get", { taskId: TASK_ID }, "refresh-race"),
-      SESSION_ID,
-    );
-    await vi.waitFor(() => expect(get).toHaveBeenCalledTimes(1));
-    const cancelled = await post(
-      app,
-      rpc("tasks/cancel", { taskId: TASK_ID }, "cancel-race"),
-      SESSION_ID,
-    );
-    resolveStatus?.(running());
+      const refreshing = post(
+        app,
+        rpc("tasks/get", { taskId: TASK_ID }, "refresh-race"),
+        SESSION_ID,
+      );
+      await vi.waitFor(() => expect(get).toHaveBeenCalledTimes(1));
+      const cancelled = await post(
+        app,
+        rpc("tasks/cancel", { taskId: TASK_ID }, "cancel-race"),
+        SESSION_ID,
+      );
+      resolveStatus?.(running());
 
-    await expect(cancelled.json()).resolves.toMatchObject({
-      result: { taskId: TASK_ID, status: "cancelled" },
-    });
-    await expect((await refreshing).json()).resolves.toMatchObject({
-      result: { taskId: TASK_ID, status: "cancelled" },
-    });
+      await expect(cancelled.json()).resolves.toMatchObject({
+        result: { taskId: TASK_ID, status: "cancelled" },
+      });
+      await expect((await refreshing).json()).resolves.toMatchObject({
+        result: { taskId: TASK_ID, status: "cancelled" },
+      });
+    } finally {
+      await sessions.close();
+    }
+  });
+
+  it("removes expired task records atomically from PGlite", async () => {
+    const bundle = await createPgliteMcpGatewayStoreBundle();
+    const clock = new ManualClock();
+    try {
+      const app = createMcpGatewayApp({
+        executor: taskExecutor(),
+        apiKey: API_KEY,
+        userId: USER_ID,
+        sessionIdFactory: () => SESSION_ID,
+        taskPollMs: 60_000,
+        sessionStore: bundle.sessionStore,
+        clock,
+      });
+      await initialize(app);
+      await post(app, taskCall, SESSION_ID);
+
+      clock.advance(120_001);
+      const expired = await post(
+        app,
+        rpc("tasks/get", { taskId: TASK_ID }, "expired-task"),
+        SESSION_ID,
+      );
+      await expect(expired.json()).resolves.toMatchObject({
+        error: { code: -32602, message: "Task not found." },
+      });
+      await expect(bundle.sessionStore.get(SESSION_ID)).resolves.toMatchObject({
+        tasks: {},
+      });
+    } finally {
+      await bundle.close();
+    }
   });
 });

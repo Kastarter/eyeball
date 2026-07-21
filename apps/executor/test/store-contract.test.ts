@@ -6,7 +6,13 @@ import {
   createFileId,
   type ExecutionRecord,
   MockCredentialProvider,
+  type VoiceAgentDraft,
 } from "@eyeball/core";
+import {
+  InMemoryAgentStore,
+  TwilioAdapter,
+  VoiceAgentsAdapter,
+} from "@eyeball/toolkits";
 import { afterAll, expect, it, vi } from "vitest";
 import {
   createExecutorApp,
@@ -34,6 +40,29 @@ import {
 } from "./helpers/store-contract-suite.js";
 
 let pgliteBundlePromise: Promise<PgliteStoreBundle> | undefined;
+
+const contractAgentDraft: VoiceAgentDraft = {
+  name: "Durable contract agent",
+  systemPrompt: "Handle the durable contract call.",
+  llm: { model: "model:fixture:durable-contract" },
+  voice: {
+    tts: { provider: "elevenlabs", voiceId: "voice_contract" },
+    stt: { provider: "deepgram", model: "nova-3" },
+  },
+  transport: "pstn:twilio",
+  tools: [],
+  guardrails: {
+    maxDurationSeconds: 300,
+    handoffToHuman: { enabled: false },
+  },
+  webhooks: { endpointIds: [], transcript: true, events: [] },
+  recordingPolicy: {
+    mode: "audio_and_transcript",
+    consent: "agent_announcement",
+    retentionDays: 7,
+    redactDtmf: true,
+  },
+};
 
 function pgliteStores(): Promise<PgliteStoreBundle> {
   pgliteBundlePromise ??= createPgliteStoreBundle();
@@ -71,6 +100,7 @@ registerStoreContractSuite([
       const webhookDeliveryStore = new InMemoryWebhookDeliveryStore();
       const jobStore = new InMemoryJobStore();
       return {
+        agentStore: new InMemoryAgentStore(),
         executionStore: new InMemoryExecutionStore(),
         fileStore: new InMemoryFileStore(),
         webhookEndpointStore: new InMemoryWebhookEndpointStore(),
@@ -106,14 +136,64 @@ it("keeps zero-config runtime stores in memory", async () => {
   expect(runtime.engine.triggerService.stateStore).toBeInstanceOf(
     InMemoryTriggerStateStore,
   );
+  expect(runtime.engine.adapters.require("voice-agents")).toBeInstanceOf(
+    VoiceAgentsAdapter,
+  );
+  expect(
+    (runtime.engine.adapters.require("voice-agents") as VoiceAgentsAdapter)
+      .store,
+  ).toBeInstanceOf(InMemoryAgentStore);
   await runtime.close();
 });
 
 it("wires every durable store when EYEBALL_DATABASE_URL is set", async () => {
   const bundle = await createPgliteStoreBundle();
+  const projectId = "project_durable_wiring";
+  const userId = "user_durable_wiring";
+  const phoneNumber = "+12025550173";
+  const agent = await bundle.agentStore.createAgent(
+    projectId,
+    contractAgentDraft,
+    "2026-07-20T03:00:00.000Z",
+  );
+  await bundle.agentStore.attachNumber(
+    {
+      projectId,
+      userId,
+      agentId: agent.id,
+      revision: agent.revision,
+      phoneNumber,
+      transportConnectionId: "conn_durable_wiring",
+    },
+    "2026-07-20T03:00:01.000Z",
+  );
   const runtime = await createExecutorRuntime({
     env: { EYEBALL_DATABASE_URL: "postgresql://contract.invalid/eyeball" },
-    credentialProvider: new MockCredentialProvider([]),
+    credentialProvider: new MockCredentialProvider([
+      {
+        match: { projectId, userId, toolkitSlug: "twilio" },
+        credential: {
+          type: "basic",
+          username: "ACdurable",
+          password: "fixture:valid",
+        },
+      },
+    ]),
+    fetchImpl: async () =>
+      new Response(
+        JSON.stringify({
+          incoming_phone_numbers: [
+            {
+              sid: "PNdurable",
+              phone_number: phoneNumber,
+              friendly_name: "Durable line",
+              date_created: "2026-07-20T03:00:00.000Z",
+            },
+          ],
+          next_page_uri: null,
+        }),
+        { headers: { "Content-Type": "application/json" } },
+      ),
     persistenceFactory: async () => bundle,
   });
   try {
@@ -132,8 +212,244 @@ it("wires every durable store when EYEBALL_DATABASE_URL is set", async () => {
     expect(runtime.engine.triggerService.stateStore).toBe(
       bundle.triggerStateStore,
     );
+    expect(
+      (runtime.engine.adapters.require("voice-agents") as VoiceAgentsAdapter)
+        .store,
+    ).toBe(bundle.agentStore);
+    expect(runtime.engine.adapters.require("twilio")).toBeInstanceOf(
+      TwilioAdapter,
+    );
+    const inventory = await runtime.engine.execute({
+      projectId,
+      idempotencyKey: "durable-twilio-inventory",
+      request: {
+        tool: "twilio.list_numbers",
+        userId,
+        input: {},
+        mode: "sync",
+      },
+    });
+    expect(inventory.response).toMatchObject({
+      status: "succeeded",
+      output: {
+        numbers: [
+          {
+            phoneNumber,
+            bindingStatus: "bound",
+            binding: { agentId: agent.id, revision: 1 },
+          },
+        ],
+      },
+    });
   } finally {
     await runtime.close();
+  }
+});
+
+it("migrates the durable voice-agent aggregate with exact revision constraints", async () => {
+  const bundle = await pgliteStores();
+  const tableNames = [
+    "voice_agents",
+    "voice_agent_revisions",
+    "voice_agent_number_bindings",
+    "voice_agent_session_pointers",
+    "voice_agent_message_receipts",
+  ];
+  const columns = await bundle.client.query<{
+    table_name: string;
+    column_name: string;
+  }>(
+    `select table_name, column_name
+       from information_schema.columns
+      where table_schema = 'public'
+        and table_name = any($1)
+      order by table_name, ordinal_position`,
+    [tableNames],
+  );
+  expect(new Set(columns.rows.map(({ table_name }) => table_name))).toEqual(
+    new Set(tableNames),
+  );
+  expect(
+    columns.rows
+      .filter(({ table_name }) => table_name === "voice_agent_revisions")
+      .map(({ column_name }) => column_name),
+  ).toEqual(["project_id", "agent_id", "revision", "definition", "created_at"]);
+
+  const constraints = await bundle.client.query<{
+    constraint_name: string;
+  }>(
+    `select con.conname as constraint_name
+       from pg_constraint con
+       join pg_class rel on rel.oid = con.conrelid
+      where rel.relname = any($1)`,
+    [tableNames],
+  );
+  const names = new Set(
+    constraints.rows.map(({ constraint_name }) => constraint_name),
+  );
+  expect(names.has("voice_agent_revisions_agent_fk")).toBe(true);
+  expect(names.has("voice_agent_number_bindings_revision_fk")).toBe(true);
+  expect(names.has("voice_agent_session_pointers_revision_fk")).toBe(true);
+  expect(
+    [...names].some((name) =>
+      name.startsWith(
+        "voice_agent_message_receipts_project_id_user_id_session_id_",
+      ),
+    ),
+  ).toBe(true);
+
+  const indexes = await bundle.client.query<{ indexname: string }>(
+    `select indexname
+       from pg_indexes
+      where schemaname = 'public'
+        and tablename = any($1)`,
+    [tableNames],
+  );
+  const indexNames = new Set(indexes.rows.map(({ indexname }) => indexname));
+  expect(indexNames.has("voice_agents_project_created_idx")).toBe(true);
+  expect(indexNames.has("voice_agent_number_bindings_binding_id_uidx")).toBe(
+    true,
+  );
+  expect(indexNames.has("voice_agent_session_pointers_scope_created_idx")).toBe(
+    true,
+  );
+});
+
+it("reconstructs durable agents, pinned metadata, and receipts after restart", async () => {
+  const directory = await mkdtemp(join(tmpdir(), "eyeball-agent-restart-"));
+  const projectId = "project_agent_restart";
+  const userId = "user_agent_restart";
+  const phoneNumber = "+12025550174";
+  let first: PgliteStoreBundle | undefined;
+  let restored: PgliteStoreBundle | undefined;
+  try {
+    first = await createPgliteStoreBundle({ dataDir: directory });
+    const revision1 = await first.agentStore.createAgent(
+      projectId,
+      contractAgentDraft,
+      "2026-07-20T04:00:00.000Z",
+    );
+    await first.agentStore.updateAgent(
+      projectId,
+      revision1.id,
+      1,
+      { ...contractAgentDraft, name: "Durable contract agent v2" },
+      "2026-07-20T04:00:01.000Z",
+    );
+    const binding = await first.agentStore.attachNumber(
+      {
+        projectId,
+        userId,
+        agentId: revision1.id,
+        revision: 1,
+        phoneNumber,
+        transportConnectionId: "conn_agent_restart",
+      },
+      "2026-07-20T04:00:02.000Z",
+    );
+    const pointer = {
+      sessionId: "session_agent_restart",
+      projectId,
+      userId,
+      agentId: revision1.id,
+      agentRevision: 1,
+      callId: "call_agent_restart",
+      createdAt: "2026-07-20T04:00:03.000Z",
+    };
+    await first.agentStore.rememberSession(pointer);
+    const receipt = {
+      sessionId: pointer.sessionId,
+      clientMessageId: "client_agent_restart",
+      message: "Persist this turn.",
+      userMessageId: "message_agent_restart",
+      assistantMessage: "Persisted.",
+    };
+    await first.agentStore.rememberMessage(projectId, userId, receipt);
+    await first.close();
+    first = undefined;
+
+    restored = await createPgliteStoreBundle({ dataDir: directory });
+    const runtime = await createExecutorRuntime({
+      env: { EYEBALL_DATABASE_URL: "postgresql://contract.invalid/eyeball" },
+      credentialProvider: new MockCredentialProvider([]),
+      persistenceFactory: async () => restored as PgliteStoreBundle,
+    });
+    try {
+      const adapter = runtime.engine.adapters.require(
+        "voice-agents",
+      ) as VoiceAgentsAdapter;
+      expect(adapter.store).toBe(restored.agentStore);
+      await expect(
+        adapter.store.getAgent(projectId, revision1.id),
+      ).resolves.toMatchObject({
+        revision: 2,
+        name: "Durable contract agent v2",
+      });
+      await expect(
+        adapter.store.getAgent(projectId, revision1.id, 1),
+      ).resolves.toEqual(revision1);
+      await expect(
+        adapter.store.getNumberBinding(projectId, phoneNumber),
+      ).resolves.toEqual(binding);
+      await expect(
+        adapter.store.getSession(projectId, userId, pointer.sessionId),
+      ).resolves.toEqual(pointer);
+      await expect(
+        adapter.store.getMessage(
+          projectId,
+          userId,
+          receipt.sessionId,
+          receipt.clientMessageId,
+        ),
+      ).resolves.toEqual(receipt);
+
+      const anotherAgent = await adapter.store.createAgent(
+        projectId,
+        { ...contractAgentDraft, name: "Another durable agent" },
+        "2026-07-20T04:00:04.000Z",
+      );
+      const anotherBinding = await adapter.store.attachNumber(
+        {
+          projectId,
+          userId,
+          agentId: anotherAgent.id,
+          revision: 1,
+          phoneNumber: "+12025550175",
+          transportConnectionId: "conn_agent_restart",
+        },
+        "2026-07-20T04:00:05.000Z",
+      );
+      expect(anotherAgent.id).not.toBe(revision1.id);
+      expect(anotherBinding.bindingId).not.toBe(binding.bindingId);
+    } finally {
+      await runtime.close();
+      restored = undefined;
+    }
+  } finally {
+    await first?.close();
+    await restored?.close();
+    await rm(directory, { recursive: true, force: true });
+  }
+});
+
+it("does not expose voice-agent data in unexpected persistence failures", async () => {
+  const bundle = await createPgliteStoreBundle();
+  const sentinel = "agent-prompt-plaintext-sentinel";
+  try {
+    await bundle.client.exec("drop table voice_agents cascade");
+    let captured: unknown;
+    try {
+      await bundle.agentStore.getAgent("project_failure", sentinel);
+    } catch (error) {
+      captured = error;
+    }
+    expect(captured).toBeInstanceOf(Error);
+    const safeError = captured as Error;
+    expect(safeError.message).toBe("Voice-agent persistence failed.");
+    expect(safeError.cause).toBeUndefined();
+    expect(errorChainText(safeError)).not.toContain(sentinel);
+  } finally {
+    await bundle.close();
   }
 });
 

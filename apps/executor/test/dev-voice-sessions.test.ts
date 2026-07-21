@@ -189,7 +189,7 @@ describe("development voice-session route", () => {
     );
     webhookSecret = webhookEndpoint.secret;
     const agentStore = new InMemoryAgentStore();
-    const agent = agentStore.createAgent(
+    const agent = await agentStore.createAgent(
       PROJECT_ID,
       {
         name: "Table Host",
@@ -249,7 +249,7 @@ describe("development voice-session route", () => {
     });
     expect(created.status).toBe(201);
     const session = (await created.json()) as { id: string; createdAt: string };
-    agentStore.rememberSession({
+    await agentStore.rememberSession({
       sessionId: session.id,
       projectId: PROJECT_ID,
       userId: USER_ID,

@@ -123,7 +123,7 @@ export interface TwilioNumberBindingLookup {
   getNumberBinding(
     projectId: string,
     phoneNumber: string,
-  ): TwilioNumberBindingView | undefined;
+  ): Promise<TwilioNumberBindingView | undefined>;
 }
 
 export interface TwilioAdapterOptions {
@@ -300,13 +300,13 @@ export class TwilioAdapter implements ToolkitAdapter {
     return `2010-04-01/Accounts/${encodeURIComponent(accountSid(context))}/IncomingPhoneNumbers.json`;
   }
 
-  private ownedNumber(
+  private async ownedNumber(
     context: AdapterContext,
     value: Readonly<Record<string, unknown>>,
-  ): Readonly<Record<string, unknown>> {
+  ): Promise<Readonly<Record<string, unknown>>> {
     const number = twilioNumber(context, value);
     const phoneNumber = requiredStringField(context, number, "phoneNumber");
-    const binding = this.#bindingLookup?.getNumberBinding(
+    const binding = await this.#bindingLookup?.getNumberBinding(
       context.projectId,
       phoneNumber,
     );
@@ -341,7 +341,7 @@ export class TwilioAdapter implements ToolkitAdapter {
         ...(friendlyName === undefined ? {} : { FriendlyName: friendlyName }),
       }),
     );
-    return asJson({ number: this.ownedNumber(context, body) });
+    return asJson({ number: await this.ownedNumber(context, body) });
   }
 
   private async ownedNumbers(
@@ -355,8 +355,10 @@ export class TwilioAdapter implements ToolkitAdapter {
       context,
       `${this.numbersPath(context)}${suffix}`,
     );
-    return records(body.incoming_phone_numbers).map((number) =>
-      this.ownedNumber(context, number),
+    return Promise.all(
+      records(body.incoming_phone_numbers).map((number) =>
+        this.ownedNumber(context, number),
+      ),
     );
   }
 
@@ -385,8 +387,10 @@ export class TwilioAdapter implements ToolkitAdapter {
       "phoneNumber",
     );
     if (
-      this.#bindingLookup?.getNumberBinding(context.projectId, phoneNumber) !==
-      undefined
+      (await this.#bindingLookup?.getNumberBinding(
+        context.projectId,
+        phoneNumber,
+      )) !== undefined
     ) {
       throw new EyeballError({
         code: TOOL_ERROR_CODES.INVALID_INPUT,

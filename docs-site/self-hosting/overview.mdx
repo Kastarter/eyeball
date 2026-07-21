@@ -9,8 +9,8 @@ The repository contains runnable open-source services, not a drop-in clone of ey
 
 | Component | Open source | Default persistence |
 | --- | --- | --- |
-| Executor and provider adapters | Yes | In memory |
-| MCP Streamable HTTP gateway | Yes | Injectable `SessionStore`; in-memory by default |
+| Executor and provider adapters | Yes | In memory by default; provided Postgres execution/file/webhook/trigger/usage/agent stores with `EYEBALL_DATABASE_URL` |
+| MCP Streamable HTTP gateway | Yes | In memory by default; provided Postgres session/task store with `EYEBALL_DATABASE_URL` |
 | Dashboard | Yes | Reads executor APIs |
 | Provider mocks and Mockhouse | Separate source workspace | In memory |
 | Environment credential provider | Yes | Process environment |

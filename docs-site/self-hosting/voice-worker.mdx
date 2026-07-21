@@ -116,7 +116,7 @@ The fake transport is accepted only with both `EYEBALL_VOICE_MEDIA_MODE=fake` an
 ## Current operational boundaries
 
 - Run exactly one worker replica per SQLite volume. Multi-replica scheduling needs a distributed repository and session lease.
-- The executor's default `AgentStore` still keeps definitions, bindings, and session pointers in process memory. Worker sessions are durable, but full executor restart recovery needs a durable injected store.
+- Without `EYEBALL_DATABASE_URL`, the executor's default `AgentStore` keeps definitions, immutable revisions, bindings, session pointers, and message receipts in process memory. With the variable configured, the stock Postgres store makes those executor-owned records restart-durable. Live worker session state and events remain worker-owned.
 - The remote event observer is process-local, so the worker event log remains the source of truth across an executor restart. Once an observed event is admitted, its webhook-selection and delivery jobs are restart-durable when the executor uses `EYEBALL_DATABASE_URL`.
 - Provider-backed session requests currently require `recordingPolicy.mode=disabled`; no compliant audio-recording and retention backend ships here.
 - Direct chat is covered by account-free tests. Outbound Twilio and worker-level LiveKit integration paths are assembled but unverified; the catalog still has no public WebRTC session-entry tool, and inbound Twilio number provisioning/webhook verification remains open in RFC 002.

@@ -84,7 +84,7 @@ If an admitted execution cannot reach adapter dispatch—for example, credential
 
 ## Postgres persistence
 
-Set `EYEBALL_DATABASE_URL` to persist execution records and idempotency reservations; lease-fenced execution, webhook-selection, and webhook-delivery jobs; immutable webhook payload/endpoint snapshots and delivery attempts; trigger subscriptions, cursors, and dedup claims; staged-file metadata and `bytea` content; and terminal usage reports awaiting delivery. The stock runtime uses a `pg` pool capped at five connections and applies the committed Drizzle migrations before accepting traffic.
+Set `EYEBALL_DATABASE_URL` to persist execution records and idempotency reservations; lease-fenced execution, webhook-selection, and webhook-delivery jobs; immutable webhook payload/endpoint snapshots and delivery attempts; trigger subscriptions, cursors, and dedup claims; staged-file metadata and `bytea` content; terminal usage reports awaiting delivery; and all five voice-agent tables: stable agent heads, append-only immutable revisions, number bindings, executor-side session pointers, and message receipts. The stock runtime uses a `pg` pool capped at five connections and applies the committed executor Drizzle migrations before accepting traffic.
 
 ```bash
 EYEBALL_DATABASE_URL="postgresql://eyeball:eyeball_dev@127.0.0.1:5432/eyeball" \
@@ -109,15 +109,17 @@ The contract suite runs the same schema, migrations, and Drizzle queries against
 
 Postgres-backed staged files survive executor restart until `expiresAt`. Logical expiry is enforced on every metadata/content read and list. At durable startup the runtime drains expired rows in 100-row batches; while healthy, it also runs a non-overlapping once-per-minute sweep that deletes at most 100 rows per tick, and reads lazily remove an expired row addressed by ID. The runtime stops and drains an active sweep before closing the database. Public routes return metadata only, and adapter code consumes bytes exclusively through the execution-bound `AdapterContext.files` resolver. The stock implementation stores bytes in `bytea`; `FileStore` remains the replacement seam for a future metadata-plus-object-store backend.
 
+Postgres voice agents use stable UUID-based IDs and a mutable head that points to append-only immutable revision rows. Number bindings and executor-side session pointers reference the exact selected revision, so later agent updates cannot silently change an existing number or session. Message receipts make chat-turn replay durable. These records are passive metadata read on demand; they do not acquire leases or enter the execution/webhook job-recovery sweep.
+
 Before the worker starts claiming, the runtime expires abandoned leases and sweeps durable execution, webhook-event, and delivery records into deterministic ID-only jobs. Async execution admission returns only after its job row is durable. Webhook retries retain `nextRetryAt` and serialize by an opaque project/endpoint group, while different endpoints may progress concurrently.
 
 Execution restart behavior is intentionally conservative. Pending work and running work with no dispatch marker can resume. Once `dispatch_started_at` is committed, a restart cannot know whether the provider accepted the request, so recovery records a terminal `execution_interrupted` failure and does not call the adapter again. Terminal usage and webhook effects are reconciled idempotently before the job is acknowledged.
 
 <Warning>
-  Postgres does not make every scheduler distributed. Trigger polling leases, rate limits, toolkit concurrency permits, remote voice-event observation, and the voice-agent `AgentStore` remain process-local. The current worker also requires deployment-specific queue-age/failure alerts, backup and restore drills, database-capacity monitoring and vacuum policy for potentially large `bytea` rows, and multi-replica load/chaos validation before production use. Include staged-file rows in backup/restore policy according to their short retention window.
+  Postgres does not make every scheduler distributed. Trigger polling leases, rate limits, toolkit concurrency permits, and remote voice-event observation remain process-local. The current worker also requires deployment-specific queue-age/failure alerts, backup and restore drills, database-capacity monitoring and vacuum policy for potentially large `bytea` rows, and multi-replica load/chaos validation before production use. Include staged-file and voice-agent rows in backup/restore policy according to their retention requirements.
 </Warning>
 
-When `EYEBALL_DATABASE_URL` is absent, execution and webhook jobs use the same serializable state machine in memory but do not survive a process restart. Staged uploads also remain process-local and become unavailable after restart.
+When `EYEBALL_DATABASE_URL` is absent, execution and webhook jobs use the same serializable state machine in memory but do not survive a process restart. Staged uploads, voice-agent definitions/revisions, number bindings, session pointers, and message receipts also remain process-local and become unavailable after restart.
 
 Provider base-URL overrides use the manifest-declared environment variable for that adapter. Keep those variables trusted; requests cannot supply an arbitrary origin.
 

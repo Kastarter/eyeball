@@ -109,7 +109,7 @@ export const systemMcpClock: McpClock = {
 
 export interface McpRequestContext {
   apiKey: string;
-  /** One-way binding for the inbound credential; never persist the bearer token itself. */
+  /** One-way binding for the inbound credential and canonical authority scope. */
   authBinding?: string;
   /** Trusted server binding or transport-provided end-user identity. */
   userId?: string;
@@ -628,6 +628,7 @@ export class McpProtocol {
   readonly #pollHandles = new Map<string, unknown>();
   readonly #sessionExpiryHandles = new Map<string, unknown>();
   readonly #terminalWaiters = new Map<string, Set<() => void>>();
+  #disposed = false;
 
   constructor(options: McpProtocolOptions) {
     this.#executor = options.executor;
@@ -655,6 +656,27 @@ export class McpProtocol {
     }
   }
 
+  /** Stops process-local work without deleting restart-durable session records. */
+  dispose(): void {
+    if (this.#disposed) return;
+    this.#disposed = true;
+    for (const handle of this.#pollHandles.values()) {
+      this.#clock.clearTimeout(handle);
+    }
+    this.#pollHandles.clear();
+    for (const handle of this.#sessionExpiryHandles.values()) {
+      this.#clock.clearTimeout(handle);
+    }
+    this.#sessionExpiryHandles.clear();
+    for (const waiters of this.#terminalWaiters.values()) {
+      for (const resolve of waiters) resolve();
+    }
+    this.#terminalWaiters.clear();
+    for (const sessionId of [...this.#listeners.keys()]) {
+      this.#closeSessionListeners(sessionId);
+    }
+  }
+
   nextEventId(sessionId?: string): string {
     const suffix = this.#eventIdFactory();
     if (!visibleAscii(suffix)) {
@@ -666,6 +688,10 @@ export class McpProtocol {
   }
 
   subscribe(sessionId: string, listener: SessionEventListener): () => void {
+    if (this.#disposed) {
+      listener(undefined);
+      return () => undefined;
+    }
     const listeners = this.#listeners.get(sessionId) ?? new Set();
     listeners.add(listener);
     this.#listeners.set(sessionId, listeners);
@@ -1469,6 +1495,7 @@ export class McpProtocol {
     apiKey: string,
     pollInterval = this.#taskPollMs,
   ): void {
+    if (this.#disposed) return;
     const key = taskKey(sessionId, taskId);
     if (this.#pollHandles.has(key)) return;
     const handle = this.#clock.setTimeout(
@@ -1616,6 +1643,7 @@ export class McpProtocol {
   }
 
   #scheduleSessionExpiry(session: StoredMcpSession): void {
+    if (this.#disposed) return;
     if (this.#sessionExpiryHandles.has(session.sessionId)) return;
     const delayMs = Math.min(
       MAX_TIMER_DELAY_MS,

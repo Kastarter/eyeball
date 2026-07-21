@@ -6,8 +6,10 @@ import {
   type ExecutionId,
   type ExecutionRecord,
   type TriggerSubscriptionId,
+  type VoiceAgentDraft,
   type WebhookDelivery,
 } from "@eyeball/core";
+import type { AgentStore } from "@eyeball/toolkits";
 import { beforeAll, describe, expect, it } from "vitest";
 import type {
   ExecutionAllocation,
@@ -31,6 +33,7 @@ import {
 } from "../../src/index.js";
 
 export interface StoreContractStores {
+  agentStore: AgentStore;
   executionStore: ExecutionStore;
   fileStore: FileStore;
   webhookEndpointStore: WebhookEndpointStore;
@@ -68,6 +71,34 @@ let namespaceSequence = 0;
 function namespace(label: string): string {
   namespaceSequence += 1;
   return `${label.replaceAll(/[^a-z0-9]/giu, "_")}_${namespaceSequence}`;
+}
+
+function voiceAgentDraft(
+  name: string,
+  systemPrompt = `Serve callers as ${name}.`,
+): VoiceAgentDraft {
+  return {
+    name,
+    systemPrompt,
+    llm: { model: "model:fixture:voice-contract" },
+    voice: {
+      tts: { provider: "elevenlabs", voiceId: "voice_contract" },
+      stt: { provider: "deepgram", model: "nova-3" },
+    },
+    transport: "pstn:twilio",
+    tools: ["gmail.send_email"],
+    guardrails: {
+      maxDurationSeconds: 300,
+      handoffToHuman: { enabled: false },
+    },
+    webhooks: { endpointIds: [], transcript: true, events: [] },
+    recordingPolicy: {
+      mode: "audio_and_transcript",
+      consent: "agent_announcement",
+      retentionDays: 7,
+      redactDtmf: true,
+    },
+  };
 }
 
 function allocation(
@@ -196,6 +227,321 @@ export function registerStoreContractSuite(
 
     beforeAll(async () => {
       stores = await implementation.stores();
+    });
+
+    describe("voice agents", () => {
+      it("preserves immutable revisions, isolation, detached values, and tombstones", async () => {
+        const scope = namespace(implementation.name);
+        const projectId = `project_agent_${scope}`;
+        const first = await stores.agentStore.createAgent(
+          projectId,
+          voiceAgentDraft("First"),
+          "2026-07-20T00:00:01.000Z",
+        );
+        const second = await stores.agentStore.createAgent(
+          projectId,
+          voiceAgentDraft("Second"),
+          "2026-07-20T00:00:02.000Z",
+        );
+
+        (first as { name: string }).name = "mutated return";
+        expect(
+          await stores.agentStore.getAgent(projectId, first.id),
+        ).toMatchObject({ name: "First", revision: 1 });
+        const listed = await stores.agentStore.listAgents(projectId, false);
+        expect(listed.map(({ id }) => id)).toEqual([first.id, second.id]);
+        (listed[0] as { name: string }).name = "mutated list";
+        expect(
+          await stores.agentStore.getAgent(projectId, first.id),
+        ).toMatchObject({ name: "First" });
+        await expect(
+          stores.agentStore.getAgent(`other_${projectId}`, first.id),
+        ).rejects.toMatchObject({ code: "not_found" });
+
+        const revision2 = await stores.agentStore.updateAgent(
+          projectId,
+          first.id,
+          1,
+          voiceAgentDraft("First v2", "Replacement prompt"),
+          "2026-07-20T00:00:03.000Z",
+        );
+        expect(revision2).toMatchObject({ revision: 2, name: "First v2" });
+        expect(
+          await stores.agentStore.getAgent(projectId, first.id, 1),
+        ).toMatchObject({
+          revision: 1,
+          name: "First",
+          systemPrompt: "Serve callers as First.",
+        });
+
+        const concurrent = await Promise.allSettled([
+          stores.agentStore.updateAgent(
+            projectId,
+            first.id,
+            2,
+            voiceAgentDraft("Winner A"),
+            "2026-07-20T00:00:04.000Z",
+          ),
+          stores.agentStore.updateAgent(
+            projectId,
+            first.id,
+            2,
+            voiceAgentDraft("Winner B"),
+            "2026-07-20T00:00:04.000Z",
+          ),
+        ]);
+        expect(
+          concurrent.filter(({ status }) => status === "fulfilled"),
+        ).toHaveLength(1);
+        const rejected = concurrent.find(({ status }) => status === "rejected");
+        expect(rejected).toMatchObject({
+          status: "rejected",
+          reason: { code: "invalid_input" },
+        });
+        expect(
+          await stores.agentStore.getAgent(projectId, first.id, 2),
+        ).toEqual(revision2);
+        const active = await stores.agentStore.getAgent(projectId, first.id);
+        expect(active.revision).toBe(3);
+
+        const deletedAt = "2026-07-20T00:00:05.000Z";
+        await expect(
+          stores.agentStore.deleteAgent(projectId, first.id, 3, deletedAt),
+        ).resolves.toEqual({ agentId: first.id, deletedAt });
+        await expect(
+          stores.agentStore.deleteAgent(
+            projectId,
+            first.id,
+            999,
+            "2026-07-20T00:00:06.000Z",
+          ),
+        ).resolves.toEqual({ agentId: first.id, deletedAt });
+        await expect(
+          stores.agentStore.getRunnableAgent(projectId, first.id, 1),
+        ).rejects.toMatchObject({ code: "not_found" });
+        await expect(
+          stores.agentStore.updateAgent(
+            projectId,
+            first.id,
+            3,
+            voiceAgentDraft("No resurrection"),
+            "2026-07-20T00:00:07.000Z",
+          ),
+        ).rejects.toMatchObject({ code: "not_found" });
+        expect(
+          await stores.agentStore.getAgent(projectId, first.id, 1),
+        ).toMatchObject({ revision: 1, name: "First" });
+        expect(
+          await stores.agentStore.listAgents(projectId, false),
+        ).toHaveLength(1);
+        expect(await stores.agentStore.listAgents(projectId, true)).toEqual(
+          expect.arrayContaining([
+            expect.objectContaining({ id: first.id, deletedAt }),
+          ]),
+        );
+      });
+
+      it("pins exact binding revisions and enforces scoped attachment", async () => {
+        const scope = namespace(implementation.name);
+        const projectId = `project_binding_${scope}`;
+        const otherProjectId = `other_${projectId}`;
+        const agent = await stores.agentStore.createAgent(
+          projectId,
+          voiceAgentDraft("Binding agent"),
+          "2026-07-20T01:00:00.000Z",
+        );
+        const otherAgent = await stores.agentStore.createAgent(
+          otherProjectId,
+          voiceAgentDraft("Other binding agent"),
+          "2026-07-20T01:00:00.000Z",
+        );
+        const input = {
+          projectId,
+          userId: "user_binding",
+          agentId: agent.id,
+          revision: 1,
+          phoneNumber: "+12025550101",
+          transportConnectionId: "conn_binding",
+        };
+        const binding = await stores.agentStore.attachNumber(
+          input,
+          "2026-07-20T01:00:01.000Z",
+        );
+        await expect(
+          stores.agentStore.attachNumber(input, "2026-07-20T01:00:02.000Z"),
+        ).resolves.toEqual(binding);
+        await expect(
+          stores.agentStore.attachNumber(
+            { ...input, userId: "user_conflict" },
+            "2026-07-20T01:00:03.000Z",
+          ),
+        ).rejects.toMatchObject({ code: "invalid_input" });
+        await stores.agentStore.attachNumber(
+          {
+            ...input,
+            projectId: otherProjectId,
+            agentId: otherAgent.id,
+          },
+          "2026-07-20T01:00:04.000Z",
+        );
+        await stores.agentStore.updateAgent(
+          projectId,
+          agent.id,
+          1,
+          voiceAgentDraft("Binding agent v2"),
+          "2026-07-20T01:00:05.000Z",
+        );
+        expect(
+          await stores.agentStore.getNumberBinding(
+            projectId,
+            input.phoneNumber,
+          ),
+        ).toMatchObject({ revision: 1 });
+        const secondBinding = await stores.agentStore.attachNumber(
+          { ...input, phoneNumber: "+12025550100" },
+          "2026-07-20T01:00:06.000Z",
+        );
+        expect(
+          (await stores.agentStore.listNumberBindings(projectId)).map(
+            ({ phoneNumber }) => phoneNumber,
+          ),
+        ).toEqual([secondBinding.phoneNumber, binding.phoneNumber]);
+        await expect(
+          stores.agentStore.detachNumber(
+            projectId,
+            "wrong_user",
+            binding.phoneNumber,
+          ),
+        ).rejects.toMatchObject({ code: "not_found" });
+        await expect(
+          stores.agentStore.detachNumber(
+            projectId,
+            input.userId,
+            binding.phoneNumber,
+          ),
+        ).resolves.toEqual(binding);
+        await expect(
+          stores.agentStore.detachNumber(
+            projectId,
+            input.userId,
+            binding.phoneNumber,
+          ),
+        ).resolves.toBeUndefined();
+      });
+
+      it("persists scoped pointers and last-write-wins message receipts", async () => {
+        const scope = namespace(implementation.name);
+        const projectId = `project_session_${scope}`;
+        const userId = `user_session_${scope}`;
+        const agent = await stores.agentStore.createAgent(
+          projectId,
+          voiceAgentDraft("Session agent"),
+          "2026-07-20T02:00:00.000Z",
+        );
+        const older = {
+          sessionId: `session_old_${scope}`,
+          projectId,
+          userId,
+          agentId: agent.id,
+          agentRevision: 1,
+          callId: `call_old_${scope}`,
+          createdAt: "2026-07-20T02:00:01.000Z",
+        };
+        const newer = {
+          ...older,
+          sessionId: `session_new_${scope}`,
+          callId: `call_new_${scope}`,
+          createdAt: "2026-07-20T02:00:02.000Z",
+        };
+        await stores.agentStore.rememberSession(older);
+        await stores.agentStore.rememberSession(newer);
+        const pointers = await stores.agentStore.listSessions(
+          projectId,
+          userId,
+        );
+        expect(pointers.map(({ sessionId }) => sessionId)).toEqual([
+          newer.sessionId,
+          older.sessionId,
+        ]);
+        (pointers[0] as { callId: string }).callId = "mutated";
+        expect(
+          await stores.agentStore.getSession(
+            projectId,
+            userId,
+            newer.sessionId,
+          ),
+        ).toMatchObject({ callId: newer.callId });
+        await stores.agentStore.rememberSession({
+          ...newer,
+          callId: `call_replaced_${scope}`,
+          createdAt: "2026-07-20T02:00:03.000Z",
+        });
+        expect(
+          await stores.agentStore.getSession(
+            projectId,
+            userId,
+            newer.sessionId,
+          ),
+        ).toMatchObject({ callId: `call_replaced_${scope}` });
+        await expect(
+          stores.agentStore.rememberSession({
+            ...newer,
+            projectId: `other_${projectId}`,
+          }),
+        ).rejects.toThrow("session scope changed");
+        await expect(
+          stores.agentStore.rememberSession({
+            ...newer,
+            userId: `other_${userId}`,
+          }),
+        ).rejects.toThrow("session scope changed");
+        await expect(
+          stores.agentStore.getSession(
+            projectId,
+            "wrong_user",
+            newer.sessionId,
+          ),
+        ).rejects.toMatchObject({ code: "not_found" });
+
+        const receipt = {
+          sessionId: newer.sessionId,
+          clientMessageId: `client_${scope}`,
+          message: "hello",
+          userMessageId: `user_message_${scope}`,
+          assistantMessage: "hi",
+        };
+        await stores.agentStore.rememberMessage(projectId, userId, receipt);
+        const read = await stores.agentStore.getMessage(
+          projectId,
+          userId,
+          receipt.sessionId,
+          receipt.clientMessageId,
+        );
+        expect(read).toEqual(receipt);
+        if (read !== undefined) {
+          (read as { assistantMessage: string }).assistantMessage = "mutated";
+        }
+        await stores.agentStore.rememberMessage(projectId, userId, {
+          ...receipt,
+          assistantMessage: "latest",
+        });
+        await expect(
+          stores.agentStore.getMessage(
+            projectId,
+            userId,
+            receipt.sessionId,
+            receipt.clientMessageId,
+          ),
+        ).resolves.toMatchObject({ assistantMessage: "latest" });
+        await expect(
+          stores.agentStore.getMessage(
+            projectId,
+            "other_user",
+            receipt.sessionId,
+            receipt.clientMessageId,
+          ),
+        ).resolves.toBeUndefined();
+      });
     });
 
     describe("executions", () => {

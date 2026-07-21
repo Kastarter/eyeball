@@ -114,12 +114,12 @@ export class DevVoiceSessionRuntime implements DevVoiceSessionAdvancer {
   async advance(
     input: DevVoiceSessionAdvanceInput,
   ): Promise<DevVoiceSessionAdvanceResult> {
-    const pointer = this.#agentStore.getSession(
+    const pointer = await this.#agentStore.getSession(
       input.projectId,
       input.userId,
       input.sessionId,
     );
-    const agent = this.#agentStore.getAgent(
+    const agent = await this.#agentStore.getAgent(
       input.projectId,
       pointer.agentId,
       pointer.agentRevision,

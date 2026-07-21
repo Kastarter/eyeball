@@ -5,14 +5,14 @@ description: "Replace in-memory defaults, protect public edges, and deploy compa
 
 Before production:
 
-- configure `EYEBALL_DATABASE_URL` or provide equivalent durable execution, job, webhook-work, delivery, and `FileStore` implementations;
+- configure `EYEBALL_DATABASE_URL` or provide equivalent durable execution, job, webhook-work, delivery, `FileStore`, `AgentStore`, and MCP `SessionStore` implementations;
 - retain idempotency correlation, immutable terminal records, and the stable recovery metadata during migrations;
 - run the executor, gateway, and dashboard behind TLS and authentication;
 - rate-limit bearer keys and MCP sessions;
 - configure the executor's redacted logs and optional OpenTelemetry export, then add deployment metrics for queue age and provider saturation;
 - keep provider credentials and staged-file bytes out of custom logs, traces, errors, collector configuration, and client bundles;
-- back up execution/voice history and any retained staged-file rows according to retention policy, then test restore paths;
-- monitor database growth and vacuum behavior for potentially large `bytea` rows; plan for TTL cleanup and replacement with an object-store-backed `FileStore` when workload or retention makes inline blobs inappropriate;
+- back up execution/voice history, immutable voice-agent revisions, bindings, pointers, receipts, MCP sessions/tasks, and any retained staged-file rows according to retention policy, then test restore paths;
+- monitor database growth and vacuum behavior for potentially large `bytea` rows; monitor and clean untouched expired `mcp_sessions` by indexed `expires_at` without weakening logical expiry; plan for TTL cleanup and replacement with an object-store-backed `FileStore` when workload or retention makes inline blobs inappropriate;
 - monitor durable queue age, expired leases, repeated recovery, `execution_interrupted` outcomes, and exhausted webhook deliveries; signing and retry semantics are fixed by RFC 001.
 
 The dashboard uses a server-side proxy; keep `EYEBALL_API_KEY` server-only. Mockhouse and `/_mock` must stay on loopback or an isolated test network.
@@ -22,8 +22,9 @@ The dashboard uses a server-side proxy; keep `EYEBALL_API_KEY` server-only. Mock
 1. Update compatible core, catalog, toolkits, executor, gateway, SDK, and dashboard revisions.
 2. Regenerate toolkit docs and review schema/version diffs.
 3. Replay mock contract tests, including mutation idempotency and worker recovery.
-4. Deploy executor support for additive contracts.
-5. Deploy gateway/dashboard and then SDK clients.
-6. Monitor normalized error shifts and queue state.
+4. Apply both committed migration histories with `pnpm db:migrate` before deploying binaries; each service also applies only its own stream at boot.
+5. Deploy executor support for additive contracts.
+6. Deploy gateway/dashboard and then SDK clients.
+7. Monitor normalized error shifts and queue state.
 
 Tool and catalog versions in each execution provide the audit trail; do not discard them during migration.

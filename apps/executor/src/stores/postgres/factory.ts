@@ -1,4 +1,5 @@
 import { PGlite } from "@electric-sql/pglite";
+import type { AgentStore } from "@eyeball/toolkits";
 import {
   drizzle as drizzleNodePg,
   type NodePgDatabase,
@@ -18,6 +19,7 @@ import type { UsageOutboxStore } from "../../usage/outbox.js";
 import type { WebhookDeliveryStore } from "../../webhooks/delivery-store.js";
 import type { WebhookEndpointStore } from "../../webhooks/endpoint-store.js";
 import type { WebhookWorkStore } from "../../webhooks/work-store.js";
+import { PostgresAgentStore } from "./agent-store.js";
 import type { EyeballPostgresDatabase } from "./database.js";
 import { PostgresExecutionStore } from "./execution-store.js";
 import { PostgresFileStore } from "./file-store.js";
@@ -32,6 +34,7 @@ import { PostgresWebhookEndpointStore } from "./webhook-endpoint-store.js";
 import { PostgresWebhookWorkStore } from "./webhook-work-store.js";
 
 export interface PostgresStoreSet {
+  agentStore: AgentStore;
   executionStore: ExecutionStore;
   fileStore: FileStore;
   webhookEndpointStore: WebhookEndpointStore;
@@ -74,6 +77,7 @@ function stores<TQueryResult extends PgQueryResultHKT>(
   database: EyeballPostgresDatabase<TQueryResult>,
 ): PostgresStoreSet {
   return {
+    agentStore: new PostgresAgentStore(database),
     executionStore: new PostgresExecutionStore(database),
     fileStore: new PostgresFileStore(database),
     webhookEndpointStore: new PostgresWebhookEndpointStore(database),
