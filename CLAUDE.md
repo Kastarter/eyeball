@@ -39,7 +39,7 @@ Open-core tool and integration platform for AI agents: one typed, authenticated 
 - Hosted executor auth checks static `EYEBALL_API_KEYS` before Cloud verification; remote caches use SHA-256 key digests with 60s positive/5s negative defaults, and `EYEBALL_CREDENTIALS=cloud` uses the executor-owned HTTP credential client.
 - Authenticated dashboard, provider, webhook, and remote-voice HTTP clients use manual redirect handling; remote voice requires HTTPS outside explicit loopback and supplied control tokens are at least 32 characters.
 - `pnpm check:secrets` scans tracked files without printing candidate values and runs from root lint; production CI should add gitleaks.
-- Dashboard cloud proxying uses an explicit method-and-path allowlist within `/v1`; executor proxying exposes only `/health` and `/v1/*`, and both construct upstream URLs from allowlisted inputs.
+- Dashboard cloud proxying uses an explicit method-and-path allowlist within `/v1`; executor proxying retains `/health` and `/v1/*` behavior for its ordinary existing methods but permits `PATCH` only for `/v1/webhooks/:endpointId`, and both proxies construct upstream URLs from allowlisted inputs.
 - Executor telemetry and cloud audit redaction treat named URL fields as secret-bearing because path/query credentials remain in supported callback protocols.
 - `pnpm test:contract` defaults to built mocks and writes ignored `apps/executor/contract-report.json`.
 - The tracked-file secret scanner skips index entries deleted by an in-progress release/version change; it must still scan every existing tracked text file.
@@ -81,7 +81,7 @@ Open-core tool and integration platform for AI agents: one typed, authenticated 
 - The five selected Activepieces npm pieces are self-contained bundles; framework/shared are explicit bridge compatibility pins, not peers declared by those artifacts.
 - The self-hosted docs app statically generates every navigation path and builds search/TOC data from the authored MDX.
 - Catalog registries memoize deep-frozen materialized tool/trigger lookups; schema validators skip repeated fingerprints only for recursively frozen schemas, preserving mutation checks for mutable inputs.
-- The dashboard uses one feature-level mode seam: auth, orgs/projects, connections, API keys, and audit switch to the cloud control plane while toolkits, executions, and voice agents retain the executor/catalog data paths.
+- The dashboard uses one feature-level mode seam: auth, orgs/projects, connections, API keys, and audit switch to the cloud control plane while toolkits, executions, webhooks, and voice agents retain the executor/catalog data paths.
 
 ## Current State
 
@@ -94,7 +94,8 @@ Open-core tool and integration platform for AI agents: one typed, authenticated 
 - The dashboard, SDK, MCP gateway, local encrypted vault, auth CLI, and public docs source are built.
 - The self-hosted docs renderer builds all 113 authored/generated pages with local navigation, search, syntax highlighting, and dark/light themes.
 - The dashboard has demo-default and cloud modes; cloud mode adds session auth, first-run org/project/key bootstrap, real connection/key/audit screens, project switchers, and per-project executor-key settings.
-- Cloud mode has full Billing and Organization surfaces for usage, plan changes, members, BYO OAuth apps, redirect origins, organization rename, and audit navigation; OAuth connection setup can select an app and validated return URL, and the dashboard suite has 68 serial tests.
+- The project Webhooks surface provides endpoint CRUD, catalog-derived exact trigger selection, reveal-once create/rotation secrets, confirmed rotation/deletion, and metadata-only paginated delivery attempts through the executor in both dashboard modes; the proxy exports scoped endpoint-update `PATCH` coverage without broadening unrelated routes.
+- Cloud mode has full Billing and Organization surfaces for usage, plan changes, members, BYO OAuth apps, redirect origins, organization rename, and audit navigation; OAuth connection setup can select an app and validated return URL, and the dashboard suite has 87 serial tests.
 - Search-mode MCP exposes both discovery and a generic executor-backed dispatch tool.
 - MCP Streamable HTTP supports JSON and SSE POST responses, authenticated GET event streams, DELETE teardown, one-way credential-and-scope-bound sessions, and opt-in 2025-11-25 Tasks with execution-backed polling and progress notifications.
 - `pnpm dev:stack` boots 30-provider Mockhouse, executor, and MCP gateway with dev connections.

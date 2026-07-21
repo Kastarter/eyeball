@@ -17,6 +17,7 @@ describe("dashboard runtime mode", () => {
     expect(dashboardDataSource("toolkits", environment)).toBe("catalog");
     expect(dashboardDataSource("executions", environment)).toBe("executor");
     expect(dashboardDataSource("voiceAgents", environment)).toBe("executor");
+    expect(dashboardDataSource("webhooks", environment)).toBe("executor");
     expect(dashboardDataSource("auth", environment)).toBe("demo");
   });
 
@@ -37,6 +38,7 @@ describe("dashboard runtime mode", () => {
       expect(dashboardDataSource(feature, environment)).toBe("cloud-control");
     }
     expect(dashboardDataSource("executions", environment)).toBe("executor");
+    expect(dashboardDataSource("webhooks", environment)).toBe("executor");
   });
 
   it("does not silently enable cloud mode from a URL alone", () => {

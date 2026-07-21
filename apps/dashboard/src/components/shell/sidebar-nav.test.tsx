@@ -1,8 +1,10 @@
 import { renderToStaticMarkup } from "react-dom/server";
 import { describe, expect, it, vi } from "vitest";
 
+const navigation = vi.hoisted(() => ({ pathname: "/billing" }));
+
 vi.mock("next/navigation", () => ({
-  usePathname: () => "/billing",
+  usePathname: () => navigation.pathname,
 }));
 
 import { SidebarNav } from "./sidebar-nav";
@@ -23,5 +25,20 @@ describe("SidebarNav", () => {
     expect(demo).not.toContain("Organization");
     expect(demo).not.toContain("Audit");
     expect(demo).toContain("/demo/settings");
+    expect(demo).toContain("/demo/webhooks");
+    expect(cloud).toContain("/proj_fixture/webhooks");
+  });
+
+  it("marks the project Webhooks destination active", () => {
+    navigation.pathname = "/proj_fixture/webhooks";
+    const markup = renderToStaticMarkup(
+      <SidebarNav cloud organizationId="org_fixture" project="proj_fixture" />,
+    );
+    navigation.pathname = "/billing";
+
+    expect(markup).toContain('href="/proj_fixture/webhooks"');
+    expect(markup).toMatch(
+      /aria-current="page"[^>]*href="\/proj_fixture\/webhooks"|href="\/proj_fixture\/webhooks"[^>]*aria-current="page"/u,
+    );
   });
 });

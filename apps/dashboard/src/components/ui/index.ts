@@ -7,6 +7,8 @@ export * from "./empty-state";
 export * from "./form-controls";
 export * from "./icon";
 export * from "./panel";
+export * from "./secret-reveal-dialog";
 export * from "./skeleton";
 export * from "./status-dot";
 export * from "./table";
+export * from "./tabs";

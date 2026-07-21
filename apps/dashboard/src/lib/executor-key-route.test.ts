@@ -176,6 +176,96 @@ describe("executor proxy cloud credential selection", () => {
     expect(await response.json()).toEqual({ executions: [] });
   });
 
+  it("exports only endpoint-update PATCH requests with the selected cloud key", async () => {
+    const projectKey = "eyb_live_webhook_project_key";
+    const cookie =
+      executorKeySetCookie({
+        key: projectKey,
+        projectId: "proj_selected",
+        secure: true,
+      }).split(";", 1)[0] ?? "";
+    let upstreamUrl = "";
+    let upstreamMethod = "";
+    let upstreamHeaders = new Headers();
+    let upstreamBody = "";
+    const fetchImpl: typeof globalThis.fetch = async (input, init) => {
+      upstreamUrl = String(input);
+      upstreamMethod = init?.method ?? "GET";
+      upstreamHeaders = new Headers(init?.headers);
+      upstreamBody = await new Response(init?.body).text();
+      return Response.json({ endpointId: "whe_fixture", active: false });
+    };
+    const response = await proxyExecutorRequest(
+      new Request(
+        "https://dashboard.example.test/api/executor/v1/webhooks/whe_fixture",
+        {
+          method: "PATCH",
+          headers: {
+            Cookie: cookie,
+            "Content-Type": "application/json",
+            [EXECUTOR_PROJECT_HEADER]: "proj_selected",
+          },
+          body: JSON.stringify({ active: false }),
+        },
+      ),
+      {
+        params: Promise.resolve({
+          path: ["v1", "webhooks", "whe_fixture"],
+        }),
+      },
+      cloudEnvironment,
+      fetchImpl,
+    );
+
+    expect(response.status).toBe(200);
+    expect(response.headers.get("Cache-Control")).toBe("no-store");
+    expect(upstreamMethod).toBe("PATCH");
+    expect(upstreamUrl).toBe(
+      "https://executor.example.test/v1/webhooks/whe_fixture",
+    );
+    expect(upstreamHeaders.get("Content-Type")).toBe("application/json");
+    expect(upstreamHeaders.get("Authorization")).toBe(`Bearer ${projectKey}`);
+    expect(upstreamHeaders.get("Cookie")).toBeNull();
+    expect(upstreamHeaders.get(EXECUTOR_PROJECT_HEADER)).toBeNull();
+    expect(upstreamBody).toBe(JSON.stringify({ active: false }));
+  });
+
+  it("rejects every PATCH shape except one webhook endpoint update", async () => {
+    const rejectedPaths = [
+      ["v1", "connections", "conn_fixture"],
+      ["v1", "webhooks", "whe_fixture", "rotate-secret"],
+      ["v1", "webhooks", "whe_fixture", "deliveries"],
+      ["v1", "webhooks"],
+    ] as const;
+
+    for (const path of rejectedPaths) {
+      let called = false;
+      const response = await proxyExecutorRequest(
+        new Request(
+          `https://dashboard.example.test/api/executor/${path.join("/")}`,
+          {
+            method: "PATCH",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ active: false }),
+          },
+        ),
+        { params: Promise.resolve({ path: [...path] }) },
+        cloudEnvironment,
+        async () => {
+          called = true;
+          return Response.json({ ok: true });
+        },
+      );
+
+      expect(response.status).toBe(404);
+      expect(response.headers.get("Cache-Control")).toBe("no-store");
+      await expect(response.json()).resolves.toMatchObject({
+        error: { code: "executor_route_not_allowed" },
+      });
+      expect(called).toBe(false);
+    }
+  });
+
   it("does not follow executor redirects with the selected bearer token", async () => {
     const projectKey = "eyb_live_redirect_fixture";
     const cookie =

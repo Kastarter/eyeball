@@ -5,7 +5,9 @@ import { Badge, type BadgeStatus } from "./badge";
 import { Button, type ButtonVariant } from "./button";
 import { CodeBlock } from "./code-block";
 import { EmptyState } from "./empty-state";
+import { SecretRevealDialog } from "./secret-reveal-dialog";
 import { TableShell } from "./table";
+import { Tabs, tabDestinationIndex } from "./tabs";
 
 describe("dashboard design system rendering", () => {
   it("renders every button variant with stable variant classes", () => {
@@ -40,6 +42,8 @@ describe("dashboard design system rendering", () => {
       "failed",
       "pending",
       "running",
+      "inactive",
+      "delivering",
     ];
     const markup = renderToStaticMarkup(
       <div>
@@ -53,7 +57,65 @@ describe("dashboard design system rendering", () => {
       const label = status.charAt(0).toUpperCase() + status.slice(1);
       expect(markup).toContain(label);
     }
-    expect(markup.match(/status-dot--pulse/g)).toHaveLength(1);
+    expect(markup.match(/status-dot--pulse/g)).toHaveLength(2);
+  });
+
+  it("renders controlled semantic tabs with one selected panel", () => {
+    const markup = renderToStaticMarkup(
+      <Tabs
+        ariaLabel="Webhook endpoint"
+        onValueChange={() => undefined}
+        tabs={[
+          { id: "settings", label: "Settings", content: <p>Settings panel</p> },
+          {
+            id: "deliveries",
+            label: "Deliveries",
+            content: <p>Deliveries panel</p>,
+          },
+        ]}
+        value="settings"
+      />,
+    );
+
+    expect(markup).toContain('role="tablist"');
+    expect(markup.match(/role="tab"/g)).toHaveLength(2);
+    expect(markup.match(/aria-selected="true"/g)).toHaveLength(1);
+    expect(markup).toContain('role="tabpanel"');
+    expect(markup).toContain("Settings panel");
+    expect(markup).not.toContain("Deliveries panel");
+    const selectedControl = markup.match(
+      /aria-controls="([^"]+)" aria-selected="true"/u,
+    )?.[1];
+    expect(selectedControl).toBeDefined();
+    expect(markup).toContain(`id="${selectedControl}"`);
+  });
+
+  it("calculates wrapped keyboard tab destinations", () => {
+    expect(tabDestinationIndex("ArrowRight", 2, 3)).toBe(0);
+    expect(tabDestinationIndex("ArrowLeft", 0, 3)).toBe(2);
+    expect(tabDestinationIndex("Home", 2, 3)).toBe(0);
+    expect(tabDestinationIndex("End", 0, 3)).toBe(2);
+    expect(tabDestinationIndex("Space", 1, 3)).toBe(1);
+  });
+
+  it("renders a domain-neutral reveal-once secret dialog", () => {
+    const markup = renderToStaticMarkup(
+      <SecretRevealDialog
+        acknowledgementLabel="I stored the signing secret"
+        copyLabel="Copy signing secret"
+        description="This signing secret is shown exactly once."
+        onClose={() => undefined}
+        secret="whsec_fixture_reveal_once"
+        title="Store this signing secret"
+        warning="It cannot be recovered after this dialog closes."
+      />,
+    );
+
+    expect(markup).toContain("whsec_fixture_reveal_once");
+    expect(markup).toContain("Copy signing secret");
+    expect(markup).toContain("shown exactly once");
+    expect(markup).toContain("cannot be recovered");
+    expect(markup).toContain("I stored the signing secret");
   });
 
   it("renders semantic table structure and mono identity cells", () => {

@@ -22,6 +22,8 @@ curl --request POST "$EYEBALL_EXECUTOR_URL/v1/webhooks" \
 
 The creation response contains a `whsec_...` signing secret. It is returned exactly once. Persist it in your secret manager; later list and get responses expose only `secretPrefix`.
 
+You can perform the same endpoint creation and event selection from the selected project's **Webhooks** screen in the dashboard. The screen also provides endpoint settings, reveal-once rotation, confirmed deletion, and delivery-attempt inspection.
+
 <Warning>
   Do not log the creation or rotation response or put the signing secret in source control. Rotate the endpoint secret if it is lost or exposed.
 </Warning>
@@ -113,7 +115,9 @@ Any `2xx` response acknowledges the event. Each receiver request has a 10-second
 | 4 | `10m` | `12m 30s` |
 | 5 | `1h` | `1h 12m 30s` |
 
-After attempt five, the delivery is marked `failed`. Inspect attempts, status codes, and `nextRetryAt` with `GET /v1/webhooks/:endpointId/deliveries`.
+After attempt five, the delivery is marked `failed`. Inspect attempts, status codes, and `nextRetryAt` with `GET /v1/webhooks/:endpointId/deliveries` or the project's **Webhooks → Deliveries** tab. Delivery inspection contains metadata only, never the delivered payload, signing secret, request/response bodies, or receiver headers.
+
+Every attempt resolves the endpoint's current URL, signing secret, and active state. This includes retries that were queued before a settings change: URL changes affect the next attempt, secret rotation invalidates the old secret immediately and pending retries use the replacement, and deactivation or deletion prevents unfinished work from continuing.
 
 Delivery is at least once. Store processed event IDs and make handlers idempotent, because an acknowledgement can be lost after your handler commits its work.
 

@@ -10,7 +10,9 @@ export type BadgeStatus =
   | "failed"
   | "pending"
   | "needs_reauth"
-  | "running";
+  | "running"
+  | "inactive"
+  | "delivering";
 
 const statusPresentation: Record<
   BadgeStatus,
@@ -25,6 +27,8 @@ const statusPresentation: Record<
   pending: { label: "Pending", tone: "warning" },
   needs_reauth: { label: "Needs reauth", tone: "warning" },
   running: { label: "Running", pulse: true, tone: "accent" },
+  inactive: { label: "Inactive", tone: "neutral" },
+  delivering: { label: "Delivering", pulse: true, tone: "accent" },
 };
 
 export interface BadgeProps {

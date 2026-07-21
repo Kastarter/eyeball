@@ -93,12 +93,28 @@ export interface CatalogMetrics {
   version: string;
 }
 
+export interface CatalogWebhookTriggerOption {
+  description: string;
+  label: string;
+  toolkit: string;
+  value: `trigger.${string}`;
+}
+
 export function getCatalogMetrics(): CatalogMetrics {
   return {
     toolkits: defaultCatalog.listToolkits().length,
     tools: defaultCatalog.listTools().length,
     version: CATALOG_VERSION,
   };
+}
+
+export function getCatalogWebhookTriggerOptions(): readonly CatalogWebhookTriggerOption[] {
+  return defaultCatalog.listTriggers().map((trigger) => ({
+    description: trigger.description,
+    label: trigger.name,
+    toolkit: trigger.toolkit,
+    value: `trigger.${trigger.name}`,
+  }));
 }
 
 function sourceLabel(source: string): CatalogToolkitView["sourceLabel"] {

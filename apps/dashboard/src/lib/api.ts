@@ -95,6 +95,95 @@ export interface RevokeConnectionResponse {
   status: "revoked";
 }
 
+export type WebhookSubscriptionEventType =
+  | "execution.completed"
+  | "execution.succeeded"
+  | "execution.failed"
+  | "voice.session.event"
+  | "voice.transcript.ready"
+  | "voice.observer.failed"
+  | "trigger.*"
+  | `trigger.${string}.${string}`;
+
+export interface WebhookEndpoint {
+  endpointId: string;
+  url: string;
+  secretPrefix: string;
+  events: readonly WebhookSubscriptionEventType[];
+  active: boolean;
+  createdAt: string;
+  updatedAt: string;
+}
+
+export interface CreatedWebhookEndpoint extends WebhookEndpoint {
+  secret: string;
+}
+
+export interface RotatedWebhookSecret {
+  endpointId: string;
+  secretPrefix: string;
+  secret: string;
+  rotatedAt: string;
+}
+
+export interface WebhookEndpointPage {
+  webhooks: readonly WebhookEndpoint[];
+  nextCursor?: string;
+}
+
+export interface CreateWebhookEndpointRequest {
+  url: string;
+  events: readonly WebhookSubscriptionEventType[];
+  active: boolean;
+}
+
+export interface UpdateWebhookEndpointRequest {
+  url?: string;
+  events?: readonly WebhookSubscriptionEventType[];
+  active?: boolean;
+}
+
+export type WebhookDeliveryStatus =
+  | "pending"
+  | "delivering"
+  | "succeeded"
+  | "failed";
+
+export interface WebhookDeliveryAttempt {
+  attempt: number;
+  attemptedAt: string;
+  completedAt: string;
+  statusCode?: number;
+  error?: string;
+}
+
+export interface WebhookDelivery {
+  deliveryId: string;
+  endpointId: string;
+  eventId: string;
+  eventType: string;
+  status: WebhookDeliveryStatus;
+  attempts: readonly WebhookDeliveryAttempt[];
+  createdAt: string;
+  nextRetryAt?: string;
+  completedAt?: string;
+}
+
+export interface WebhookDeliveryPage {
+  deliveries: readonly WebhookDelivery[];
+  nextCursor?: string;
+}
+
+export interface ListWebhookEndpointsParams {
+  cursor?: string;
+  limit?: number;
+}
+
+export interface ListWebhookDeliveriesParams {
+  cursor?: string;
+  limit?: number;
+}
+
 export interface ExecuteToolRequest {
   connectionId?: `conn_${string}`;
   input: Readonly<Record<string, JsonValue>>;
@@ -179,6 +268,220 @@ export class ExecutorApiError extends Error {
     this.retryable = details.retryable;
     this.status = status;
   }
+}
+
+function metadataRecord(
+  value: unknown,
+  label: string,
+): Record<string, unknown> {
+  if (typeof value !== "object" || value === null || Array.isArray(value)) {
+    throw new ExecutorApiError(
+      `Executor returned invalid ${label} metadata.`,
+      502,
+    );
+  }
+  return value as Record<string, unknown>;
+}
+
+function metadataString(
+  value: Record<string, unknown>,
+  field: string,
+  label: string,
+): string {
+  const result = value[field];
+  if (typeof result !== "string") {
+    throw new ExecutorApiError(
+      `Executor returned invalid ${label} metadata.`,
+      502,
+    );
+  }
+  return result;
+}
+
+function optionalMetadataString(
+  value: Record<string, unknown>,
+  field: string,
+  label: string,
+): string | undefined {
+  const result = value[field];
+  if (result === undefined) return undefined;
+  if (typeof result !== "string") {
+    throw new ExecutorApiError(
+      `Executor returned invalid ${label} metadata.`,
+      502,
+    );
+  }
+  return result;
+}
+
+export function projectWebhookEndpoint(value: unknown): WebhookEndpoint {
+  const endpoint = metadataRecord(value, "webhook endpoint");
+  const events = endpoint.events;
+  if (
+    !Array.isArray(events) ||
+    events.some((event) => typeof event !== "string") ||
+    typeof endpoint.active !== "boolean"
+  ) {
+    throw new ExecutorApiError(
+      "Executor returned invalid webhook endpoint metadata.",
+      502,
+    );
+  }
+  return {
+    endpointId: metadataString(endpoint, "endpointId", "webhook endpoint"),
+    url: metadataString(endpoint, "url", "webhook endpoint"),
+    secretPrefix: metadataString(endpoint, "secretPrefix", "webhook endpoint"),
+    events: events as WebhookSubscriptionEventType[],
+    active: endpoint.active,
+    createdAt: metadataString(endpoint, "createdAt", "webhook endpoint"),
+    updatedAt: metadataString(endpoint, "updatedAt", "webhook endpoint"),
+  };
+}
+
+function projectCreatedWebhookEndpoint(value: unknown): CreatedWebhookEndpoint {
+  const record = metadataRecord(value, "created webhook endpoint");
+  const endpoint = projectWebhookEndpoint(record);
+  return {
+    endpointId: endpoint.endpointId,
+    url: endpoint.url,
+    secretPrefix: endpoint.secretPrefix,
+    events: endpoint.events,
+    active: endpoint.active,
+    createdAt: endpoint.createdAt,
+    updatedAt: endpoint.updatedAt,
+    secret: metadataString(record, "secret", "created webhook endpoint"),
+  };
+}
+
+function projectRotatedWebhookSecret(value: unknown): RotatedWebhookSecret {
+  const rotated = metadataRecord(value, "rotated webhook secret");
+  return {
+    endpointId: metadataString(rotated, "endpointId", "rotated webhook secret"),
+    secretPrefix: metadataString(
+      rotated,
+      "secretPrefix",
+      "rotated webhook secret",
+    ),
+    secret: metadataString(rotated, "secret", "rotated webhook secret"),
+    rotatedAt: metadataString(rotated, "rotatedAt", "rotated webhook secret"),
+  };
+}
+
+function projectWebhookDeliveryAttempt(value: unknown): WebhookDeliveryAttempt {
+  const attempt = metadataRecord(value, "webhook delivery attempt");
+  if (typeof attempt.attempt !== "number") {
+    throw new ExecutorApiError(
+      "Executor returned invalid webhook delivery attempt metadata.",
+      502,
+    );
+  }
+  const statusCode = attempt.statusCode;
+  if (statusCode !== undefined && typeof statusCode !== "number") {
+    throw new ExecutorApiError(
+      "Executor returned invalid webhook delivery attempt metadata.",
+      502,
+    );
+  }
+  const error = optionalMetadataString(
+    attempt,
+    "error",
+    "webhook delivery attempt",
+  );
+  return {
+    attempt: attempt.attempt,
+    attemptedAt: metadataString(
+      attempt,
+      "attemptedAt",
+      "webhook delivery attempt",
+    ),
+    completedAt: metadataString(
+      attempt,
+      "completedAt",
+      "webhook delivery attempt",
+    ),
+    ...(statusCode === undefined ? {} : { statusCode }),
+    ...(error === undefined ? {} : { error }),
+  };
+}
+
+export function projectWebhookDelivery(value: unknown): WebhookDelivery {
+  const delivery = metadataRecord(value, "webhook delivery");
+  const attempts = delivery.attempts;
+  if (
+    !Array.isArray(attempts) ||
+    (delivery.status !== "pending" &&
+      delivery.status !== "delivering" &&
+      delivery.status !== "succeeded" &&
+      delivery.status !== "failed")
+  ) {
+    throw new ExecutorApiError(
+      "Executor returned invalid webhook delivery metadata.",
+      502,
+    );
+  }
+  const nextRetryAt = optionalMetadataString(
+    delivery,
+    "nextRetryAt",
+    "webhook delivery",
+  );
+  const completedAt = optionalMetadataString(
+    delivery,
+    "completedAt",
+    "webhook delivery",
+  );
+  return {
+    deliveryId: metadataString(delivery, "deliveryId", "webhook delivery"),
+    endpointId: metadataString(delivery, "endpointId", "webhook delivery"),
+    eventId: metadataString(delivery, "eventId", "webhook delivery"),
+    eventType: metadataString(delivery, "eventType", "webhook delivery"),
+    status: delivery.status,
+    attempts: attempts.map(projectWebhookDeliveryAttempt),
+    createdAt: metadataString(delivery, "createdAt", "webhook delivery"),
+    ...(nextRetryAt === undefined ? {} : { nextRetryAt }),
+    ...(completedAt === undefined ? {} : { completedAt }),
+  };
+}
+
+export function projectWebhookEndpointPage(
+  value: unknown,
+): WebhookEndpointPage {
+  const page = metadataRecord(value, "webhook endpoint page");
+  if (!Array.isArray(page.webhooks)) {
+    throw new ExecutorApiError(
+      "Executor returned invalid webhook endpoint page metadata.",
+      502,
+    );
+  }
+  const nextCursor = optionalMetadataString(
+    page,
+    "nextCursor",
+    "webhook endpoint page",
+  );
+  return {
+    webhooks: page.webhooks.map(projectWebhookEndpoint),
+    ...(nextCursor === undefined ? {} : { nextCursor }),
+  };
+}
+
+export function projectWebhookDeliveryPage(
+  value: unknown,
+): WebhookDeliveryPage {
+  const page = metadataRecord(value, "webhook delivery page");
+  if (!Array.isArray(page.deliveries)) {
+    throw new ExecutorApiError(
+      "Executor returned invalid webhook delivery page metadata.",
+      502,
+    );
+  }
+  const nextCursor = optionalMetadataString(
+    page,
+    "nextCursor",
+    "webhook delivery page",
+  );
+  return {
+    deliveries: page.deliveries.map(projectWebhookDelivery),
+    ...(nextCursor === undefined ? {} : { nextCursor }),
+  };
 }
 
 export const DEFAULT_EXECUTOR_BASE_URL = "http://127.0.0.1:8787";
@@ -281,6 +584,104 @@ export class ExecutorClient {
   ): Promise<RevokeConnectionResponse> {
     return this.#request<RevokeConnectionResponse>(
       `/v1/connections/${encodeURIComponent(connectionId)}`,
+      {
+        method: "DELETE",
+        ...(signal === undefined ? {} : { signal }),
+      },
+    );
+  }
+
+  async listWebhookEndpoints(
+    params: ListWebhookEndpointsParams = {},
+    signal?: AbortSignal,
+  ): Promise<WebhookEndpointPage> {
+    const query = new URLSearchParams();
+    if (params.limit !== undefined) query.set("limit", String(params.limit));
+    if (params.cursor !== undefined) query.set("cursor", params.cursor);
+    const suffix = query.size > 0 ? `?${query.toString()}` : "";
+    const value = await this.#request<unknown>(`/v1/webhooks${suffix}`, {
+      ...(signal === undefined ? {} : { signal }),
+    });
+    return projectWebhookEndpointPage(value);
+  }
+
+  async createWebhookEndpoint(
+    request: CreateWebhookEndpointRequest,
+    signal?: AbortSignal,
+  ): Promise<CreatedWebhookEndpoint> {
+    const value = await this.#request<unknown>("/v1/webhooks", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(request),
+      ...(signal === undefined ? {} : { signal }),
+    });
+    return projectCreatedWebhookEndpoint(value);
+  }
+
+  async getWebhookEndpoint(
+    endpointId: string,
+    signal?: AbortSignal,
+  ): Promise<WebhookEndpoint> {
+    const value = await this.#request<unknown>(
+      `/v1/webhooks/${encodeURIComponent(endpointId)}`,
+      signal === undefined ? {} : { signal },
+    );
+    return projectWebhookEndpoint(value);
+  }
+
+  async updateWebhookEndpoint(
+    endpointId: string,
+    request: UpdateWebhookEndpointRequest,
+    signal?: AbortSignal,
+  ): Promise<WebhookEndpoint> {
+    const value = await this.#request<unknown>(
+      `/v1/webhooks/${encodeURIComponent(endpointId)}`,
+      {
+        method: "PATCH",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(request),
+        ...(signal === undefined ? {} : { signal }),
+      },
+    );
+    return projectWebhookEndpoint(value);
+  }
+
+  async rotateWebhookSecret(
+    endpointId: string,
+    signal?: AbortSignal,
+  ): Promise<RotatedWebhookSecret> {
+    const value = await this.#request<unknown>(
+      `/v1/webhooks/${encodeURIComponent(endpointId)}/rotate-secret`,
+      {
+        method: "POST",
+        ...(signal === undefined ? {} : { signal }),
+      },
+    );
+    return projectRotatedWebhookSecret(value);
+  }
+
+  async listWebhookDeliveries(
+    endpointId: string,
+    params: ListWebhookDeliveriesParams = {},
+    signal?: AbortSignal,
+  ): Promise<WebhookDeliveryPage> {
+    const query = new URLSearchParams();
+    if (params.limit !== undefined) query.set("limit", String(params.limit));
+    if (params.cursor !== undefined) query.set("cursor", params.cursor);
+    const suffix = query.size > 0 ? `?${query.toString()}` : "";
+    const value = await this.#request<unknown>(
+      `/v1/webhooks/${encodeURIComponent(endpointId)}/deliveries${suffix}`,
+      signal === undefined ? {} : { signal },
+    );
+    return projectWebhookDeliveryPage(value);
+  }
+
+  async deleteWebhookEndpoint(
+    endpointId: string,
+    signal?: AbortSignal,
+  ): Promise<void> {
+    await this.#request<void>(
+      `/v1/webhooks/${encodeURIComponent(endpointId)}`,
       {
         method: "DELETE",
         ...(signal === undefined ? {} : { signal }),

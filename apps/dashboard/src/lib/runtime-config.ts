@@ -14,7 +14,8 @@ export type DashboardFeature =
   | "executions"
   | "organizations"
   | "toolkits"
-  | "voiceAgents";
+  | "voiceAgents"
+  | "webhooks";
 
 export interface RuntimeEnvironment {
   readonly [name: string]: string | undefined;
@@ -59,7 +60,12 @@ export function dashboardDataSource(
 ): DashboardDataSource {
   const mode = dashboardMode(environment);
   if (feature === "toolkits") return "catalog";
-  if (feature === "executions" || feature === "voiceAgents") return "executor";
+  if (
+    feature === "executions" ||
+    feature === "voiceAgents" ||
+    feature === "webhooks"
+  )
+    return "executor";
   if (mode === "cloud" && cloudFeatures.has(feature)) return "cloud-control";
   if (feature === "connections") return "executor";
   return "demo";

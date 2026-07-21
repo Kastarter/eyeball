@@ -7,13 +7,13 @@ import { Button } from "@/src/components/ui/button";
 import { CopyButton } from "@/src/components/ui/copy-button";
 import { Input } from "@/src/components/ui/form-controls";
 import { Icon } from "@/src/components/ui/icon";
+import { SecretRevealDialog } from "@/src/components/ui/secret-reveal-dialog";
 import { TableShell } from "@/src/components/ui/table";
 import {
   CloudApiError,
   type CloudApiKey,
   dashboardCloudClient,
 } from "@/src/lib/cloud-api";
-import { SecretRevealDialog } from "./secret-reveal-dialog";
 
 export interface ApiKeysScreenProps {
   currentUserId: string;

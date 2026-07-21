@@ -1,6 +1,7 @@
 # eyeball — Planned work
 
-State as of 2026-07-21. The 0.2.0 source cut is complete, and two audit sweeps
+State as of 2026-07-21. The 0.2.0 source cut is complete, M5 is underway with
+M5.1 complete, and two audit sweeps
 (cross-feature wiring; dashboard/SDK/docs parity) produced a milestone-ordered
 gap ledger. Milestones **M1 (hosted execution slice)**, **M2 (billing as a
 product)**, **M3 (restart-state durability)**, and **M4 (voice hardening)** are
@@ -53,12 +54,13 @@ change. Never bind ports in tests; use in-process apps (`app.request`, PGlite).
   not the unrelated `SEC-009` and `SEC-010` entries in `docs/SECURITY.md`. M4
   closes the defined hardening item, not live-provider certification,
   production backup/restore drills, or managed multi-replica load/chaos proof.
+- M5.1 Webhooks page: project endpoint CRUD, catalog-backed event selection,
+  ephemeral reveal-once create/rotation secrets, confirmed rotation/deletion,
+  metadata-only paginated delivery attempts, and a dashboard executor proxy
+  `PATCH` allowlist restricted to endpoint updates. A-01 closed.
 
 ## M5 — Local dashboard surfaces (demo mode; executor APIs mostly exist)
 
-6. **M5.1 Webhooks page.** Endpoint CRUD, event selector, reveal-once secret,
-   rotate/delete, deliveries tab. Export PATCH from the dashboard executor
-   proxy (currently GET/POST/DELETE only). A-01.
 7. **M5.2 Triggers page.** Subscription CRUD, mode-specific forms, reveal-once
    push ingest URL, rotate, delete. A-02.
 8. **M5.3 Files page + Try-It attachment picker.** Uses the completed M3.2

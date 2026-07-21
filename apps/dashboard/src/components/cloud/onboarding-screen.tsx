@@ -5,6 +5,7 @@ import { useState } from "react";
 import { ApertureLogo } from "@/src/components/shell/aperture-logo";
 import { Button } from "@/src/components/ui/button";
 import { Input, Select } from "@/src/components/ui/form-controls";
+import { SecretRevealDialog } from "@/src/components/ui/secret-reveal-dialog";
 import {
   CloudApiError,
   type CloudOrganization,
@@ -12,7 +13,6 @@ import {
   dashboardCloudClient,
   persistDashboardCloudContext,
 } from "@/src/lib/cloud-api";
-import { SecretRevealDialog } from "./secret-reveal-dialog";
 
 export function cloudSlug(value: string): string {
   const normalized = value

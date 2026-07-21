@@ -17,6 +17,13 @@ export function POST(
   return proxyExecutorRequest(request, context);
 }
 
+export function PATCH(
+  request: Request,
+  context: ExecutorProxyRouteContext,
+): Promise<Response> {
+  return proxyExecutorRequest(request, context);
+}
+
 export function DELETE(
   request: Request,
   context: ExecutorProxyRouteContext,

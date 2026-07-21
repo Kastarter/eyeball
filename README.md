@@ -59,7 +59,7 @@ The main monorepo, read-only `mocks/` checkout, and private `cloud/` control pla
 | `packages/bridge` | Compatibility boundary for external integration engines |
 | `apps/executor` | Authenticated execution API, records, queues, and development connections |
 | `apps/mcp-gateway` | Stateful Streamable HTTP MCP discovery, SSE, execution, and Tasks gateway |
-| `apps/dashboard` | Next.js admin panel with demo-by-default data and an explicit cloud mode for login, org/project context, hosted connections, API keys, and audit events |
+| `apps/dashboard` | Next.js admin panel with demo-by-default data, project webhook endpoint administration and delivery-attempt inspection, plus an explicit cloud mode for login, org/project context, hosted connections, API keys, and audit events |
 | `apps/docs` | Self-hosted Next.js renderer for the authored public documentation |
 | `apps/landing` | Static product landing page and interactive transcript demo |
 | `apps/voice-worker` | Separately deployed Python voice-session control plane and provider-certification scaffold |

@@ -7,6 +7,31 @@ export interface ExecutorProxyRouteContext {
   params: Promise<{ path: string[] }>;
 }
 
+export function isAllowedExecutorProxyRequest(
+  method: string,
+  path: readonly string[],
+): boolean {
+  const normalizedMethod =
+    method.toUpperCase() === "HEAD" ? "GET" : method.toUpperCase();
+  if (
+    normalizedMethod === "GET" ||
+    normalizedMethod === "POST" ||
+    normalizedMethod === "DELETE"
+  ) {
+    return path[0] === "v1" || path[0] === "health";
+  }
+  return (
+    normalizedMethod === "PATCH" &&
+    path.length === 3 &&
+    path[0] === "v1" &&
+    path[1] === "webhooks" &&
+    path[2] !== undefined &&
+    path[2].length > 0 &&
+    path[2] !== "." &&
+    path[2] !== ".."
+  );
+}
+
 function isLoopbackHostname(hostname: string): boolean {
   return (
     hostname === "localhost" ||
@@ -79,6 +104,18 @@ export async function proxyExecutorRequest(
         },
       },
       { status: 400 },
+    );
+  }
+  if (!isAllowedExecutorProxyRequest(request.method, path)) {
+    return Response.json(
+      {
+        error: {
+          code: "executor_route_not_allowed",
+          message: "The executor route is not available through this proxy.",
+          retryable: false,
+        },
+      },
+      { status: 404, headers: { "Cache-Control": "no-store" } },
     );
   }
 

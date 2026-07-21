@@ -21,7 +21,8 @@ export type IconName =
   | "settings"
   | "sun"
   | "terminal"
-  | "voice";
+  | "voice"
+  | "webhook";
 
 const iconPaths: Record<IconName, React.ReactNode> = {
   activity: <path d="M2 8h2.4l1.4-4.2 3 8.4 1.5-4.2H14" />,
@@ -107,6 +108,14 @@ const iconPaths: Record<IconName, React.ReactNode> = {
   voice: (
     <>
       <path d="M3 9.5V6.5M6 12V4M9 13.5v-11M12 11V5M15 9V7" />
+    </>
+  ),
+  webhook: (
+    <>
+      <circle cx="3.5" cy="4" r="2" />
+      <circle cx="12.5" cy="4" r="2" />
+      <circle cx="8" cy="12" r="2" />
+      <path d="M5.5 4h5M4.5 5.7l2.5 4.6m4.5-4.6L9 10.3" />
     </>
   ),
 };

@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
-import { ExecutorApiError, ExecutorClient } from "./api";
+import { ExecutorApiError, ExecutorClient, type WebhookEndpoint } from "./api";
+import { EXECUTOR_PROJECT_HEADER } from "./executor-key-shared";
 
 describe("ExecutorClient", () => {
   it("reads the executor's public health response", async () => {
@@ -225,5 +226,245 @@ describe("ExecutorClient", () => {
         url: "https://executor.example/v1/dev/voice-sessions/session_demo/advance",
       },
     ]);
+  });
+
+  it("projects the complete webhook lifecycle onto metadata-only public state", async () => {
+    const requests: Request[] = [];
+    const endpointId = "whe fixture/one";
+    const createdSecret = "whsec_created_reveal_once_fixture";
+    const rotatedSecret = "whsec_rotated_reveal_once_fixture";
+    const createdAt = "2026-07-21T10:00:00.000Z";
+    let endpoint: WebhookEndpoint = {
+      endpointId,
+      url: "https://receiver.example.test/eyeball",
+      secretPrefix: "whsec_created",
+      events: ["execution.completed", "trigger.gmail.email_received"],
+      active: true,
+      createdAt,
+      updatedAt: createdAt,
+    };
+    const fetch: typeof globalThis.fetch = async (input, init) => {
+      const request = new Request(input, init);
+      requests.push(request);
+      const url = new URL(request.url);
+      if (request.method === "POST" && url.pathname === "/v1/webhooks") {
+        return Response.json(
+          {
+            ...endpoint,
+            secret: createdSecret,
+            payload: "create-payload-sentinel",
+          },
+          { status: 201 },
+        );
+      }
+      if (request.method === "GET" && url.pathname === "/v1/webhooks") {
+        return Response.json({
+          webhooks: [
+            {
+              ...endpoint,
+              secret: rotatedSecret,
+              body: "list-body-sentinel",
+            },
+          ],
+          nextCursor: "endpoint_cursor_2",
+        });
+      }
+      if (request.method === "GET" && url.pathname.endsWith("/deliveries")) {
+        return Response.json({
+          deliveries: [
+            {
+              deliveryId: "whd_fixture",
+              endpointId,
+              eventId: "evt_fixture",
+              eventType: "execution.succeeded",
+              status: "succeeded",
+              attempts: [
+                {
+                  attempt: 1,
+                  attemptedAt: "2026-07-21T10:01:00.000Z",
+                  completedAt: "2026-07-21T10:01:00.125Z",
+                  statusCode: 204,
+                  responseBody: "attempt-response-sentinel",
+                },
+              ],
+              createdAt: "2026-07-21T10:01:00.000Z",
+              completedAt: "2026-07-21T10:01:00.125Z",
+              payload: "delivery-payload-sentinel",
+              responseBody: "delivery-response-sentinel",
+              headers: { Authorization: "delivery-header-sentinel" },
+              secret: rotatedSecret,
+            },
+          ],
+          nextCursor: "delivery_cursor_2",
+        });
+      }
+      if (request.method === "GET") {
+        return Response.json({
+          ...endpoint,
+          secret: rotatedSecret,
+          responseBody: "detail-response-sentinel",
+        });
+      }
+      if (request.method === "PATCH") {
+        endpoint = {
+          ...endpoint,
+          url: "https://receiver.example.test/updated",
+          events: ["voice.transcript.ready"],
+          active: false,
+          updatedAt: "2026-07-21T10:02:00.000Z",
+        };
+        return Response.json({
+          ...endpoint,
+          secret: createdSecret,
+          payload: "update-payload-sentinel",
+        });
+      }
+      if (
+        request.method === "POST" &&
+        url.pathname.endsWith("/rotate-secret")
+      ) {
+        endpoint = {
+          ...endpoint,
+          secretPrefix: "whsec_rotated",
+          updatedAt: "2026-07-21T10:03:00.000Z",
+        };
+        return Response.json({
+          endpointId,
+          secretPrefix: endpoint.secretPrefix,
+          secret: rotatedSecret,
+          rotatedAt: endpoint.updatedAt,
+          payload: "rotate-payload-sentinel",
+        });
+      }
+      if (request.method === "DELETE")
+        return new Response(null, { status: 204 });
+      return Response.json({ error: "unexpected request" }, { status: 500 });
+    };
+    const client = new ExecutorClient({
+      baseUrl: "https://executor.example",
+      fetch,
+      projectId: "proj_fixture",
+    });
+
+    const created = await client.createWebhookEndpoint({
+      url: endpoint.url,
+      events: endpoint.events,
+      active: true,
+    });
+    expect(created.secret).toBe(createdSecret);
+
+    const firstList = await client.listWebhookEndpoints({
+      limit: 25,
+      cursor: "endpoint cursor/1",
+    });
+    const firstGet = await client.getWebhookEndpoint(endpointId);
+    expect(JSON.stringify([firstList, firstGet])).not.toContain(createdSecret);
+    expect(JSON.stringify([firstList, firstGet])).not.toContain(
+      "list-body-sentinel",
+    );
+
+    const updated = await client.updateWebhookEndpoint(endpointId, {
+      url: "https://receiver.example.test/updated",
+      events: ["voice.transcript.ready"],
+      active: false,
+    });
+    expect(updated).toMatchObject({
+      active: false,
+      events: ["voice.transcript.ready"],
+    });
+
+    const rotated = await client.rotateWebhookSecret(endpointId);
+    expect(rotated.secret).toBe(rotatedSecret);
+    expect(rotated.secret).not.toBe(created.secret);
+
+    const secondGet = await client.getWebhookEndpoint(endpointId);
+    const secondList = await client.listWebhookEndpoints();
+    expect(secondGet.secretPrefix).toBe("whsec_rotated");
+    expect(JSON.stringify([secondGet, secondList])).not.toContain(
+      createdSecret,
+    );
+    expect(JSON.stringify([secondGet, secondList])).not.toContain(
+      rotatedSecret,
+    );
+
+    const deliveries = await client.listWebhookDeliveries(endpointId, {
+      limit: 10,
+      cursor: "delivery cursor/1",
+    });
+    expect(deliveries).toMatchObject({
+      deliveries: [
+        {
+          deliveryId: "whd_fixture",
+          attempts: [{ attempt: 1, statusCode: 204 }],
+        },
+      ],
+      nextCursor: "delivery_cursor_2",
+    });
+    const serializedDeliveries = JSON.stringify(deliveries);
+    for (const sentinel of [
+      "delivery-payload-sentinel",
+      "delivery-response-sentinel",
+      "delivery-header-sentinel",
+      "attempt-response-sentinel",
+      rotatedSecret,
+    ]) {
+      expect(serializedDeliveries).not.toContain(sentinel);
+    }
+
+    await expect(
+      client.deleteWebhookEndpoint(endpointId),
+    ).resolves.toBeUndefined();
+
+    expect(
+      requests.every(
+        (request) =>
+          request.headers.get(EXECUTOR_PROJECT_HEADER) === "proj_fixture" &&
+          request.headers.get("Accept") === "application/json",
+      ),
+    ).toBe(true);
+    expect(requests.map(({ method, url }) => ({ method, url }))).toEqual([
+      { method: "POST", url: "https://executor.example/v1/webhooks" },
+      {
+        method: "GET",
+        url: "https://executor.example/v1/webhooks?limit=25&cursor=endpoint+cursor%2F1",
+      },
+      {
+        method: "GET",
+        url: "https://executor.example/v1/webhooks/whe%20fixture%2Fone",
+      },
+      {
+        method: "PATCH",
+        url: "https://executor.example/v1/webhooks/whe%20fixture%2Fone",
+      },
+      {
+        method: "POST",
+        url: "https://executor.example/v1/webhooks/whe%20fixture%2Fone/rotate-secret",
+      },
+      {
+        method: "GET",
+        url: "https://executor.example/v1/webhooks/whe%20fixture%2Fone",
+      },
+      { method: "GET", url: "https://executor.example/v1/webhooks" },
+      {
+        method: "GET",
+        url: "https://executor.example/v1/webhooks/whe%20fixture%2Fone/deliveries?limit=10&cursor=delivery+cursor%2F1",
+      },
+      {
+        method: "DELETE",
+        url: "https://executor.example/v1/webhooks/whe%20fixture%2Fone",
+      },
+    ]);
+    await expect(requests[0]?.clone().json()).resolves.toEqual({
+      url: "https://receiver.example.test/eyeball",
+      events: ["execution.completed", "trigger.gmail.email_received"],
+      active: true,
+    });
+    await expect(requests[3]?.clone().json()).resolves.toEqual({
+      url: "https://receiver.example.test/updated",
+      events: ["voice.transcript.ready"],
+      active: false,
+    });
+    expect(requests[0]?.headers.get("Content-Type")).toBe("application/json");
+    expect(requests[3]?.headers.get("Content-Type")).toBe("application/json");
   });
 });

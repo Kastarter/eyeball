@@ -2,7 +2,6 @@ import { renderToStaticMarkup } from "react-dom/server";
 import { describe, expect, it } from "vitest";
 import { safeDashboardNextPath } from "../components/auth/auth-screen";
 import { confirmApiKeyRevocation } from "../components/cloud/api-keys-screen";
-import { SecretRevealDialog } from "../components/cloud/secret-reveal-dialog";
 import {
   CloudConnectionsScreen,
   cloudConnectionRequest,
@@ -10,6 +9,7 @@ import {
   HostedConnectLinkDialog,
   validateCloudReturnUrl,
 } from "../components/connections/cloud-connections-screen";
+import { SecretRevealDialog } from "../components/ui/secret-reveal-dialog";
 import type { CatalogToolkitSummary } from "./catalog";
 import {
   type CloudApiKey,

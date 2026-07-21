@@ -32,15 +32,15 @@ List and get responses never include `secret`.
 
 ## Update an endpoint
 
-`PATCH /v1/webhooks/:endpointId` accepts any non-empty combination of `url`, `events`, and `active`. The response contains the updated endpoint without its signing secret.
+`PATCH /v1/webhooks/:endpointId` accepts any non-empty combination of `url`, `events`, and `active`. The response contains the updated endpoint without its signing secret. Every attempt resolves the endpoint's current URL, secret, and active state, so a URL change affects the next attempt and deactivation prevents unfinished delivery work from continuing rather than pausing it.
 
 ## Rotate a signing secret
 
-`POST /v1/webhooks/:endpointId/rotate-secret` replaces the secret used when new deliveries are scheduled. The response includes the new `secret` and `secretPrefix`; the complete secret appears only in this rotation response. Deliveries already queued retain their original endpoint snapshot, so keep the previous secret available until those deliveries finish or exhaust their retries.
+`POST /v1/webhooks/:endpointId/rotate-secret` replaces the signing secret immediately. The response includes the new `secret` and `secretPrefix`; the complete secret appears only in this rotation response. Every attempt, including a retry that is already queued, resolves the current secret and uses the replacement. The previous secret is invalid as soon as rotation succeeds.
 
 ## Delete an endpoint
 
-`DELETE /v1/webhooks/:endpointId` returns `204` or `404`. Deletion prevents new scheduling; it does not rewrite historical delivery records.
+`DELETE /v1/webhooks/:endpointId` returns `204` or `404`. Deletion prevents new scheduling and unfinished delivery work from continuing. It does not rewrite stored historical rows, but endpoint-scoped delivery history is no longer accessible through the public route after deletion.
 
 ## Inspect deliveries
 
@@ -50,5 +50,9 @@ List and get responses never include `secret`.
 - `status`: `pending`, `delivering`, `succeeded`, or `failed`;
 - append-only attempts with timestamps, response status code, or a sanitized transport error;
 - `nextRetryAt` while another attempt is scheduled and `completedAt` after success or give-up.
+
+Delivery responses are metadata-only. They never include the delivered payload, signing secret, request or receiver response body, or receiver headers.
+
+The project **Webhooks** screen in the dashboard exposes endpoint CRUD, event selection, reveal-once create and rotation secrets, confirmed destructive actions, and this metadata-only delivery history. It uses the selected project's executor path in both demo and cloud mode.
 
 Read [Webhooks](/concepts/webhooks) for signature verification, event envelopes, retries, ordering, and production durability requirements.
