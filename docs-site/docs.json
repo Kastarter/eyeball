@@ -80,6 +80,7 @@
             "sdk/generated/files",
             "sdk/generated/webhooks",
             "sdk/generated/triggers-subscriptions",
+            "sdk/generated/trigger-events",
             "sdk/generated/errors"
           ]
         }

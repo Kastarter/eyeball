@@ -57,6 +57,13 @@
       "when": 1784643468117,
       "tag": "0007_execution_provenance",
       "breakpoints": true
+    },
+    {
+      "idx": 8,
+      "version": "7",
+      "when": 1784665634998,
+      "tag": "0008_trigger_events",
+      "breakpoints": true
     }
   ]
 }

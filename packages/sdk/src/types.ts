@@ -9,9 +9,11 @@ import type {
   JsonValue,
   McpToolDescriptor,
   OpenAIFunctionToolDescriptor,
+  QualifiedTriggerName,
   ToolDefinition,
   ToolNameMap,
   TriggerDefinition,
+  TriggerSubscriptionId,
   WebhookSubscriptionEventType,
 } from "@eyeball/core";
 
@@ -66,6 +68,17 @@ export interface ListSubscriptionsOptions {
   userId?: string;
   cursor?: string;
   limit?: number;
+}
+
+/**
+ * Project-scoped filters and cursor controls for redacted trigger-event history.
+ * This resource never inherits the client's default `userId`.
+ */
+export interface ListTriggerEventsOptions {
+  cursor?: string;
+  limit?: number;
+  subscriptionId?: TriggerSubscriptionId;
+  trigger?: QualifiedTriggerName;
 }
 
 /** Tool-definition formats emitted for supported model frameworks and MCP. */

@@ -20,11 +20,23 @@ export default async function Page({
   const [{ project }, query] = await Promise.all([params, searchParams]);
   const initialNewSubscriptionOpen = firstQueryValue(query.new) === "true";
   const subscription = firstQueryValue(query.subscription)?.trim();
+  const requestedView = firstQueryValue(query.view);
+  const hasSelectedSubscription =
+    !initialNewSubscriptionOpen &&
+    subscription !== undefined &&
+    subscription.length > 0;
+  const initialView =
+    !initialNewSubscriptionOpen &&
+    !hasSelectedSubscription &&
+    requestedView === "events"
+      ? "events"
+      : "subscriptions";
 
   return (
     <TriggersScreen
       catalogTriggerOptions={getCatalogTriggerSubscriptionOptions()}
       initialNewSubscriptionOpen={initialNewSubscriptionOpen}
+      initialView={initialView}
       {...(initialNewSubscriptionOpen ||
       subscription === undefined ||
       subscription.length === 0

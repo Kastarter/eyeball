@@ -18,6 +18,7 @@ import { Icon } from "@/src/components/ui/icon";
 import { SecretRevealDialog } from "@/src/components/ui/secret-reveal-dialog";
 import { Skeleton } from "@/src/components/ui/skeleton";
 import { TableShell } from "@/src/components/ui/table";
+import { Tabs } from "@/src/components/ui/tabs";
 import {
   dashboardExecutorClient,
   ExecutorApiError,
@@ -26,6 +27,7 @@ import {
 import type { CatalogTriggerSubscriptionOption } from "@/src/lib/catalog";
 import { cn } from "@/src/lib/cn";
 import { isCloudMode } from "@/src/lib/runtime-config";
+import { TriggerEventsTab } from "./trigger-events-tab";
 import { createTriggerState, triggerStateReducer } from "./trigger-state";
 import { TriggerSubscriptionDrawer } from "./trigger-subscription-drawer";
 
@@ -188,9 +190,36 @@ export function parseTriggerDrawerQuery(url: URL): {
   newSubscriptionOpen: boolean;
   selectedSubscriptionId?: string;
 } {
+  const page = parseTriggerPageQuery(url);
+  return {
+    newSubscriptionOpen: page.newSubscriptionOpen,
+    ...(page.selectedSubscriptionId === undefined
+      ? {}
+      : { selectedSubscriptionId: page.selectedSubscriptionId }),
+  };
+}
+
+export type TriggerView = "subscriptions" | "events";
+
+export function parseTriggerPageQuery(url: URL): {
+  view: TriggerView;
+  newSubscriptionOpen: boolean;
+  selectedSubscriptionId?: string;
+} {
   const newSubscriptionOpen = url.searchParams.get("new") === "true";
   const subscription = url.searchParams.get("subscription")?.trim();
+  const hasSelectedSubscription =
+    !newSubscriptionOpen &&
+    subscription !== undefined &&
+    subscription.length > 0;
+  const view: TriggerView =
+    !newSubscriptionOpen &&
+    !hasSelectedSubscription &&
+    url.searchParams.get("view") === "events"
+      ? "events"
+      : "subscriptions";
   return {
+    view,
     newSubscriptionOpen,
     ...(newSubscriptionOpen ||
     subscription === undefined ||
@@ -225,6 +254,7 @@ export interface TriggersScreenProps {
   initialNextCursor?: string;
   initialSelectedSubscription?: string;
   initialSubscriptions?: readonly TriggerSubscription[];
+  initialView?: TriggerView;
   project: string;
 }
 
@@ -234,6 +264,7 @@ export function TriggersScreen({
   initialNextCursor,
   initialSelectedSubscription,
   initialSubscriptions,
+  initialView = "subscriptions",
   project,
 }: TriggersScreenProps) {
   const client = useMemo(() => dashboardExecutorClient(project), [project]);
@@ -253,6 +284,11 @@ export function TriggersScreen({
   );
   const [selectedSubscriptionId, setSelectedSubscriptionId] = useState(
     initialNewSubscriptionOpen ? undefined : initialSelectedSubscription,
+  );
+  const [view, setView] = useState<TriggerView>(
+    initialNewSubscriptionOpen || initialSelectedSubscription !== undefined
+      ? "subscriptions"
+      : initialView,
   );
   const [loadingMore, setLoadingMore] = useState(false);
   const listRequestRef = useRef<AbortController | undefined>(undefined);
@@ -317,7 +353,8 @@ export function TriggersScreen({
 
   useEffect(() => {
     function restoreDrawerState() {
-      const restored = parseTriggerDrawerQuery(new URL(window.location.href));
+      const restored = parseTriggerPageQuery(new URL(window.location.href));
+      setView(restored.view);
       setNewSubscriptionOpen(restored.newSubscriptionOpen);
       setSelectedSubscriptionId(restored.selectedSubscriptionId);
     }
@@ -334,9 +371,11 @@ export function TriggersScreen({
 
   const openNewSubscription = useCallback(() => {
     rememberDrawerTrigger();
+    setView("subscriptions");
     setNewSubscriptionOpen(true);
     setSelectedSubscriptionId(undefined);
     const url = new URL(window.location.href);
+    url.searchParams.delete("view");
     url.searchParams.set("new", "true");
     url.searchParams.delete("subscription");
     window.history.pushState({}, "", url);
@@ -345,9 +384,11 @@ export function TriggersScreen({
   const openSubscription = useCallback(
     (subscriptionId: string) => {
       rememberDrawerTrigger();
+      setView("subscriptions");
       setNewSubscriptionOpen(false);
       setSelectedSubscriptionId(subscriptionId);
       const url = new URL(window.location.href);
+      url.searchParams.delete("view");
       url.searchParams.delete("new");
       url.searchParams.set("subscription", subscriptionId);
       window.history.pushState({}, "", url);
@@ -371,6 +412,23 @@ export function TriggersScreen({
     () => closeDrawerState(true),
     [closeDrawerState],
   );
+
+  const changeView = useCallback((nextValue: string) => {
+    const nextView: TriggerView =
+      nextValue === "events" ? "events" : "subscriptions";
+    setView(nextView);
+    const url = new URL(window.location.href);
+    if (nextView === "events") {
+      setNewSubscriptionOpen(false);
+      setSelectedSubscriptionId(undefined);
+      url.searchParams.set("view", "events");
+      url.searchParams.delete("new");
+      url.searchParams.delete("subscription");
+    } else {
+      url.searchParams.delete("view");
+    }
+    window.history.pushState({}, "", url);
+  }, []);
 
   const handleSubscriptionDeleted = useCallback(
     (subscriptionId: string) => {
@@ -470,198 +528,242 @@ export function TriggersScreen({
         </div>
       </section>
 
-      {executorState !== "loading" && executorState !== "online" ? (
-        <TriggerLoadBanner
-          cloud={cloud}
-          error={loadError}
-          onRetry={refreshSubscriptions}
-          project={project}
-          state={executorState}
-        />
-      ) : null}
+      <div className="trigger-page-tabs">
+        <Tabs
+          ariaLabel="Trigger views"
+          onValueChange={changeView}
+          tabs={[
+            {
+              id: "subscriptions",
+              label: "Subscriptions",
+              content: (
+                <>
+                  {executorState !== "loading" && executorState !== "online" ? (
+                    <TriggerLoadBanner
+                      cloud={cloud}
+                      error={loadError}
+                      onRetry={refreshSubscriptions}
+                      project={project}
+                      state={executorState}
+                    />
+                  ) : null}
 
-      {executorState === "loading" && state.subscriptions.length === 0 ? (
-        <section
-          className="webhooks-loading"
-          aria-label="Trigger subscriptions loading"
-        >
-          <div className="webhooks-loading__filters">
-            <Skeleton
-              height={38}
-              label="Trigger search loading"
-              width="min(100%, 420px)"
-            />
-            <Skeleton
-              height={38}
-              label="Trigger status filter loading"
-              width={130}
-            />
-          </div>
-          {["one", "two", "three", "four"].map((row) => (
-            <div className="webhooks-loading__row" key={row}>
-              <Skeleton
-                height={14}
-                label="Trigger subscription loading"
-                width="34%"
-              />
-              <Skeleton height={24} label="Trigger status loading" width={90} />
-              <Skeleton height={14} label="Trigger time loading" width="18%" />
-            </div>
-          ))}
-        </section>
-      ) : state.subscriptions.length === 0 && executorState === "online" ? (
-        <EmptyState
-          actions={
-            <Button
-              icon={<Icon name="plus" />}
-              onClick={openNewSubscription}
-              variant="primary"
-            >
-              Create subscription
-            </Button>
-          }
-          code={triggerCreateSnippet}
-          description="Subscribe a user's connection to a provider trigger and route its events to signed webhook endpoints. Push ingest URLs are shown once."
-          title="No trigger subscriptions"
-        />
-      ) : state.subscriptions.length > 0 ? (
-        <section className="webhooks-table-section">
-          <div className="table-filters webhook-filters">
-            <label className="table-filters__search">
-              <span>Search</span>
-              <span className="table-search-control">
-                <Icon name="search" />
-                <input
-                  className="field__control"
-                  onChange={(event) => setQuery(event.currentTarget.value)}
-                  placeholder="subscription ID, trigger, user, endpoint"
-                  type="search"
-                  value={query}
-                />
-              </span>
-            </label>
-            <label>
-              <span>Status</span>
-              <select
-                className="field__control"
-                onChange={(event) =>
-                  setStatusFilter(
-                    event.currentTarget.value as "all" | "active" | "paused",
-                  )
-                }
-                value={statusFilter}
-              >
-                <option value="all">All subscriptions</option>
-                <option value="active">Active</option>
-                <option value="paused">Paused</option>
-              </select>
-            </label>
-          </div>
-          {visibleSubscriptions.length > 0 ? (
-            <TableShell
-              caption="Project trigger subscriptions"
-              columns={[
-                { key: "subscription", label: "Subscription" },
-                { key: "mode", label: "Mode" },
-                { key: "user", label: "User" },
-                { key: "endpoints", label: "Endpoints" },
-                { key: "status", label: "Status" },
-                { key: "updated", label: "Updated (UTC)" },
-                { key: "actions", label: "Actions" },
-              ]}
-            >
-              {visibleSubscriptions.map((subscription) => {
-                const mode = modeFor(subscription.trigger);
-                return (
-                  <tr key={subscription.subscriptionId}>
-                    <td>
-                      <span className="webhook-endpoint-identity">
-                        <span>
-                          <strong>{subscription.trigger}</strong>
-                        </span>
-                        <span>
-                          <code>{subscription.subscriptionId}</code>
-                          <CopyButton
-                            label="Copy subscription ID"
-                            value={subscription.subscriptionId}
+                  {executorState === "loading" &&
+                  state.subscriptions.length === 0 ? (
+                    <section
+                      className="webhooks-loading"
+                      aria-label="Trigger subscriptions loading"
+                    >
+                      <div className="webhooks-loading__filters">
+                        <Skeleton
+                          height={38}
+                          label="Trigger search loading"
+                          width="min(100%, 420px)"
+                        />
+                        <Skeleton
+                          height={38}
+                          label="Trigger status filter loading"
+                          width={130}
+                        />
+                      </div>
+                      {["one", "two", "three", "four"].map((row) => (
+                        <div className="webhooks-loading__row" key={row}>
+                          <Skeleton
+                            height={14}
+                            label="Trigger subscription loading"
+                            width="34%"
                           />
-                        </span>
-                      </span>
-                    </td>
-                    <td>
-                      <code>
-                        {mode === undefined
-                          ? "unknown"
-                          : mode === "push"
-                            ? "push"
-                            : `poll${
-                                subscription.pollIntervalSeconds === undefined
-                                  ? ""
-                                  : ` · ${subscription.pollIntervalSeconds}s`
-                              }`}
-                      </code>
-                    </td>
-                    <td className="mono">{subscription.userId}</td>
-                    <td className="mono">
-                      {subscription.webhookEndpointIds.length}
-                    </td>
-                    <td>
-                      <Badge
-                        status={
-                          subscription.status === "active"
-                            ? "active"
-                            : "inactive"
-                        }
-                      />
-                    </td>
-                    <td className="mono">{utcLabel(subscription.updatedAt)}</td>
-                    <td>
-                      <span className="row-actions webhook-row-actions">
+                          <Skeleton
+                            height={24}
+                            label="Trigger status loading"
+                            width={90}
+                          />
+                          <Skeleton
+                            height={14}
+                            label="Trigger time loading"
+                            width="18%"
+                          />
+                        </div>
+                      ))}
+                    </section>
+                  ) : state.subscriptions.length === 0 &&
+                    executorState === "online" ? (
+                    <EmptyState
+                      actions={
                         <Button
-                          onClick={() =>
-                            openSubscription(subscription.subscriptionId)
-                          }
-                          size="small"
-                          variant="ghost"
+                          icon={<Icon name="plus" />}
+                          onClick={openNewSubscription}
+                          variant="primary"
                         >
-                          Manage
+                          Create subscription
                         </Button>
-                      </span>
-                    </td>
-                  </tr>
-                );
-              })}
-            </TableShell>
-          ) : (
-            <TriggerFilteredEmptyState
-              onClear={() => {
-                setQuery("");
-                setStatusFilter("all");
-              }}
-            />
-          )}
-          <footer className="webhook-pagination">
-            <span>
-              {state.subscriptions.length}{" "}
-              {state.subscriptions.length === 1
-                ? "subscription"
-                : "subscriptions"}{" "}
-              loaded
-              {state.nextCursor === undefined ? " · End of list" : ""}
-            </span>
-            {state.nextCursor ? (
-              <Button
-                disabled={loadingMore}
-                onClick={() => void loadMore()}
-                size="small"
-                variant="secondary"
-              >
-                {loadingMore ? "Loading…" : "Load more"}
-              </Button>
-            ) : null}
-          </footer>
-        </section>
-      ) : null}
+                      }
+                      code={triggerCreateSnippet}
+                      description="Subscribe a user's connection to a provider trigger and route its events to signed webhook endpoints. Push ingest URLs are shown once."
+                      title="No trigger subscriptions"
+                    />
+                  ) : state.subscriptions.length > 0 ? (
+                    <section className="webhooks-table-section">
+                      <div className="table-filters webhook-filters">
+                        <label className="table-filters__search">
+                          <span>Search</span>
+                          <span className="table-search-control">
+                            <Icon name="search" />
+                            <input
+                              className="field__control"
+                              onChange={(event) =>
+                                setQuery(event.currentTarget.value)
+                              }
+                              placeholder="subscription ID, trigger, user, endpoint"
+                              type="search"
+                              value={query}
+                            />
+                          </span>
+                        </label>
+                        <label>
+                          <span>Status</span>
+                          <select
+                            className="field__control"
+                            onChange={(event) =>
+                              setStatusFilter(
+                                event.currentTarget.value as
+                                  | "all"
+                                  | "active"
+                                  | "paused",
+                              )
+                            }
+                            value={statusFilter}
+                          >
+                            <option value="all">All subscriptions</option>
+                            <option value="active">Active</option>
+                            <option value="paused">Paused</option>
+                          </select>
+                        </label>
+                      </div>
+                      {visibleSubscriptions.length > 0 ? (
+                        <TableShell
+                          caption="Project trigger subscriptions"
+                          columns={[
+                            { key: "subscription", label: "Subscription" },
+                            { key: "mode", label: "Mode" },
+                            { key: "user", label: "User" },
+                            { key: "endpoints", label: "Endpoints" },
+                            { key: "status", label: "Status" },
+                            { key: "updated", label: "Updated (UTC)" },
+                            { key: "actions", label: "Actions" },
+                          ]}
+                        >
+                          {visibleSubscriptions.map((subscription) => {
+                            const mode = modeFor(subscription.trigger);
+                            return (
+                              <tr key={subscription.subscriptionId}>
+                                <td>
+                                  <span className="webhook-endpoint-identity">
+                                    <span>
+                                      <strong>{subscription.trigger}</strong>
+                                    </span>
+                                    <span>
+                                      <code>{subscription.subscriptionId}</code>
+                                      <CopyButton
+                                        label="Copy subscription ID"
+                                        value={subscription.subscriptionId}
+                                      />
+                                    </span>
+                                  </span>
+                                </td>
+                                <td>
+                                  <code>
+                                    {mode === undefined
+                                      ? "unknown"
+                                      : mode === "push"
+                                        ? "push"
+                                        : `poll${
+                                            subscription.pollIntervalSeconds ===
+                                            undefined
+                                              ? ""
+                                              : ` · ${subscription.pollIntervalSeconds}s`
+                                          }`}
+                                  </code>
+                                </td>
+                                <td className="mono">{subscription.userId}</td>
+                                <td className="mono">
+                                  {subscription.webhookEndpointIds.length}
+                                </td>
+                                <td>
+                                  <Badge
+                                    status={
+                                      subscription.status === "active"
+                                        ? "active"
+                                        : "inactive"
+                                    }
+                                  />
+                                </td>
+                                <td className="mono">
+                                  {utcLabel(subscription.updatedAt)}
+                                </td>
+                                <td>
+                                  <span className="row-actions webhook-row-actions">
+                                    <Button
+                                      onClick={() =>
+                                        openSubscription(
+                                          subscription.subscriptionId,
+                                        )
+                                      }
+                                      size="small"
+                                      variant="ghost"
+                                    >
+                                      Manage
+                                    </Button>
+                                  </span>
+                                </td>
+                              </tr>
+                            );
+                          })}
+                        </TableShell>
+                      ) : (
+                        <TriggerFilteredEmptyState
+                          onClear={() => {
+                            setQuery("");
+                            setStatusFilter("all");
+                          }}
+                        />
+                      )}
+                      <footer className="webhook-pagination">
+                        <span>
+                          {state.subscriptions.length}{" "}
+                          {state.subscriptions.length === 1
+                            ? "subscription"
+                            : "subscriptions"}{" "}
+                          loaded
+                          {state.nextCursor === undefined
+                            ? " · End of list"
+                            : ""}
+                        </span>
+                        {state.nextCursor ? (
+                          <Button
+                            disabled={loadingMore}
+                            onClick={() => void loadMore()}
+                            size="small"
+                            variant="secondary"
+                          >
+                            {loadingMore ? "Loading…" : "Load more"}
+                          </Button>
+                        ) : null}
+                      </footer>
+                    </section>
+                  ) : null}
+                </>
+              ),
+            },
+            {
+              id: "events",
+              label: "Recent events",
+              content: <TriggerEventsTab client={client} />,
+            },
+          ]}
+          value={view}
+        />
+      </div>
 
       {newSubscriptionOpen ? (
         <TriggerSubscriptionDrawer

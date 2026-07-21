@@ -1,11 +1,11 @@
 # eyeball — Planned work
 
-State as of 2026-07-21. The 0.2.0 source cut is complete, M5 is underway with
-M5.6 complete, and two audit sweeps
+State as of 2026-07-21. The 0.2.0 source cut and M5 are complete, M6 is next,
+and two audit sweeps
 (cross-feature wiring; dashboard/SDK/docs parity) produced a milestone-ordered
 gap ledger. Milestones **M1 (hosted execution slice)**, **M2 (billing as a
-product)**, **M3 (restart-state durability)**, and **M4 (voice hardening)** are
-DONE. This file lists what
+product)**, **M3 (restart-state durability)**, **M4 (voice hardening)**, and
+**M5 (local dashboard surfaces)** are DONE. This file lists what
 remains, in the intended order. Each item was scoped from audit findings with `file:line` evidence — search the
 audit IDs (A-xx, SEC-xxx, CLOUD-xxx) in `docs/SECURITY.md`, `cloud/SECURITY.md`,
 and the git history for full context.
@@ -87,12 +87,14 @@ change. Never bind ports in tests; use in-process apps (`app.request`, PGlite).
   documentation is reconciled; the nested README has a local unpushed 164-test
   correction; and both dedicated voice pages include standalone provider-free
   end-to-end TypeScript examples. A-11..A-15, D-01, D-02, and C-01 closed.
-
-## M5 — Local dashboard surfaces (demo mode; executor APIs mostly exist)
-
-12. **M5.7 Trigger event history (L).** No queryable trigger-event API exists —
-    add a redacted project-scoped `TriggerEventStore`, paginated
-    `GET /v1/trigger-events`, SDK client, and a recent-events UI. A-03.
+- M5.7 Trigger event history: redacted project-scoped memory/Postgres history
+  with seven-day logical retention and bounded cleanup, paginated
+  `GET /v1/trigger-events`, SDK support, and the Triggers recent-events tab.
+  Requested targets remain distinct from live materialized delivery outcomes;
+  provider payloads, credentials, and provider event IDs are never persisted in
+  this history. A-03 closed. This does not close provider signatures,
+  distributed polling leases, replay/backfill, source-body durability, or the
+  non-atomic claim/admission/history boundary.
 
 ## M6 — Quality of life
 

@@ -7,7 +7,9 @@ import type { WebhookDeliveryStore } from "./delivery-store.js";
 import {
   deterministicWebhookDeliveryId,
   type EnsureWebhookEventResult,
+  validateEventDeliverySummaryInput,
   type WebhookEventAdmission,
+  type WebhookEventDeliverySummary,
   type WebhookEventRecoveryPage,
   type WebhookEventWork,
   type WebhookWorkStore,
@@ -157,6 +159,34 @@ export class InMemoryWebhookWorkStore implements WebhookWorkStore {
       throw new Error("Webhook event references a missing delivery.");
     }
     return complete;
+  }
+
+  async getEventDeliverySummaries(
+    projectId: string,
+    eventIds: readonly string[],
+  ): Promise<readonly WebhookEventDeliverySummary[]> {
+    const unique = validateEventDeliverySummaryInput(projectId, eventIds);
+    const summaries: WebhookEventDeliverySummary[] = [];
+    for (const eventId of unique) {
+      const event = this.#events.get(key(projectId, eventId));
+      if (event === undefined) continue;
+      const deliveries =
+        event.materializedAt === undefined
+          ? []
+          : await this.getMaterializedDeliveries(projectId, eventId);
+      summaries.push({
+        eventId,
+        materialized: event.materializedAt !== undefined,
+        targets: deliveries
+          .sort((left, right) => left.sequence - right.sequence)
+          .map(({ delivery }) => ({
+            endpointId: delivery.endpointId,
+            deliveryId: delivery.deliveryId,
+            status: delivery.status,
+          })),
+      });
+    }
+    return copy(summaries);
   }
 
   async listUnmaterialized(input: {

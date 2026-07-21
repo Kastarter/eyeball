@@ -818,6 +818,95 @@ describe("Eyeball SDK", () => {
     ]);
   });
 
+  it("lists project trigger-event history without serializing the default user", async () => {
+    const requests: Request[] = [];
+    const response = {
+      triggerEvents: [
+        {
+          arrivalId: "trgevt_sdk",
+          eventId: "evt_trigger_sdk",
+          subscriptionId: "trgsub_sdk",
+          trigger: "slack.message_received",
+          deliveryMode: "push",
+          receivedAt: "2026-07-21T12:00:00.000Z",
+          occurredAt: "2026-07-21T11:59:59.000Z",
+          dedupStatus: "accepted",
+          deliveryStatus: "succeeded",
+          requestedWebhookEndpointIds: ["whe_sdk"],
+          deliveryTargets: [
+            {
+              endpointId: "whe_sdk",
+              deliveryId: "whd_sdk",
+              status: "succeeded",
+            },
+          ],
+          expiresAt: "2026-07-28T12:00:00.000Z",
+        },
+      ],
+      nextCursor: "cursor+/=sdk",
+    } as const;
+    const eb = client(
+      testFetch(() => jsonResponse(response), requests),
+      { userId: "user_sdk_default" },
+    );
+    await expect(
+      eb.triggerEvents.list({
+        cursor: "cursor+/=sdk",
+        limit: 25,
+        subscriptionId: "trgsub_sdk",
+        trigger: "slack.message_received",
+      }),
+    ).resolves.toEqual(response);
+    const url = new URL(requests[0]?.url ?? "");
+    expect(url.pathname).toBe("/v1/trigger-events");
+    expect(url.search).toBe(
+      "?cursor=cursor%2B%2F%3Dsdk&limit=25&subscriptionId=trgsub_sdk&trigger=slack.message_received",
+    );
+    expect(url.searchParams.has("userId")).toBe(false);
+  });
+
+  it("rejects invalid trigger-event list options without fetching", async () => {
+    const fetchImpl = vi.fn<typeof fetch>(() =>
+      Promise.resolve(jsonResponse({ triggerEvents: [] })),
+    );
+    const eb = client(fetchImpl);
+    for (const options of [
+      { cursor: "" },
+      { limit: 0 },
+      { limit: 101 },
+      { subscriptionId: "subscription_bad" },
+      { trigger: "bad trigger" },
+    ]) {
+      await expect(
+        eb.triggerEvents.list(options as never),
+      ).rejects.toMatchObject({ code: TOOL_ERROR_CODES.INVALID_INPUT });
+    }
+    expect(fetchImpl).not.toHaveBeenCalled();
+  });
+
+  it("normalizes trigger-event executor errors", async () => {
+    const eb = client(
+      testFetch(() =>
+        jsonResponse(
+          {
+            error: {
+              code: "auth_insufficient_scope",
+              message:
+                "Project-scoped trigger event history requires an unpinned project API key.",
+              retryable: false,
+            },
+          },
+          403,
+        ),
+      ),
+    );
+    await expect(eb.triggerEvents.list()).rejects.toMatchObject({
+      code: TOOL_ERROR_CODES.AUTH_INSUFFICIENT_SCOPE,
+      message:
+        "Project-scoped trigger event history requires an unpinned project API key.",
+    });
+  });
+
   it("creates, lists, rotates, and deletes trigger subscriptions", async () => {
     const requests: Request[] = [];
     const subscription = {

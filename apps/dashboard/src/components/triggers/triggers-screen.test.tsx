@@ -20,6 +20,7 @@ import {
 import {
   classifyTriggerExecutorFailure,
   parseTriggerDrawerQuery,
+  parseTriggerPageQuery,
   TriggerFilteredEmptyState,
   TriggerLoadBanner,
   TriggersScreen,
@@ -210,6 +211,71 @@ describe("TriggersScreen", () => {
         new URL("https://dashboard.example.test/demo/triggers"),
       ),
     ).toEqual({ newSubscriptionOpen: false });
+  });
+
+  it("renders accessible subscription and recent-event tabs", () => {
+    const subscriptionMarkup = renderToStaticMarkup(
+      <TriggersScreen
+        catalogTriggerOptions={catalogTriggerOptions}
+        initialSubscriptions={[pushSubscription]}
+        project="proj_fixture"
+      />,
+    );
+    const eventMarkup = renderToStaticMarkup(
+      <TriggersScreen
+        catalogTriggerOptions={catalogTriggerOptions}
+        initialSubscriptions={[pushSubscription]}
+        initialView="events"
+        project="proj_fixture"
+      />,
+    );
+
+    expect(subscriptionMarkup).toContain('role="tablist"');
+    expect(subscriptionMarkup).toContain("Subscriptions");
+    expect(subscriptionMarkup).toContain("Recent events");
+    expect(subscriptionMarkup).toContain('aria-selected="true"');
+    expect(subscriptionMarkup).toContain(pushSubscription.subscriptionId);
+    expect(subscriptionMarkup).not.toContain("Trigger events loading");
+    expect(eventMarkup).toContain("Trigger events loading");
+    expect(eventMarkup).not.toContain(pushSubscription.subscriptionId);
+    expect(eventMarkup).not.toContain("Store this push ingest URL now");
+  });
+
+  it("restores page tabs and forces drawer URLs back to subscriptions", () => {
+    expect(
+      parseTriggerPageQuery(
+        new URL("https://dashboard.example.test/demo/triggers?view=events"),
+      ),
+    ).toEqual({
+      view: "events",
+      newSubscriptionOpen: false,
+    });
+    expect(
+      parseTriggerPageQuery(
+        new URL(
+          "https://dashboard.example.test/demo/triggers?view=events&new=true",
+        ),
+      ),
+    ).toEqual({
+      view: "subscriptions",
+      newSubscriptionOpen: true,
+    });
+    expect(
+      parseTriggerPageQuery(
+        new URL(
+          "https://dashboard.example.test/demo/triggers?view=events&subscription=trgsub_fixture",
+        ),
+      ),
+    ).toEqual({
+      view: "subscriptions",
+      newSubscriptionOpen: false,
+      selectedSubscriptionId: "trgsub_fixture",
+    });
+    expect(
+      parseTriggerPageQuery(
+        new URL("https://dashboard.example.test/demo/triggers?view=unknown"),
+      ).view,
+    ).toBe("subscriptions");
   });
 });
 

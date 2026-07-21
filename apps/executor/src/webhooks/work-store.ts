@@ -1,5 +1,5 @@
 import { createHash } from "node:crypto";
-import type { WebhookEventType } from "@eyeball/core";
+import type { WebhookDeliveryStatus, WebhookEventType } from "@eyeball/core";
 import type { SequencedWebhookDelivery } from "./delivery-store.js";
 
 export interface WebhookEventWork {
@@ -35,6 +35,35 @@ export interface WebhookEventRecoveryPage {
   readonly nextCursor?: number;
 }
 
+export interface WebhookEventDeliveryTargetSummary {
+  readonly endpointId: string;
+  readonly deliveryId: string;
+  readonly status: WebhookDeliveryStatus;
+}
+
+export interface WebhookEventDeliverySummary {
+  readonly eventId: string;
+  readonly materialized: boolean;
+  readonly targets: readonly WebhookEventDeliveryTargetSummary[];
+}
+
+export function validateEventDeliverySummaryInput(
+  projectId: string,
+  eventIds: readonly string[],
+): readonly string[] {
+  const unique = [...new Set(eventIds)];
+  if (
+    projectId.trim().length === 0 ||
+    eventIds.length > 100 ||
+    unique.some((eventId) => eventId.trim().length === 0)
+  ) {
+    throw new TypeError(
+      "Webhook event summary requires a project and at most 100 event IDs.",
+    );
+  }
+  return unique;
+}
+
 /** ID/reference-only durable work used by webhook job handlers. */
 export interface WebhookWorkStore {
   /** Atomically admits the event reference and its ordered selection job. */
@@ -53,6 +82,11 @@ export interface WebhookWorkStore {
     projectId: string,
     eventId: string,
   ): Promise<readonly SequencedWebhookDelivery[]>;
+  /** Metadata-only current outcomes for one bounded route page of event IDs. */
+  getEventDeliverySummaries(
+    projectId: string,
+    eventIds: readonly string[],
+  ): Promise<readonly WebhookEventDeliverySummary[]>;
   listUnmaterialized(input: {
     readonly cursor?: number;
     readonly limit: number;

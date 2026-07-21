@@ -93,6 +93,18 @@ describe("generated SDK reference", () => {
     expect(executions).toContain("never includes canonical input");
   });
 
+  it("assigns redacted trigger history and renders its runnable example", () => {
+    const reference = buildSdkReference(repositoryRoot);
+    const triggerEvents = reference.pages.get("trigger-events.mdx");
+    expect(triggerEvents).toContain("TriggerEventsClient");
+    expect(triggerEvents).toContain("### `list`");
+    expect(triggerEvents).toContain("metadata-only");
+    expect(triggerEvents).toContain("TriggerEventDeliveryStatus");
+    expect(triggerEvents).toContain(
+      'trigger: "slack.message_received",\n  limit: 50,',
+    );
+  });
+
   it("rejects a stale generated checksum without touching the repository", async () => {
     const paths = await fixture();
     try {

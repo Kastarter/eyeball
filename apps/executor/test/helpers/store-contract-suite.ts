@@ -1,6 +1,7 @@
 import {
   createExecutionId,
   createFileId,
+  createTriggerEventArrivalId,
   createTriggerSubscriptionId,
   type ExecuteRequest,
   type ExecutionId,
@@ -12,12 +13,14 @@ import {
 import type { AgentStore } from "@eyeball/toolkits";
 import { beforeAll, describe, expect, it } from "vitest";
 import type {
+  AppendTriggerEventInput,
   ExecutionAllocation,
   ExecutionStore,
   FileStore,
   JobStore,
   StoredStagedFile,
   StoredTriggerSubscription,
+  TriggerEventStore,
   TriggerStateStore,
   TriggerSubscriptionStore,
   UsageOutboxStore,
@@ -40,6 +43,7 @@ export interface StoreContractStores {
   webhookDeliveryStore: WebhookDeliveryStore;
   triggerSubscriptionStore: TriggerSubscriptionStore;
   triggerStateStore: TriggerStateStore;
+  triggerEventStore: TriggerEventStore;
   usageOutboxStore: UsageOutboxStore;
   jobStore: JobStore;
   webhookWorkStore: WebhookWorkStore;
@@ -71,6 +75,27 @@ let namespaceSequence = 0;
 function namespace(label: string): string {
   namespaceSequence += 1;
   return `${label.replaceAll(/[^a-z0-9]/giu, "_")}_${namespaceSequence}`;
+}
+
+function triggerEventInput(
+  scope: string,
+  suffix: string,
+  overrides: Partial<AppendTriggerEventInput> = {},
+): AppendTriggerEventInput {
+  return {
+    arrivalId: createTriggerEventArrivalId(`${scope}_${suffix}`),
+    eventId: `evt_trigger_${scope}_${suffix}`,
+    subscriptionId: createTriggerSubscriptionId(`${scope}_subscription`),
+    trigger: "slack.message_received",
+    deliveryMode: "push",
+    receivedAt: "2026-07-18T07:00:00.000Z",
+    occurredAt: "2026-07-18T06:59:59.000Z",
+    dedupStatus: "accepted",
+    deliveryAdmissionStatus: "admitted",
+    requestedWebhookEndpointIds: [`whe_${scope}`],
+    expiresAt: "2026-07-25T07:00:00.000Z",
+    ...overrides,
+  };
 }
 
 function voiceAgentDraft(
@@ -1746,6 +1771,7 @@ export function registerStoreContractSuite(
         const projectId = `project_${scope}`;
         const firstEventId = `evt_first_${scope}`;
         const secondEventId = `evt_second_${scope}`;
+        const thirdEventId = `evt_third_${scope}`;
         const createdAt = "2026-07-18T03:28:00.000Z";
         await expect(
           stores.webhookWorkStore.ensureEvent({
@@ -1777,6 +1803,16 @@ export function registerStoreContractSuite(
           eventType: "execution.succeeded",
           sourceKind: "execution",
           sourceId: `exe_second_${scope}`,
+          endpointIds: null,
+          createdAt,
+          selectionRunAfter: createdAt,
+        });
+        await stores.webhookWorkStore.ensureEvent({
+          projectId,
+          eventId: thirdEventId,
+          eventType: "execution.failed",
+          sourceKind: "execution",
+          sourceId: `exe_third_${scope}`,
           endpointIds: null,
           createdAt,
           selectionRunAfter: createdAt,
@@ -1849,6 +1885,19 @@ export function registerStoreContractSuite(
           sourceId: `exe_first_${scope}`,
         });
         expect(event).not.toHaveProperty("rawBody");
+        await expect(
+          stores.webhookWorkStore.getEventDeliverySummaries(projectId, [
+            firstEventId,
+          ]),
+        ).resolves.toEqual([
+          { eventId: firstEventId, materialized: false, targets: [] },
+        ]);
+        await expect(
+          stores.webhookWorkStore.getEventDeliverySummaries(
+            `other_${projectId}`,
+            [firstEventId],
+          ),
+        ).resolves.toEqual([]);
         const materialized = await stores.webhookWorkStore.materializeEvent({
           projectId,
           eventId: firstEventId,
@@ -1870,6 +1919,107 @@ export function registerStoreContractSuite(
         );
         expect(publicDelivery).not.toHaveProperty("endpointSecret");
         expect(publicDelivery).not.toHaveProperty("rawBody");
+        const summaries =
+          await stores.webhookWorkStore.getEventDeliverySummaries(projectId, [
+            firstEventId,
+            secondEventId,
+          ]);
+        expect(summaries[0]).toEqual({
+          eventId: firstEventId,
+          materialized: true,
+          targets: [
+            {
+              endpointId: delivery.endpointId,
+              deliveryId: delivery.deliveryId,
+              status: "pending",
+            },
+          ],
+        });
+        const delivering: WebhookDelivery = {
+          ...delivery,
+          status: "delivering",
+        };
+        await stores.webhookDeliveryStore.update(projectId, delivering);
+        await expect(
+          stores.webhookWorkStore.getEventDeliverySummaries(projectId, [
+            firstEventId,
+          ]),
+        ).resolves.toMatchObject([{ targets: [{ status: "delivering" }] }]);
+        const succeededAttempt = {
+          attempt: 1,
+          attemptedAt: "2026-07-18T03:28:06.000Z",
+          completedAt: "2026-07-18T03:28:07.000Z",
+          statusCode: 204,
+        };
+        await stores.webhookDeliveryStore.update(projectId, {
+          ...delivering,
+          status: "succeeded",
+          attempts: [succeededAttempt],
+          completedAt: succeededAttempt.completedAt,
+        });
+        const succeededSummary =
+          await stores.webhookWorkStore.getEventDeliverySummaries(projectId, [
+            firstEventId,
+          ]);
+        expect(succeededSummary).toMatchObject([
+          { targets: [{ status: "succeeded" }] },
+        ]);
+        expect(JSON.stringify(succeededSummary)).not.toContain("attempts");
+        expect(JSON.stringify(succeededSummary)).not.toContain("statusCode");
+        await stores.webhookWorkStore.materializeEvent({
+          projectId,
+          eventId: secondEventId,
+          endpointIds: [],
+          materializedAt: "2026-07-18T03:28:05.000Z",
+        });
+        await expect(
+          stores.webhookWorkStore.getEventDeliverySummaries(projectId, [
+            secondEventId,
+          ]),
+        ).resolves.toEqual([
+          { eventId: secondEventId, materialized: true, targets: [] },
+        ]);
+        const [failedMaterialized] =
+          await stores.webhookWorkStore.materializeEvent({
+            projectId,
+            eventId: thirdEventId,
+            endpointIds: [`whe_failed_${scope}`],
+            materializedAt: "2026-07-18T03:28:08.000Z",
+          });
+        if (failedMaterialized === undefined) {
+          throw new Error("Expected failed delivery materialization.");
+        }
+        const failedDelivering: WebhookDelivery = {
+          ...failedMaterialized.delivery,
+          status: "delivering",
+        };
+        await stores.webhookDeliveryStore.update(projectId, failedDelivering);
+        const failedAttempt = {
+          attempt: 1,
+          attemptedAt: "2026-07-18T03:28:09.000Z",
+          completedAt: "2026-07-18T03:28:10.000Z",
+          error: `receiver_error_${scope}`,
+        };
+        await stores.webhookDeliveryStore.update(projectId, {
+          ...failedDelivering,
+          status: "failed",
+          attempts: [failedAttempt],
+          completedAt: failedAttempt.completedAt,
+        });
+        const failedSummary =
+          await stores.webhookWorkStore.getEventDeliverySummaries(projectId, [
+            firstEventId,
+            secondEventId,
+            thirdEventId,
+          ]);
+        expect(failedSummary).toMatchObject([
+          { eventId: firstEventId, targets: [{ status: "succeeded" }] },
+          { eventId: secondEventId, targets: [] },
+          { eventId: thirdEventId, targets: [{ status: "failed" }] },
+        ]);
+        expect(JSON.stringify(failedSummary)).not.toContain(
+          `receiver_error_${scope}`,
+        );
       });
     });
 
@@ -2066,6 +2216,373 @@ export function registerStoreContractSuite(
             attempts: [],
           }),
         ).rejects.toThrow("Invalid webhook delivery transition");
+      });
+    });
+
+    describe("trigger event history", () => {
+      it("stores only allowlisted metadata with project isolation and stable ordering", async () => {
+        const scope = namespace(implementation.name);
+        const projectId = `project_${scope}`;
+        const accepted = triggerEventInput(scope, "accepted");
+        const unsafe = {
+          ...accepted,
+          payload: { sentinel: `payload_${scope}` },
+          providerEventId: `provider_${scope}`,
+          pushSecret: `secret_${scope}`,
+          credentials: { accessToken: `token_${scope}` },
+        } as AppendTriggerEventInput;
+        const detached = await stores.triggerEventStore.append(
+          projectId,
+          unsafe,
+        );
+        (detached.requestedWebhookEndpointIds as string[]).push(
+          `whe_mutated_${scope}`,
+        );
+        await stores.triggerEventStore.append(
+          projectId,
+          triggerEventInput(scope, "duplicate", {
+            eventId: accepted.eventId,
+            receivedAt: accepted.receivedAt,
+            dedupStatus: "duplicate",
+            deliveryAdmissionStatus: "not_enqueued",
+          }),
+        );
+        const page = await stores.triggerEventStore.list(projectId, {
+          now: "2026-07-18T07:00:01.000Z",
+          limit: 100,
+        });
+        expect(page.triggerEvents.map(({ arrivalId }) => arrivalId)).toEqual([
+          createTriggerEventArrivalId(`${scope}_duplicate`),
+          createTriggerEventArrivalId(`${scope}_accepted`),
+        ]);
+        expect(page.triggerEvents[0]?.eventId).toBe(
+          page.triggerEvents[1]?.eventId,
+        );
+        expect(page.triggerEvents[1]).toMatchObject({
+          projectId,
+          arrivalId: accepted.arrivalId,
+          eventId: accepted.eventId,
+          subscriptionId: accepted.subscriptionId,
+          trigger: accepted.trigger,
+          deliveryMode: accepted.deliveryMode,
+          receivedAt: accepted.receivedAt,
+          occurredAt: accepted.occurredAt,
+          dedupStatus: accepted.dedupStatus,
+          deliveryAdmissionStatus: accepted.deliveryAdmissionStatus,
+          requestedWebhookEndpointIds: accepted.requestedWebhookEndpointIds,
+          expiresAt: accepted.expiresAt,
+        });
+        expect(
+          await stores.triggerEventStore.list(`other_${projectId}`, {
+            now: "2026-07-18T07:00:01.000Z",
+            limit: 100,
+          }),
+        ).toEqual({ triggerEvents: [] });
+        const serialized = JSON.stringify(page);
+        for (const sentinel of [
+          `payload_${scope}`,
+          `provider_${scope}`,
+          `secret_${scope}`,
+          `token_${scope}`,
+        ]) {
+          expect(serialized).not.toContain(sentinel);
+        }
+      });
+
+      it("uses filter-bound cursor pagination and rejects invalid inputs", async () => {
+        const scope = namespace(implementation.name);
+        const projectId = `project_${scope}`;
+        const subscriptionId = createTriggerSubscriptionId(
+          `${scope}_filtered_subscription`,
+        );
+        const otherSubscriptionId = createTriggerSubscriptionId(
+          `${scope}_other_subscription`,
+        );
+        for (const [index, trigger] of [
+          "slack.message_received",
+          "slack.message_received",
+          "gmail.email_received",
+        ].entries()) {
+          await stores.triggerEventStore.append(
+            projectId,
+            triggerEventInput(scope, `page_${index}`, {
+              subscriptionId,
+              trigger: trigger as AppendTriggerEventInput["trigger"],
+              deliveryMode: trigger.startsWith("gmail") ? "polling" : "push",
+              receivedAt: `2026-07-18T07:00:0${index}.000Z`,
+            }),
+          );
+        }
+        await stores.triggerEventStore.append(
+          projectId,
+          triggerEventInput(scope, "page_other_subscription", {
+            subscriptionId: otherSubscriptionId,
+            receivedAt: "2026-07-18T07:00:03.000Z",
+          }),
+        );
+        expect(
+          (
+            await stores.triggerEventStore.list(projectId, {
+              now: "2026-07-18T08:00:00.000Z",
+              limit: 100,
+              subscriptionId,
+            })
+          ).triggerEvents,
+        ).toHaveLength(3);
+        expect(
+          (
+            await stores.triggerEventStore.list(projectId, {
+              now: "2026-07-18T08:00:00.000Z",
+              limit: 100,
+              trigger: "gmail.email_received",
+            })
+          ).triggerEvents,
+        ).toHaveLength(1);
+        const first = await stores.triggerEventStore.list(projectId, {
+          now: "2026-07-18T08:00:00.000Z",
+          limit: 1,
+          subscriptionId,
+          trigger: "slack.message_received",
+        });
+        expect(first.triggerEvents).toHaveLength(1);
+        expect(first.nextCursor).toBeTypeOf("string");
+        if (first.nextCursor === undefined) {
+          throw new Error("Expected trigger-event cursor.");
+        }
+        const second = await stores.triggerEventStore.list(projectId, {
+          now: "2026-07-18T08:00:00.000Z",
+          limit: 1,
+          cursor: first.nextCursor,
+          subscriptionId,
+          trigger: "slack.message_received",
+        });
+        expect(second.triggerEvents).toHaveLength(1);
+        expect(second.triggerEvents[0]?.arrivalId).not.toBe(
+          first.triggerEvents[0]?.arrivalId,
+        );
+        await expect(
+          stores.triggerEventStore.list(projectId, {
+            now: "2026-07-18T08:00:00.000Z",
+            limit: 1,
+            cursor: first.nextCursor,
+            subscriptionId,
+            trigger: "gmail.email_received",
+          }),
+        ).rejects.toThrow("cursor");
+        await expect(
+          stores.triggerEventStore.list(`other_${projectId}`, {
+            now: "2026-07-18T08:00:00.000Z",
+            limit: 1,
+            cursor: first.nextCursor,
+            subscriptionId,
+            trigger: "slack.message_received",
+          }),
+        ).rejects.toThrow("cursor");
+        await expect(
+          stores.triggerEventStore.list(projectId, {
+            now: "2026-07-18T08:00:00.000Z",
+            limit: 1,
+            cursor: `${first.nextCursor}=`,
+            subscriptionId,
+            trigger: "slack.message_received",
+          }),
+        ).rejects.toThrow("cursor");
+        await expect(
+          stores.triggerEventStore.list(projectId, {
+            now: "2026-07-18T08:00:00.000Z",
+            limit: 1,
+            cursor: Buffer.from(
+              JSON.stringify({
+                after: first.triggerEvents[0]?.arrivalId,
+                subscriptionId,
+                trigger: "slack.message_received",
+                extra: true,
+              }),
+              "utf8",
+            ).toString("base64url"),
+            subscriptionId,
+            trigger: "slack.message_received",
+          }),
+        ).rejects.toThrow("cursor");
+        await expect(
+          stores.triggerEventStore.list(projectId, {
+            now: "2026-07-18T08:00:00.000Z",
+            limit: 1,
+            cursor: "not+canonical",
+          }),
+        ).rejects.toThrow("cursor");
+        await expect(
+          stores.triggerEventStore.list(projectId, {
+            now: "2026-07-18T08:00:00.000Z",
+            limit: 0,
+          }),
+        ).rejects.toThrow("1 through 100");
+        await expect(
+          stores.triggerEventStore.list(projectId, {
+            now: "2026-07-18T08:00:00.000Z",
+            limit: 101,
+          }),
+        ).rejects.toThrow("1 through 100");
+      });
+
+      it("supports the maximum page size without omissions or duplicates", async () => {
+        const scope = namespace(implementation.name);
+        const projectId = `project_${scope}`;
+        const receivedAt = Date.parse("2026-07-18T07:00:00.000Z");
+        for (let index = 0; index < 101; index += 1) {
+          await stores.triggerEventStore.append(
+            projectId,
+            triggerEventInput(scope, `maximum_${index}`, {
+              receivedAt: new Date(receivedAt + index).toISOString(),
+            }),
+          );
+        }
+        const first = await stores.triggerEventStore.list(projectId, {
+          now: "2026-07-18T08:00:00.000Z",
+          limit: 100,
+        });
+        expect(first.triggerEvents).toHaveLength(100);
+        expect(first.nextCursor).toBeTypeOf("string");
+        if (first.nextCursor === undefined) {
+          throw new Error("Expected maximum-size trigger-event cursor.");
+        }
+        const second = await stores.triggerEventStore.list(projectId, {
+          now: "2026-07-18T08:00:00.000Z",
+          limit: 100,
+          cursor: first.nextCursor,
+        });
+        expect(second.triggerEvents).toHaveLength(1);
+        expect(second.nextCursor).toBeUndefined();
+        expect(
+          new Set(
+            [...first.triggerEvents, ...second.triggerEvents].map(
+              ({ arrivalId }) => arrivalId,
+            ),
+          ).size,
+        ).toBe(101);
+      });
+
+      it("enforces immutable identities, status consistency, and exact expiry", async () => {
+        const scope = namespace(implementation.name);
+        const projectId = `project_${scope}`;
+        const event = triggerEventInput(scope, "expiry", {
+          expiresAt: "2026-07-18T07:00:02.000Z",
+        });
+        await stores.triggerEventStore.append(projectId, event);
+        await expect(
+          stores.triggerEventStore.append(projectId, {
+            ...event,
+            eventId: `${event.eventId}_changed`,
+          }),
+        ).rejects.toThrow("different metadata");
+        await expect(
+          stores.triggerEventStore.append(
+            projectId,
+            triggerEventInput(scope, "bad_status", {
+              dedupStatus: "duplicate",
+              deliveryAdmissionStatus: "admitted",
+            }),
+          ),
+        ).rejects.toThrow("inconsistent");
+        expect(
+          (
+            await stores.triggerEventStore.list(projectId, {
+              now: "2026-07-18T07:00:01.999Z",
+              limit: 10,
+            })
+          ).triggerEvents,
+        ).toHaveLength(1);
+        await stores.triggerEventStore.append(
+          projectId,
+          triggerEventInput(scope, "expiry_oldest", {
+            expiresAt: "2026-07-18T07:00:01.000Z",
+          }),
+        );
+        await stores.triggerEventStore.append(
+          projectId,
+          triggerEventInput(scope, "expiry_tied", {
+            expiresAt: "2026-07-18T07:00:02.000Z",
+          }),
+        );
+        const cursorPage = await stores.triggerEventStore.list(projectId, {
+          now: "2026-07-18T07:00:00.999Z",
+          limit: 1,
+        });
+        expect(cursorPage.nextCursor).toBeTypeOf("string");
+        expect(
+          (
+            await stores.triggerEventStore.list(projectId, {
+              now: event.expiresAt,
+              limit: 10,
+            })
+          ).triggerEvents,
+        ).toHaveLength(0);
+        await expect(
+          stores.triggerEventStore.sweepExpired({
+            now: event.expiresAt,
+            limit: 1,
+          }),
+        ).resolves.toBe(1);
+        await expect(
+          stores.triggerEventStore.sweepExpired({
+            now: event.expiresAt,
+            limit: 1,
+          }),
+        ).resolves.toBe(1);
+        await expect(
+          stores.triggerEventStore.sweepExpired({
+            now: event.expiresAt,
+            limit: 1,
+          }),
+        ).resolves.toBe(1);
+        await expect(
+          stores.triggerEventStore.sweepExpired({
+            now: event.expiresAt,
+            limit: 1,
+          }),
+        ).resolves.toBe(0);
+        if (cursorPage.nextCursor === undefined) {
+          throw new Error("Expected expiring trigger-event cursor.");
+        }
+        await expect(
+          stores.triggerEventStore.list(projectId, {
+            now: "2026-07-18T07:00:02.001Z",
+            limit: 1,
+            cursor: cursorPage.nextCursor,
+          }),
+        ).rejects.toThrow("cursor");
+      });
+
+      it("retains history after its live subscription is deleted", async () => {
+        const scope = namespace(implementation.name);
+        const projectId = `project_${scope}`;
+        const subscriptionId = createTriggerSubscriptionId(
+          `${scope}_deleted_subscription`,
+        );
+        await stores.triggerSubscriptionStore.create(
+          subscription(
+            subscriptionId,
+            projectId,
+            `user_${scope}`,
+            "2026-07-18T07:00:00.000Z",
+          ),
+        );
+        const event = triggerEventInput(scope, "survives_delete", {
+          subscriptionId,
+        });
+        await stores.triggerEventStore.append(projectId, event);
+        await expect(
+          stores.triggerSubscriptionStore.delete(projectId, subscriptionId),
+        ).resolves.toBe(true);
+        await expect(
+          stores.triggerEventStore.list(projectId, {
+            now: "2026-07-18T08:00:00.000Z",
+            limit: 10,
+            subscriptionId,
+          }),
+        ).resolves.toMatchObject({
+          triggerEvents: [{ arrivalId: event.arrivalId }],
+        });
       });
     });
 

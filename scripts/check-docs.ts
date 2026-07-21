@@ -144,8 +144,8 @@ async function main(): Promise<void> {
   const generatedSdk = mdxFiles.filter((path) =>
     path.startsWith(join(docsRoot, "sdk", "generated") + sep),
   );
-  if (generatedSdk.length !== 8) {
-    errors.push(`expected 8 generated SDK pages, found ${generatedSdk.length}`);
+  if (generatedSdk.length !== 9) {
+    errors.push(`expected 9 generated SDK pages, found ${generatedSdk.length}`);
   }
   for (const path of [...generatedToolkits, ...generatedSdk]) {
     const source = await readFile(path, "utf8");

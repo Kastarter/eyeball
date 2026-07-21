@@ -141,6 +141,23 @@ Both flows arrive through your endpoint in this shape:
 
 Portable fields stay at `data.payload`. Provider-only metadata is confined to the schema-validated `x_provider.<toolkit>` object. Credentials, ingest secrets, and polling cursors never enter the event.
 
+## Redacted event history
+
+The signed webhook envelope above and queryable trigger history serve different purposes. The envelope is the payload-bearing event delivered to your receiver. `GET /v1/trigger-events` and `eyeball.triggerEvents.list()` return metadata-only arrival records for recent operator debugging; the history store cannot reconstruct a signed webhook body.
+
+Every normalized arrival that passes identity, timestamp, filter, and catalog-payload validation gets an `arrivalId`. The first arrival is `accepted` and can create webhook work. A repeated provider observation inside the dedup window gets a different `arrivalId`, shares the accepted arrival's stable `eventId`, and is recorded as `duplicate` / `not_enqueued`. Provider event IDs and payload bodies are used transiently for validation, deduplication, ID derivation, and the outbound envelope, but are not persisted in trigger history.
+
+History distinguishes two target sets:
+
+- `requestedWebhookEndpointIds` is the subscription's configured endpoint-ID snapshot when the arrival was admitted.
+- `deliveryTargets` contains only endpoint and delivery IDs actually materialized after the webhook worker rechecked endpoint existence, activity, and event subscriptions.
+
+The event-level aggregate follows the authoritative webhook delivery records: selection can be `selecting` or `no_targets`; active work can be `pending` or `delivering`; terminal work can be `succeeded`, `failed`, or `partial`; and admission failures are `admission_failed`. Per-endpoint delivery history remains the place for attempt timing, status codes, and bounded transport errors. Trigger history never copies endpoint URLs, headers, request/response bodies, signatures, credentials, ingest secrets, provider cursors, or provider message content.
+
+Recent history is retained for seven days, separately from the 24-hour provider dedup claim. It survives subscription and endpoint deletion until expiry. With `EYEBALL_DATABASE_URL` it survives executor restarts; the zero-config history is process-local. Logical expiry is immediate, while bounded background sweeps reclaim physical rows.
+
+This history does not make delivery exactly once. Outbound delivery remains at least once, and the dedup claim, webhook admission, and history append are separate operations rather than one transaction. Replay/backfill and durable trigger-source-body reconstruction remain separate work.
+
 ## Deduplication versus delivery retries
 
 Eyeball claims `(subscriptionId, providerEventId)` for 24 hours. Repeated Slack callbacks or repeated Gmail observations inside that window enqueue one trigger event. This is a best-effort exactly-once ingestion window. Without `EYEBALL_DATABASE_URL`, the state store is process-local and loses claims on restart; the Postgres state store retains them. A crash between the dedup claim and durable webhook admission still requires a future transactional claim/outbox boundary for a closed exactly-once ingestion window.

@@ -37,6 +37,10 @@ import {
   type ExecutorTelemetry,
   initializeOpenTelemetry,
 } from "./telemetry/index.js";
+import {
+  InMemoryTriggerEventStore,
+  type TriggerEventStore,
+} from "./triggers/event-store.js";
 import { TriggerPollingScheduler, TriggerService } from "./triggers/service.js";
 import {
   CloudUsageClient,
@@ -79,6 +83,8 @@ export interface CreateExecutorRuntimeOptions {
   }) => ExecutorTaskSystem;
   /** Test/deployment seam; durable file cleanup defaults to once per minute. */
   fileSweepIntervalMs?: number;
+  /** Test/deployment seam; trigger-event cleanup defaults to once per minute. */
+  triggerEventSweepIntervalMs?: number;
 }
 
 export interface ExecutorPersistence extends PostgresStoreSet {
@@ -104,8 +110,15 @@ interface ConfiguredUsage {
 
 const FILE_SWEEP_BATCH_SIZE = 100;
 const DEFAULT_FILE_SWEEP_INTERVAL_MS = 60_000;
+const TRIGGER_EVENT_SWEEP_BATCH_SIZE = 100;
+const DEFAULT_TRIGGER_EVENT_SWEEP_INTERVAL_MS = 60_000;
 
 interface FileExpirySweeper {
+  stop(): void;
+  onIdle(): Promise<void>;
+}
+
+interface TriggerEventExpirySweeper {
   stop(): void;
   onIdle(): Promise<void>;
 }
@@ -152,6 +165,61 @@ function startFileExpirySweeper(input: {
       )
       .catch((error: unknown) => {
         input.logger.error("file.expiry_sweep_failed", {
+          errorName: error instanceof Error ? error.name : "unknown",
+        });
+      })
+      .finally(() => {
+        if (active === pending) active = undefined;
+      });
+    active = pending;
+  }, input.intervalMs);
+  timer.unref?.();
+  return {
+    stop: () => clearInterval(timer),
+    onIdle: async () => {
+      await active;
+    },
+  };
+}
+
+async function sweepExpiredTriggerEvents(
+  eventStore: TriggerEventStore,
+  now: string,
+  drain: boolean,
+): Promise<void> {
+  for (;;) {
+    const deleted = await eventStore.sweepExpired({
+      now,
+      limit: TRIGGER_EVENT_SWEEP_BATCH_SIZE,
+    });
+    if (!drain || deleted < TRIGGER_EVENT_SWEEP_BATCH_SIZE) return;
+  }
+}
+
+function startTriggerEventExpirySweeper(input: {
+  eventStore: TriggerEventStore;
+  clock: Clock;
+  intervalMs: number;
+  logger: ReturnType<typeof createExecutorTelemetryRuntime>["logger"];
+}): TriggerEventExpirySweeper {
+  if (!Number.isSafeInteger(input.intervalMs) || input.intervalMs < 1) {
+    throw new RangeError(
+      "Trigger event expiry sweep interval must be a positive safe integer.",
+    );
+  }
+  let active: Promise<void> | undefined;
+  const timer = setInterval(() => {
+    if (active !== undefined) return;
+    const pending = Promise.resolve()
+      .then(() =>
+        sweepExpiredTriggerEvents(
+          input.eventStore,
+          fileSweepNow(input.clock),
+          true,
+        ),
+      )
+      .catch((error: unknown) => {
+        input.logger.error("trigger_event.expiry_sweep_failed", {
           errorName: error instanceof Error ? error.name : "unknown",
         });
       })
@@ -349,6 +417,7 @@ export async function createExecutorRuntime(
   let taskSystem: ExecutorTaskSystem | undefined;
   let usage: ConfiguredUsage | undefined;
   let fileExpirySweeper: FileExpirySweeper | undefined;
+  let triggerEventExpirySweeper: TriggerEventExpirySweeper | undefined;
   let voiceWorker: ReturnType<typeof configuredVoiceWorker> | undefined;
   let voiceSessionObserver: RemoteVoiceSessionObserver | undefined;
   try {
@@ -364,6 +433,9 @@ export async function createExecutorRuntime(
     const agentStore =
       initializedPersistence?.agentStore ?? new InMemoryAgentStore();
     const clock = options.clock ?? systemClock;
+    const triggerEventStore =
+      initializedPersistence?.triggerEventStore ??
+      new InMemoryTriggerEventStore();
     const voiceSessionGrantAuthority =
       createConfiguredVoiceSessionGrantAuthority({
         env,
@@ -381,6 +453,11 @@ export async function createExecutorRuntime(
     if (initializedPersistence !== undefined) {
       await sweepExpiredFiles(
         initializedPersistence.fileStore,
+        fileSweepNow(clock),
+        true,
+      );
+      await sweepExpiredTriggerEvents(
+        triggerEventStore,
         fileSweepNow(clock),
         true,
       );
@@ -474,6 +551,7 @@ export async function createExecutorRuntime(
             subscriptionStore: initializedPersistence.triggerSubscriptionStore,
             stateStore: initializedPersistence.triggerStateStore,
           }),
+      eventStore: triggerEventStore,
       telemetry,
       env,
       ...(options.fetchImpl === undefined
@@ -518,6 +596,14 @@ export async function createExecutorRuntime(
         logger: telemetry.logger,
       });
     }
+    triggerEventExpirySweeper = startTriggerEventExpirySweeper({
+      eventStore: triggerEventStore,
+      clock,
+      intervalMs:
+        options.triggerEventSweepIntervalMs ??
+        DEFAULT_TRIGGER_EVENT_SWEEP_INTERVAL_MS,
+      logger: telemetry.logger,
+    });
     await voiceSessionObserver?.reconcileAtBoot();
     taskSystem.start();
     const runningTaskSystem = taskSystem;
@@ -549,10 +635,12 @@ export async function createExecutorRuntime(
       ...(voiceSessionObserver === undefined ? {} : { voiceSessionObserver }),
       close: async () => {
         fileExpirySweeper?.stop();
+        triggerEventExpirySweeper?.stop();
         triggerPollingScheduler.stop();
         usage?.flusher.stop();
         try {
           await fileExpirySweeper?.onIdle();
+          await triggerEventExpirySweeper?.onIdle();
           await voiceSessionObserver?.close();
           await initializedVoiceWorker.driver?.close();
           await drainRuntime(runningTaskSystem, triggerPollingScheduler);
@@ -571,8 +659,10 @@ export async function createExecutorRuntime(
     };
   } catch (error) {
     fileExpirySweeper?.stop();
+    triggerEventExpirySweeper?.stop();
     usage?.flusher.stop();
     await fileExpirySweeper?.onIdle();
+    await triggerEventExpirySweeper?.onIdle();
     await taskSystem?.stopClaiming();
     await taskSystem?.drainOwned();
     await voiceSessionObserver?.close();

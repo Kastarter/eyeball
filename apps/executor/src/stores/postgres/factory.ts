@@ -13,6 +13,7 @@ import { Pool } from "pg";
 import type { JobStore } from "../../jobs/store.js";
 import type { FileStore } from "../../staged-files.js";
 import type { ExecutionStore } from "../../store.js";
+import type { TriggerEventStore } from "../../triggers/event-store.js";
 import type { TriggerStateStore } from "../../triggers/state-store.js";
 import type { TriggerSubscriptionStore } from "../../triggers/subscription-store.js";
 import type { UsageOutboxStore } from "../../usage/outbox.js";
@@ -28,6 +29,7 @@ import { PostgresFileStore } from "./file-store.js";
 import { PostgresJobStore } from "./job-store.js";
 import { migrate } from "./migrate.js";
 import { type PostgresSchema, postgresSchema } from "./schema.js";
+import { PostgresTriggerEventStore } from "./trigger-event-store.js";
 import { PostgresTriggerStateStore } from "./trigger-state-store.js";
 import { PostgresTriggerSubscriptionStore } from "./trigger-subscription-store.js";
 import { PostgresUsageOutboxStore } from "./usage-outbox-store.js";
@@ -44,6 +46,7 @@ export interface PostgresStoreSet {
   webhookEndpointStore: WebhookEndpointStore;
   webhookDeliveryStore: WebhookDeliveryStore;
   triggerSubscriptionStore: TriggerSubscriptionStore;
+  triggerEventStore: TriggerEventStore;
   triggerStateStore: TriggerStateStore;
   usageOutboxStore: UsageOutboxStore;
   jobStore: JobStore;
@@ -89,6 +92,7 @@ function stores<TQueryResult extends PgQueryResultHKT>(
     webhookEndpointStore: new PostgresWebhookEndpointStore(database),
     webhookDeliveryStore: new PostgresWebhookDeliveryStore(database),
     triggerSubscriptionStore: new PostgresTriggerSubscriptionStore(database),
+    triggerEventStore: new PostgresTriggerEventStore(database),
     triggerStateStore: new PostgresTriggerStateStore(database),
     usageOutboxStore: new PostgresUsageOutboxStore(database),
     jobStore: new PostgresJobStore(database),

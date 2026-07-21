@@ -10,6 +10,7 @@ import {
   isCanonicalToolName,
   isConnectionId,
   isExecutionId,
+  isTriggerSubscriptionId,
   isVoiceSessionExecutionIdForSession,
   isWebhookSubscriptionEventType,
   type JsonValue,
@@ -47,6 +48,10 @@ import {
 } from "./rate-limit.js";
 import type { FileStore } from "./staged-files.js";
 import type { HttpRequestClass, HttpRequestMethod } from "./telemetry/index.js";
+import {
+  TriggerEventPersistenceError,
+  TriggerEventStoreError,
+} from "./triggers/event-store.js";
 import { TriggerRequestError } from "./triggers/service.js";
 import { TriggerSubscriptionStoreError } from "./triggers/subscription-store.js";
 import {
@@ -264,6 +269,20 @@ function fileProjectAuthorityFailure(context: ExecutorContext): Response {
   );
 }
 
+function triggerEventProjectAuthorityFailure(
+  context: ExecutorContext,
+): Response {
+  return requestFailure(
+    context,
+    new EyeballError({
+      code: TOOL_ERROR_CODES.AUTH_INSUFFICIENT_SCOPE,
+      message:
+        "Project-scoped trigger event history requires an unpinned project API key.",
+    }),
+    403,
+  );
+}
+
 function webhookNotFound(context: ExecutorContext): Response {
   return requestFailure(
     context,
@@ -333,9 +352,22 @@ function handleRouteError(context: ExecutorContext, error: unknown): Response {
   if (error instanceof TriggerRequestError) {
     return requestFailure(context, error, error.httpStatus);
   }
+  if (error instanceof TriggerEventPersistenceError) {
+    return requestFailure(
+      context,
+      new EyeballError({
+        code: TOOL_ERROR_CODES.PROVIDER_ERROR,
+        message: error.message,
+        retryable: true,
+        cause: error,
+      }),
+      500,
+    );
+  }
   if (
     error instanceof WebhookEndpointInputError ||
     error instanceof WebhookDeliveryInputError ||
+    error instanceof TriggerEventStoreError ||
     error instanceof TriggerSubscriptionStoreError
   ) {
     return invalidQuery(context, error.message);
@@ -1238,6 +1270,58 @@ export function createExecutorApp(options: ExecutorAppOptions = {}): Hono<{
       return rotated === undefined
         ? subscriptionNotFound(context)
         : context.json(rotated);
+    } catch (error) {
+      return handleRouteError(context, error);
+    }
+  });
+
+  app.get("/v1/trigger-events", async (context) => {
+    if (context.get("pinnedUserId") !== undefined) {
+      return triggerEventProjectAuthorityFailure(context);
+    }
+    const limitValue = context.req.query("limit");
+    const limit = limitValue === undefined ? undefined : Number(limitValue);
+    if (
+      limit !== undefined &&
+      (!Number.isSafeInteger(limit) || limit < 1 || limit > 100)
+    ) {
+      return invalidQuery(
+        context,
+        "limit must be an integer from 1 through 100.",
+      );
+    }
+    const cursor = context.req.query("cursor");
+    if (cursor !== undefined && cursor.length === 0) {
+      return invalidQuery(context, "cursor must not be empty.");
+    }
+    const subscriptionId = context.req.query("subscriptionId");
+    if (
+      subscriptionId !== undefined &&
+      !isTriggerSubscriptionId(subscriptionId)
+    ) {
+      return invalidQuery(
+        context,
+        "subscriptionId must be a valid trgsub_* identifier.",
+      );
+    }
+    const trigger = context.req.query("trigger");
+    if (trigger !== undefined && !isCanonicalToolName(trigger)) {
+      return invalidQuery(
+        context,
+        "trigger must be a canonical dotted trigger name.",
+      );
+    }
+    try {
+      const page = await engine.triggerService.listEvents(
+        context.get("projectId"),
+        {
+          ...(limit === undefined ? {} : { limit }),
+          ...(cursor === undefined ? {} : { cursor }),
+          ...(subscriptionId === undefined ? {} : { subscriptionId }),
+          ...(trigger === undefined ? {} : { trigger }),
+        },
+      );
+      return context.json(page);
     } catch (error) {
       return handleRouteError(context, error);
     }

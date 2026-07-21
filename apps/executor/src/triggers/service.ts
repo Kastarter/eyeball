@@ -4,18 +4,25 @@ import {
   type CreatedTriggerSubscription,
   type CredentialProvider,
   CredentialProviderError,
+  createTriggerEventArrivalId,
   createTriggerSubscriptionId,
   EyeballError,
   isCanonicalToolName,
   isConnectionId,
+  isTriggerEventArrivalId,
   isTriggerSubscriptionId,
   type JsonValue,
   type ProviderManifest,
+  type QualifiedTriggerName,
   type ResolvedCredential,
   type RotatedTriggerIngestSecret,
   TOOL_ERROR_CODES,
   type TriggerDefinition,
+  type TriggerEventArrivalId,
   type TriggerEventData,
+  type TriggerEventDeliveryStatus,
+  type TriggerEventDeliveryTarget,
+  type TriggerEventPage,
   type TriggerSubscription,
   type TriggerSubscriptionId,
   type TriggerSubscriptionPage,
@@ -34,7 +41,14 @@ import {
   markSpanOk,
 } from "../telemetry/index.js";
 import type { WebhookDeliverer } from "../webhooks/deliverer.js";
+import type { WebhookEventDeliverySummary } from "../webhooks/work-store.js";
 import { defaultTriggerAdapters, TriggerAdapterRegistry } from "./adapters.js";
+import {
+  type AppendTriggerEventInput,
+  InMemoryTriggerEventStore,
+  type StoredTriggerEvent,
+  type TriggerEventStore,
+} from "./event-store.js";
 import {
   InMemoryTriggerStateStore,
   type TriggerState,
@@ -48,6 +62,7 @@ import {
 } from "./subscription-store.js";
 
 const DEFAULT_DEDUP_RETENTION_MS = 24 * 60 * 60 * 1_000;
+export const DEFAULT_TRIGGER_EVENT_RETENTION_MS = 7 * 24 * 60 * 60 * 1_000;
 
 export interface RuntimeTriggerCatalog {
   readonly catalogVersion: CatalogVersion;
@@ -64,6 +79,7 @@ export interface TriggerServiceOptions {
   webhookDeliverer: WebhookDeliverer;
   subscriptionStore?: TriggerSubscriptionStore;
   stateStore?: TriggerStateStore;
+  eventStore?: TriggerEventStore;
   adapters?: TriggerAdapterRegistry;
   fetchImpl?: FetchImplementation;
   clock?: Clock;
@@ -72,8 +88,10 @@ export interface TriggerServiceOptions {
   logger?: ExecutorLogger;
   env?: Readonly<Record<string, string | undefined>>;
   subscriptionIdFactory?: () => TriggerSubscriptionId;
+  eventArrivalIdFactory?: () => TriggerEventArrivalId;
   ingestSecretFactory?: () => string;
   dedupRetentionMs?: number;
+  eventRetentionMs?: number;
 }
 
 export interface CreateTriggerSubscriptionCommand {
@@ -90,6 +108,13 @@ export interface CreateTriggerSubscriptionCommand {
 export interface ListTriggerSubscriptionsQuery
   extends Omit<ListTriggerSubscriptionsInput, "limit"> {
   limit?: number;
+}
+
+export interface ListTriggerEventsQuery {
+  cursor?: string;
+  limit?: number;
+  subscriptionId?: TriggerSubscriptionId;
+  trigger?: QualifiedTriggerName;
 }
 
 export type TriggerIngestResult =
@@ -296,12 +321,78 @@ function validateFilters(
   }
 }
 
+function deliveryProjection(
+  event: StoredTriggerEvent,
+  summary: WebhookEventDeliverySummary | undefined,
+): {
+  deliveryStatus: TriggerEventDeliveryStatus;
+  deliveryTargets: readonly TriggerEventDeliveryTarget[];
+} {
+  if (event.dedupStatus === "duplicate") {
+    return { deliveryStatus: "not_enqueued", deliveryTargets: [] };
+  }
+  if (event.deliveryAdmissionStatus === "failed") {
+    return { deliveryStatus: "admission_failed", deliveryTargets: [] };
+  }
+  if (summary === undefined) {
+    return { deliveryStatus: "pending", deliveryTargets: [] };
+  }
+  if (!summary.materialized) {
+    return { deliveryStatus: "selecting", deliveryTargets: [] };
+  }
+  const deliveryTargets = summary.targets.map((target) => ({
+    endpointId: target.endpointId,
+    deliveryId: target.deliveryId,
+    status: target.status,
+  }));
+  if (deliveryTargets.length === 0) {
+    return { deliveryStatus: "no_targets", deliveryTargets };
+  }
+  if (deliveryTargets.some((target) => target.status === "delivering")) {
+    return { deliveryStatus: "delivering", deliveryTargets };
+  }
+  if (deliveryTargets.some((target) => target.status === "pending")) {
+    return { deliveryStatus: "pending", deliveryTargets };
+  }
+  if (deliveryTargets.every((target) => target.status === "succeeded")) {
+    return { deliveryStatus: "succeeded", deliveryTargets };
+  }
+  if (deliveryTargets.every((target) => target.status === "failed")) {
+    return { deliveryStatus: "failed", deliveryTargets };
+  }
+  return { deliveryStatus: "partial", deliveryTargets };
+}
+
+function triggerEventAppendInput(
+  identity: Omit<
+    AppendTriggerEventInput,
+    "dedupStatus" | "deliveryAdmissionStatus"
+  >,
+  dedupStatus: AppendTriggerEventInput["dedupStatus"],
+  deliveryAdmissionStatus: AppendTriggerEventInput["deliveryAdmissionStatus"],
+): AppendTriggerEventInput {
+  return {
+    arrivalId: identity.arrivalId,
+    eventId: identity.eventId,
+    subscriptionId: identity.subscriptionId,
+    trigger: identity.trigger,
+    deliveryMode: identity.deliveryMode,
+    receivedAt: identity.receivedAt,
+    occurredAt: identity.occurredAt,
+    dedupStatus,
+    deliveryAdmissionStatus,
+    requestedWebhookEndpointIds: [...identity.requestedWebhookEndpointIds],
+    expiresAt: identity.expiresAt,
+  };
+}
+
 export class TriggerService {
   readonly catalog: RuntimeTriggerCatalog;
   readonly credentialProvider: CredentialProvider;
   readonly webhookDeliverer: WebhookDeliverer;
   readonly subscriptionStore: TriggerSubscriptionStore;
   readonly stateStore: TriggerStateStore;
+  readonly eventStore: TriggerEventStore;
   readonly adapters: TriggerAdapterRegistry;
   readonly #fetchImpl: FetchImplementation;
   readonly #clock: Clock;
@@ -309,8 +400,10 @@ export class TriggerService {
   readonly #telemetry: ExecutorTelemetryRuntime;
   readonly #env: Readonly<Record<string, string | undefined>>;
   readonly #subscriptionIdFactory: () => TriggerSubscriptionId;
+  readonly #eventArrivalIdFactory: () => TriggerEventArrivalId;
   readonly #ingestSecretFactory: () => string;
   readonly #dedupRetentionMs: number;
+  readonly #eventRetentionMs: number;
   readonly #polling = new Set<TriggerSubscriptionId>();
 
   constructor(options: TriggerServiceOptions) {
@@ -320,6 +413,7 @@ export class TriggerService {
     this.subscriptionStore =
       options.subscriptionStore ?? new InMemoryTriggerSubscriptionStore();
     this.stateStore = options.stateStore ?? new InMemoryTriggerStateStore();
+    this.eventStore = options.eventStore ?? new InMemoryTriggerEventStore();
     this.adapters =
       options.adapters ?? new TriggerAdapterRegistry(defaultTriggerAdapters);
     this.#fetchImpl = options.fetchImpl ?? globalThis.fetch;
@@ -334,12 +428,18 @@ export class TriggerService {
     this.#logger = this.#telemetry.logger;
     this.#subscriptionIdFactory =
       options.subscriptionIdFactory ?? createTriggerSubscriptionId;
+    this.#eventArrivalIdFactory =
+      options.eventArrivalIdFactory ?? createTriggerEventArrivalId;
     this.#ingestSecretFactory =
       options.ingestSecretFactory ??
       (() => `trgsec_${randomBytes(32).toString("base64url")}`);
     this.#dedupRetentionMs = positiveSafeInteger(
       options.dedupRetentionMs ?? DEFAULT_DEDUP_RETENTION_MS,
       "dedupRetentionMs",
+    );
+    this.#eventRetentionMs = positiveSafeInteger(
+      options.eventRetentionMs ?? DEFAULT_TRIGGER_EVENT_RETENTION_MS,
+      "eventRetentionMs",
     );
   }
 
@@ -509,6 +609,85 @@ export class TriggerService {
       ...(query.cursor === undefined ? {} : { cursor: query.cursor }),
       ...(query.userId === undefined ? {} : { userId: query.userId }),
     });
+  }
+
+  async listEvents(
+    projectId: string,
+    query: ListTriggerEventsQuery = {},
+  ): Promise<TriggerEventPage> {
+    if (projectId.trim().length === 0) {
+      return invalidRequest("Authenticated project ID must not be empty.");
+    }
+    const limit = query.limit ?? 100;
+    if (!Number.isSafeInteger(limit) || limit < 1 || limit > 100) {
+      return invalidRequest("limit must be an integer from 1 through 100.");
+    }
+    if (
+      query.subscriptionId !== undefined &&
+      !isTriggerSubscriptionId(query.subscriptionId)
+    ) {
+      return invalidRequest(
+        "subscriptionId must be a valid trgsub_* identifier.",
+      );
+    }
+    if (query.trigger !== undefined && !isCanonicalToolName(query.trigger)) {
+      return invalidRequest("trigger must be a canonical dotted trigger name.");
+    }
+    const page = await this.eventStore.list(projectId, {
+      limit,
+      now: this.#now().toISOString(),
+      ...(query.cursor === undefined ? {} : { cursor: query.cursor }),
+      ...(query.subscriptionId === undefined
+        ? {}
+        : { subscriptionId: query.subscriptionId }),
+      ...(query.trigger === undefined ? {} : { trigger: query.trigger }),
+    });
+    const admittedEventIds = [
+      ...new Set(
+        page.triggerEvents
+          .filter(
+            (event) =>
+              event.dedupStatus === "accepted" &&
+              event.deliveryAdmissionStatus === "admitted",
+          )
+          .map((event) => event.eventId),
+      ),
+    ];
+    const summaries =
+      await this.webhookDeliverer.workStore.getEventDeliverySummaries(
+        projectId,
+        admittedEventIds,
+      );
+    const byEventId = new Map(
+      summaries.map((summary) => [summary.eventId, summary]),
+    );
+    return {
+      triggerEvents: page.triggerEvents.map((event) => {
+        const delivery = deliveryProjection(
+          event,
+          byEventId.get(event.eventId),
+        );
+        return {
+          arrivalId: event.arrivalId,
+          eventId: event.eventId,
+          subscriptionId: event.subscriptionId,
+          trigger: event.trigger,
+          deliveryMode: event.deliveryMode,
+          receivedAt: event.receivedAt,
+          occurredAt: event.occurredAt,
+          dedupStatus: event.dedupStatus,
+          deliveryStatus: delivery.deliveryStatus,
+          requestedWebhookEndpointIds: [...event.requestedWebhookEndpointIds],
+          deliveryTargets: delivery.deliveryTargets.map((target) => ({
+            endpointId: target.endpointId,
+            deliveryId: target.deliveryId,
+            status: target.status,
+          })),
+          expiresAt: event.expiresAt,
+        };
+      }),
+      ...(page.nextCursor === undefined ? {} : { nextCursor: page.nextCursor }),
+    };
   }
 
   get(
@@ -785,14 +964,50 @@ export class TriggerService {
       });
     }
     const now = this.#now();
+    const receivedAt = now.toISOString();
+    const eventId = `evt_trigger_${createHash("sha256")
+      .update(
+        JSON.stringify([
+          subscription.projectId,
+          subscription.subscriptionId,
+          event.providerEventId,
+        ]),
+      )
+      .digest("base64url")}`;
+    const arrivalId = this.#eventArrivalIdFactory();
+    if (!isTriggerEventArrivalId(arrivalId)) {
+      throw new Error(
+        "Trigger event arrival ID factory returned an invalid trgevt_* identifier.",
+      );
+    }
+    const historyIdentity: Omit<
+      AppendTriggerEventInput,
+      "dedupStatus" | "deliveryAdmissionStatus"
+    > = {
+      arrivalId,
+      eventId,
+      subscriptionId: subscription.subscriptionId,
+      trigger: trigger.name,
+      deliveryMode: trigger.annotations.deliveryMode,
+      receivedAt,
+      occurredAt: event.occurredAt,
+      requestedWebhookEndpointIds: [...subscription.webhookEndpointIds],
+      expiresAt: new Date(now.valueOf() + this.#eventRetentionMs).toISOString(),
+    };
     const claimed = await this.stateStore.claimProviderEvent(
       subscription.subscriptionId,
       event.providerEventId,
-      now.toISOString(),
+      receivedAt,
       new Date(now.valueOf() + this.#dedupRetentionMs).toISOString(),
     );
     this.#telemetry.recordTriggerEvent(trigger.name, !claimed);
-    if (!claimed) return false;
+    if (!claimed) {
+      await this.eventStore.append(
+        subscription.projectId,
+        triggerEventAppendInput(historyIdentity, "duplicate", "not_enqueued"),
+      );
+      return false;
+    }
     const data: TriggerEventData = {
       subscriptionId: subscription.subscriptionId,
       trigger: trigger.name,
@@ -804,22 +1019,30 @@ export class TriggerService {
       occurredAt: event.occurredAt,
       payload: validation.value,
     };
-    await this.webhookDeliverer.enqueueTriggerEvent({
-      projectId: subscription.projectId,
-      endpointIds: subscription.webhookEndpointIds,
-      trigger: trigger.name,
-      data,
-      createdAt: now.toISOString(),
-      eventId: `evt_trigger_${createHash("sha256")
-        .update(
-          JSON.stringify([
-            subscription.projectId,
-            subscription.subscriptionId,
-            event.providerEventId,
-          ]),
-        )
-        .digest("base64url")}`,
-    });
+    try {
+      await this.webhookDeliverer.enqueueTriggerEvent({
+        projectId: subscription.projectId,
+        endpointIds: subscription.webhookEndpointIds,
+        trigger: trigger.name,
+        data,
+        createdAt: receivedAt,
+        eventId,
+      });
+    } catch (error) {
+      try {
+        await this.eventStore.append(
+          subscription.projectId,
+          triggerEventAppendInput(historyIdentity, "accepted", "failed"),
+        );
+      } catch {
+        // Webhook admission is the functional operation; preserve its original error.
+      }
+      throw error;
+    }
+    await this.eventStore.append(
+      subscription.projectId,
+      triggerEventAppendInput(historyIdentity, "accepted", "admitted"),
+    );
     return true;
   }
 

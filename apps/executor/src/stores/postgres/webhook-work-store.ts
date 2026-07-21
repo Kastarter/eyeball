@@ -12,7 +12,9 @@ import type { SequencedWebhookDelivery } from "../../webhooks/delivery-store.js"
 import {
   deterministicWebhookDeliveryId,
   type EnsureWebhookEventResult,
+  validateEventDeliverySummaryInput,
   type WebhookEventAdmission,
+  type WebhookEventDeliverySummary,
   type WebhookEventRecoveryPage,
   type WebhookEventWork,
   type WebhookWorkStore,
@@ -355,6 +357,61 @@ export class PostgresWebhookWorkStore<
         attempts.filter((attempt) => attempt.deliveryId === row.deliveryId),
       ),
     }));
+  }
+
+  async getEventDeliverySummaries(
+    projectId: string,
+    eventIds: readonly string[],
+  ): Promise<readonly WebhookEventDeliverySummary[]> {
+    const unique = validateEventDeliverySummaryInput(projectId, eventIds);
+    if (unique.length === 0) return [];
+    const events = await this.#database
+      .select({
+        eventId: webhookEvents.eventId,
+        materializedAt: webhookEvents.materializedAt,
+      })
+      .from(webhookEvents)
+      .where(
+        and(
+          eq(webhookEvents.projectId, projectId),
+          inArray(webhookEvents.eventId, unique),
+        ),
+      );
+    const deliveries = await this.#database
+      .select({
+        eventId: webhookDeliveries.eventId,
+        endpointId: webhookDeliveries.endpointId,
+        deliveryId: webhookDeliveries.deliveryId,
+        status: webhookDeliveries.status,
+        sequence: webhookDeliveries.sequence,
+      })
+      .from(webhookDeliveries)
+      .where(
+        and(
+          eq(webhookDeliveries.projectId, projectId),
+          inArray(webhookDeliveries.eventId, unique),
+        ),
+      )
+      .orderBy(asc(webhookDeliveries.sequence));
+    const byEventId = new Map(events.map((event) => [event.eventId, event]));
+    return unique.flatMap((eventId) => {
+      const event = byEventId.get(eventId);
+      return event === undefined
+        ? []
+        : [
+            {
+              eventId,
+              materialized: event.materializedAt !== null,
+              targets: deliveries
+                .filter((delivery) => delivery.eventId === eventId)
+                .map((delivery) => ({
+                  endpointId: delivery.endpointId,
+                  deliveryId: delivery.deliveryId,
+                  status: delivery.status,
+                })),
+            },
+          ];
+    });
   }
 
   async listUnmaterialized(input: {

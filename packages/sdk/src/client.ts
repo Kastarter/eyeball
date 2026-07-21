@@ -27,6 +27,7 @@ import {
   TOOL_ERROR_CODES,
   type ToolDefinition,
   type TriggerDefinition,
+  type TriggerEventPage,
   type TriggerSubscription,
   type TriggerSubscriptionPage,
   toAiSdkTools,
@@ -57,6 +58,7 @@ import type {
   ListExecutionsOptions,
   ListFilesOptions,
   ListSubscriptionsOptions,
+  ListTriggerEventsOptions,
   ListWebhookDeliveriesOptions,
   ListWebhookEndpointsOptions,
   RevokedConnection,
@@ -790,6 +792,81 @@ export class TriggersClient {
   }
 }
 
+/** Project-scoped, metadata-only trigger arrival and delivery history. */
+export class TriggerEventsClient {
+  readonly #context: ClientContext;
+
+  constructor(context: ClientContext) {
+    this.#context = context;
+  }
+
+  /**
+   * Lists redacted project-scoped trigger arrivals newest first with aggregate and per-target delivery outcomes.
+   *
+   * This resource never inherits the client's default `userId`; user-pinned keys are rejected by the executor.
+   *
+   * @param options Opaque cursor, page size, and exact subscription or canonical-trigger filters.
+   * @returns Metadata-only trigger arrivals and an optional cursor for the next page.
+   * @throws EyeballError when options are invalid, the key is user-pinned, or the executor request fails.
+   * @example
+   * let page = await eyeball.triggerEvents.list({
+   *   trigger: "slack.message_received",
+   *   limit: 50,
+   * });
+   * for (;;) {
+   *   for (const event of page.triggerEvents) {
+   *     console.log(event.deliveryStatus);
+   *     for (const target of event.deliveryTargets) {
+   *       console.log(target.endpointId, target.status);
+   *     }
+   *   }
+   *   if (page.nextCursor === undefined) break;
+   *   page = await eyeball.triggerEvents.list({
+   *     trigger: "slack.message_received",
+   *     limit: 50,
+   *     cursor: page.nextCursor,
+   *   });
+   * }
+   */
+  async list(
+    options: ListTriggerEventsOptions = {},
+  ): Promise<TriggerEventPage> {
+    const query = new URLSearchParams();
+    if (options.cursor !== undefined) {
+      if (options.cursor.length === 0) {
+        return invalidInput("cursor must not be empty.");
+      }
+      query.set("cursor", options.cursor);
+    }
+    if (options.limit !== undefined) {
+      if (
+        !Number.isSafeInteger(options.limit) ||
+        options.limit < 1 ||
+        options.limit > 100
+      ) {
+        return invalidInput("limit must be an integer from 1 through 100.");
+      }
+      query.set("limit", String(options.limit));
+    }
+    if (options.subscriptionId !== undefined) {
+      if (!isTriggerSubscriptionId(options.subscriptionId)) {
+        return invalidInput(
+          "subscriptionId must be a valid trgsub_* identifier.",
+        );
+      }
+      query.set("subscriptionId", options.subscriptionId);
+    }
+    if (options.trigger !== undefined) {
+      if (!isCanonicalToolName(options.trigger)) {
+        return invalidInput("trigger must be a canonical dotted trigger name.");
+      }
+      query.set("trigger", options.trigger);
+    }
+    const suffix = query.size === 0 ? "" : `?${query.toString()}`;
+    return this.#context.http.request(`/v1/trigger-events${suffix}`);
+  }
+}
+
 /** User-scoped push and polling trigger subscriptions. */
 export class SubscriptionsClient {
   readonly #context: ClientContext;
@@ -1077,6 +1154,8 @@ export class Eyeball {
   readonly files: FilesClient;
   /** Local canonical trigger discovery. */
   readonly triggers: TriggersClient;
+  /** Redacted project trigger-arrival history. */
+  readonly triggerEvents: TriggerEventsClient;
   /** User-scoped trigger subscription operations. */
   readonly subscriptions: SubscriptionsClient;
   /** Signed webhook endpoint and delivery operations. */
@@ -1120,6 +1199,7 @@ export class Eyeball {
     this.connections = new ConnectionsClient(context);
     this.files = new FilesClient(context);
     this.triggers = new TriggersClient();
+    this.triggerEvents = new TriggerEventsClient(context);
     this.subscriptions = new SubscriptionsClient(context);
     this.webhooks = new WebhooksClient(context);
   }

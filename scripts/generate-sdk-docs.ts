@@ -247,6 +247,25 @@ const pageSpecs: readonly PageSpec[] = [
     ],
   },
   {
+    slug: "trigger-events",
+    title: "Trigger events API",
+    description:
+      "Read redacted project trigger history and current delivery outcomes without provider payloads or credentials.",
+    exports: [
+      "TriggerEventsClient",
+      "ListTriggerEventsOptions",
+      "TriggerEventArrivalId",
+      "TriggerEventDedupStatus",
+      "TriggerEventDeliveryMode",
+      "TriggerEventDeliveryStatus",
+      "TriggerEventDeliveryTarget",
+      "TriggerEventRecord",
+      "TriggerEventPage",
+      "createTriggerEventArrivalId",
+      "isTriggerEventArrivalId",
+    ],
+  },
+  {
     slug: "errors",
     title: "Errors API",
     description:
@@ -810,6 +829,7 @@ function validateDocumentation(model: SdkApiModel): void {
     "ExecutionsClient.wait",
     "FilesClient.upload",
     "FilesClient.list",
+    "TriggerEventsClient.list",
     "WebhooksClient.create",
     "SubscriptionsClient.create",
   ]) {

@@ -241,6 +241,53 @@ export interface ListTriggerSubscriptionsParams {
   userId?: string;
 }
 
+export type TriggerEventDeliveryMode = "push" | "polling";
+export type TriggerEventDedupStatus = "accepted" | "duplicate";
+export type TriggerEventDeliveryStatus =
+  | "not_enqueued"
+  | "admission_failed"
+  | "selecting"
+  | "no_targets"
+  | "pending"
+  | "delivering"
+  | "succeeded"
+  | "failed"
+  | "partial";
+
+export interface TriggerEventDeliveryTarget {
+  endpointId: string;
+  deliveryId: string;
+  status: WebhookDeliveryStatus;
+}
+
+/** Metadata-only project trigger-event history. Provider payloads are excluded. */
+export interface TriggerEvent {
+  arrivalId: string;
+  eventId: string;
+  subscriptionId: string;
+  trigger: string;
+  deliveryMode: TriggerEventDeliveryMode;
+  receivedAt: string;
+  occurredAt: string;
+  dedupStatus: TriggerEventDedupStatus;
+  deliveryStatus: TriggerEventDeliveryStatus;
+  requestedWebhookEndpointIds: readonly string[];
+  deliveryTargets: readonly TriggerEventDeliveryTarget[];
+  expiresAt: string;
+}
+
+export interface TriggerEventPage {
+  triggerEvents: readonly TriggerEvent[];
+  nextCursor?: string;
+}
+
+export interface ListTriggerEventsParams {
+  cursor?: string;
+  limit?: number;
+  subscriptionId?: string;
+  trigger?: string;
+}
+
 export interface StagedFileMetadata {
   fileId: string;
   name: string;
@@ -694,6 +741,98 @@ export function projectTriggerSubscriptionPage(
   };
 }
 
+function projectTriggerEventDeliveryTarget(
+  value: unknown,
+): TriggerEventDeliveryTarget {
+  const target = metadataRecord(value, "trigger event delivery target");
+  if (
+    target.status !== "pending" &&
+    target.status !== "delivering" &&
+    target.status !== "succeeded" &&
+    target.status !== "failed"
+  ) {
+    throw new ExecutorApiError(
+      "Executor returned invalid trigger event delivery target metadata.",
+      502,
+    );
+  }
+  return {
+    endpointId: metadataString(
+      target,
+      "endpointId",
+      "trigger event delivery target",
+    ),
+    deliveryId: metadataString(
+      target,
+      "deliveryId",
+      "trigger event delivery target",
+    ),
+    status: target.status,
+  };
+}
+
+export function projectTriggerEvent(value: unknown): TriggerEvent {
+  const event = metadataRecord(value, "trigger event");
+  const requestedEndpointIds = event.requestedWebhookEndpointIds;
+  const targets = event.deliveryTargets;
+  const validDeliveryStatus =
+    event.deliveryStatus === "not_enqueued" ||
+    event.deliveryStatus === "admission_failed" ||
+    event.deliveryStatus === "selecting" ||
+    event.deliveryStatus === "no_targets" ||
+    event.deliveryStatus === "pending" ||
+    event.deliveryStatus === "delivering" ||
+    event.deliveryStatus === "succeeded" ||
+    event.deliveryStatus === "failed" ||
+    event.deliveryStatus === "partial";
+  if (
+    !Array.isArray(requestedEndpointIds) ||
+    requestedEndpointIds.some((endpointId) => typeof endpointId !== "string") ||
+    !Array.isArray(targets) ||
+    (event.deliveryMode !== "push" && event.deliveryMode !== "polling") ||
+    (event.dedupStatus !== "accepted" && event.dedupStatus !== "duplicate") ||
+    !validDeliveryStatus
+  ) {
+    throw new ExecutorApiError(
+      "Executor returned invalid trigger event metadata.",
+      502,
+    );
+  }
+  return {
+    arrivalId: metadataString(event, "arrivalId", "trigger event"),
+    eventId: metadataString(event, "eventId", "trigger event"),
+    subscriptionId: metadataString(event, "subscriptionId", "trigger event"),
+    trigger: metadataString(event, "trigger", "trigger event"),
+    deliveryMode: event.deliveryMode,
+    receivedAt: metadataString(event, "receivedAt", "trigger event"),
+    occurredAt: metadataString(event, "occurredAt", "trigger event"),
+    dedupStatus: event.dedupStatus,
+    deliveryStatus: event.deliveryStatus as TriggerEventDeliveryStatus,
+    requestedWebhookEndpointIds: [...requestedEndpointIds] as string[],
+    deliveryTargets: targets.map(projectTriggerEventDeliveryTarget),
+    expiresAt: metadataString(event, "expiresAt", "trigger event"),
+  };
+}
+
+export function projectTriggerEventPage(value: unknown): TriggerEventPage {
+  const page = metadataRecord(value, "trigger event page");
+  if (!Array.isArray(page.triggerEvents)) {
+    throw new ExecutorApiError(
+      "Executor returned invalid trigger event page metadata.",
+      502,
+    );
+  }
+  const nextCursor = optionalMetadataString(
+    page,
+    "nextCursor",
+    "trigger event page",
+  );
+  return {
+    triggerEvents: page.triggerEvents.map(projectTriggerEvent),
+    ...(nextCursor === undefined ? {} : { nextCursor }),
+  };
+}
+
 export function projectStagedFileMetadata(value: unknown): StagedFileMetadata {
   const file = metadataRecord(value, "staged file");
   if (typeof file.size !== "number") {
@@ -948,6 +1087,24 @@ export class ExecutorClient {
       ...(signal === undefined ? {} : { signal }),
     });
     return projectTriggerSubscriptionPage(value);
+  }
+
+  async listTriggerEvents(
+    params: ListTriggerEventsParams = {},
+    signal?: AbortSignal,
+  ): Promise<TriggerEventPage> {
+    const query = new URLSearchParams();
+    if (params.limit !== undefined) query.set("limit", String(params.limit));
+    if (params.cursor !== undefined) query.set("cursor", params.cursor);
+    if (params.subscriptionId !== undefined) {
+      query.set("subscriptionId", params.subscriptionId);
+    }
+    if (params.trigger !== undefined) query.set("trigger", params.trigger);
+    const suffix = query.size > 0 ? `?${query.toString()}` : "";
+    const value = await this.#request<unknown>(`/v1/trigger-events${suffix}`, {
+      ...(signal === undefined ? {} : { signal }),
+    });
+    return projectTriggerEventPage(value);
   }
 
   async createTriggerSubscription(

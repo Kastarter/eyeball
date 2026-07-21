@@ -12,7 +12,12 @@ export type BadgeStatus =
   | "needs_reauth"
   | "running"
   | "inactive"
-  | "delivering";
+  | "delivering"
+  | "selecting"
+  | "no_targets"
+  | "partial"
+  | "not_enqueued"
+  | "admission_failed";
 
 const statusPresentation: Record<
   BadgeStatus,
@@ -29,6 +34,11 @@ const statusPresentation: Record<
   running: { label: "Running", pulse: true, tone: "accent" },
   inactive: { label: "Inactive", tone: "neutral" },
   delivering: { label: "Delivering", pulse: true, tone: "accent" },
+  selecting: { label: "Selecting", pulse: true, tone: "accent" },
+  no_targets: { label: "No targets", tone: "neutral" },
+  partial: { label: "Partial", tone: "warning" },
+  not_enqueued: { label: "Not enqueued", tone: "neutral" },
+  admission_failed: { label: "Admission failed", tone: "error" },
 };
 
 export interface BadgeProps {

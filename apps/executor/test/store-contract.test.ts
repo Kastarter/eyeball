@@ -4,6 +4,8 @@ import { join } from "node:path";
 import {
   createExecutionId,
   createFileId,
+  createTriggerEventArrivalId,
+  createTriggerSubscriptionId,
   type ExecutionRecord,
   MockCredentialProvider,
   type VoiceAgentDraft,
@@ -15,6 +17,7 @@ import {
 } from "@eyeball/toolkits";
 import { afterAll, expect, it, vi } from "vitest";
 import {
+  type AppendTriggerEventInput,
   createExecutorApp,
   createExecutorRuntime,
   createJobEnvelope,
@@ -24,6 +27,7 @@ import {
   InMemoryExecutionStore,
   InMemoryFileStore,
   InMemoryJobStore,
+  InMemoryTriggerEventStore,
   InMemoryTriggerStateStore,
   InMemoryTriggerSubscriptionStore,
   InMemoryUsageOutboxStore,
@@ -33,6 +37,7 @@ import {
   noopLogger,
   type PgliteStoreBundle,
   recoverExecutorJobs,
+  TriggerEventPersistenceError,
   webhookEndpointGroupKey,
 } from "../src/index.js";
 import {
@@ -111,6 +116,7 @@ registerStoreContractSuite([
           jobStore,
         ),
         triggerSubscriptionStore: new InMemoryTriggerSubscriptionStore(),
+        triggerEventStore: new InMemoryTriggerEventStore(),
         triggerStateStore: new InMemoryTriggerStateStore(),
         usageOutboxStore: new InMemoryUsageOutboxStore(),
         jobStore,
@@ -136,6 +142,9 @@ it("keeps zero-config runtime stores in memory", async () => {
   );
   expect(runtime.engine.triggerService.stateStore).toBeInstanceOf(
     InMemoryTriggerStateStore,
+  );
+  expect(runtime.engine.triggerService.eventStore).toBeInstanceOf(
+    InMemoryTriggerEventStore,
   );
   expect(runtime.engine.adapters.require("voice-agents")).toBeInstanceOf(
     VoiceAgentsAdapter,
@@ -212,6 +221,9 @@ it("wires every durable store when EYEBALL_DATABASE_URL is set", async () => {
     );
     expect(runtime.engine.triggerService.stateStore).toBe(
       bundle.triggerStateStore,
+    );
+    expect(runtime.engine.triggerService.eventStore).toBe(
+      bundle.triggerEventStore,
     );
     expect(
       (runtime.engine.adapters.require("voice-agents") as VoiceAgentsAdapter)
@@ -355,6 +367,202 @@ it("migrates the private execution replay-observation sidecar", async () => {
       data_type: "timestamp with time zone",
     },
   ]);
+});
+
+it("migrates the redacted trigger-event table with only allowlisted columns", async () => {
+  const bundle = await pgliteStores();
+  const columns = await bundle.client.query<{ column_name: string }>(
+    `select column_name
+       from information_schema.columns
+      where table_schema = 'public' and table_name = 'trigger_events'
+      order by ordinal_position`,
+  );
+  expect(columns.rows.map(({ column_name }) => column_name)).toEqual([
+    "sequence",
+    "arrival_id",
+    "project_id",
+    "event_id",
+    "subscription_id",
+    "trigger",
+    "delivery_mode",
+    "received_at",
+    "occurred_at",
+    "dedup_status",
+    "delivery_admission_status",
+    "requested_webhook_endpoint_ids",
+    "expires_at",
+  ]);
+  expect(
+    columns.rows.some(({ column_name }) =>
+      /payload|body|provider.*event|url|secret|credential|token|filter|cursor|header|signature/iu.test(
+        column_name,
+      ),
+    ),
+  ).toBe(false);
+  const indexes = await bundle.client.query<{ indexname: string }>(
+    `select indexname from pg_indexes
+      where schemaname = 'public'
+        and tablename in ('trigger_events', 'webhook_deliveries')`,
+  );
+  const names = new Set(indexes.rows.map(({ indexname }) => indexname));
+  for (const name of [
+    "trigger_events_project_received_idx",
+    "trigger_events_project_subscription_received_idx",
+    "trigger_events_project_trigger_received_idx",
+    "trigger_events_expiry_idx",
+    "trigger_events_project_event_idx",
+    "webhook_deliveries_project_event_idx",
+  ]) {
+    expect(names.has(name)).toBe(true);
+  }
+  const checks = await bundle.client.query<{ conname: string }>(
+    `select conname
+       from pg_constraint
+      where conrelid = 'trigger_events'::regclass
+        and contype = 'c'`,
+  );
+  const checkNames = new Set(checks.rows.map(({ conname }) => conname));
+  for (const name of [
+    "trigger_events_delivery_mode_check",
+    "trigger_events_dedup_status_check",
+    "trigger_events_delivery_admission_status_check",
+    "trigger_events_status_consistency_check",
+    "trigger_events_requested_endpoint_ids_array_check",
+    "trigger_events_expiry_after_received_check",
+  ]) {
+    expect(checkNames.has(name)).toBe(true);
+  }
+});
+
+it("never persists unsafe cast-only trigger event fields in raw Postgres rows", async () => {
+  const bundle = await pgliteStores();
+  const projectId = "project_trigger_event_raw_privacy";
+  const arrivalId = createTriggerEventArrivalId("raw_privacy");
+  const unsafe = {
+    arrivalId,
+    eventId: "evt_trigger_raw_privacy",
+    subscriptionId: createTriggerSubscriptionId("raw_privacy"),
+    trigger: "slack.message_received",
+    deliveryMode: "push",
+    receivedAt: "2026-07-21T12:00:00.000Z",
+    occurredAt: "2026-07-21T11:59:59.000Z",
+    dedupStatus: "accepted",
+    deliveryAdmissionStatus: "admitted",
+    requestedWebhookEndpointIds: ["whe_raw_privacy"],
+    expiresAt: "2026-07-28T12:00:00.000Z",
+    payload: { sentinel: "payload_must_not_persist" },
+    providerEventId: "provider_event_must_not_persist",
+    pushSecret: "push_secret_must_not_persist",
+    credentials: { accessToken: "credential_must_not_persist" },
+  } as AppendTriggerEventInput;
+  await bundle.triggerEventStore.append(projectId, unsafe);
+  const row = await bundle.client.query<Record<string, unknown>>(
+    `select * from trigger_events where arrival_id = $1`,
+    [arrivalId],
+  );
+  const serialized = JSON.stringify(row.rows);
+  for (const sentinel of [
+    "payload_must_not_persist",
+    "provider_event_must_not_persist",
+    "push_secret_must_not_persist",
+    "credential_must_not_persist",
+  ]) {
+    expect(serialized).not.toContain(sentinel);
+  }
+});
+
+it("keeps trigger-event persistence failures metadata-safe", async () => {
+  const bundle = await createPgliteStoreBundle();
+  const payloadSentinel = "trigger-event-payload-error-sentinel";
+  const secretSentinel = "trigger-event-secret-error-sentinel";
+  try {
+    await bundle.client.exec("drop table trigger_events");
+    let captured: unknown;
+    try {
+      await bundle.triggerEventStore.append("project_trigger_event_failure", {
+        arrivalId: createTriggerEventArrivalId("persistence_failure"),
+        eventId: "evt_trigger_persistence_failure",
+        subscriptionId: createTriggerSubscriptionId("persistence_failure"),
+        trigger: "slack.message_received",
+        deliveryMode: "push",
+        receivedAt: "2026-07-21T12:00:00.000Z",
+        occurredAt: "2026-07-21T11:59:59.000Z",
+        dedupStatus: "accepted",
+        deliveryAdmissionStatus: "admitted",
+        requestedWebhookEndpointIds: ["whe_persistence_failure"],
+        expiresAt: "2026-07-28T12:00:00.000Z",
+        payload: { sentinel: payloadSentinel },
+        pushSecret: secretSentinel,
+      } as AppendTriggerEventInput);
+    } catch (error) {
+      captured = error;
+    }
+    expect(captured).toBeInstanceOf(TriggerEventPersistenceError);
+    const safeError = captured as Error;
+    expect(safeError.message).toBe("Trigger event persistence failed.");
+    expect(safeError.cause).toBeUndefined();
+    expect(errorChainText(safeError)).not.toContain(payloadSentinel);
+    expect(errorChainText(safeError)).not.toContain(secretSentinel);
+  } finally {
+    await bundle.close();
+  }
+});
+
+it("reconstructs trigger-event history until exact expiry", async () => {
+  const directory = await mkdtemp(
+    join(tmpdir(), "eyeball-trigger-event-restart-"),
+  );
+  const projectId = "project_trigger_event_restart";
+  const arrivalId = createTriggerEventArrivalId("restart_history");
+  let first: PgliteStoreBundle | undefined;
+  let restored: PgliteStoreBundle | undefined;
+  try {
+    first = await createPgliteStoreBundle({ dataDir: directory });
+    await first.triggerEventStore.append(projectId, {
+      arrivalId,
+      eventId: "evt_trigger_restart_history",
+      subscriptionId: createTriggerSubscriptionId("restart_history"),
+      trigger: "gmail.email_received",
+      deliveryMode: "polling",
+      receivedAt: "2026-07-21T12:00:00.000Z",
+      occurredAt: "2026-07-21T11:59:59.000Z",
+      dedupStatus: "accepted",
+      deliveryAdmissionStatus: "admitted",
+      requestedWebhookEndpointIds: ["whe_restart_history"],
+      expiresAt: "2026-07-28T12:00:00.000Z",
+    });
+    await first.close();
+    first = undefined;
+
+    restored = await createPgliteStoreBundle({ dataDir: directory });
+    await expect(
+      restored.triggerEventStore.list(projectId, {
+        now: "2026-07-28T11:59:59.999Z",
+        limit: 10,
+      }),
+    ).resolves.toMatchObject({ triggerEvents: [{ arrivalId }] });
+    await expect(
+      restored.triggerEventStore.list(projectId, {
+        now: "2026-07-28T12:00:00.000Z",
+        limit: 10,
+      }),
+    ).resolves.toEqual({ triggerEvents: [] });
+    await expect(
+      restored.triggerEventStore.sweepExpired({
+        now: "2026-07-28T12:00:00.000Z",
+        limit: 100,
+      }),
+    ).resolves.toBe(1);
+    const row = await restored.client.query<{ present: boolean }>(
+      "select exists(select 1 from trigger_events where arrival_id = $1) as present",
+      [arrivalId],
+    );
+    expect(row.rows[0]?.present).toBe(false);
+  } finally {
+    await first?.close();
+    await restored?.close();
+    await rm(directory, { recursive: true, force: true });
+  }
 });
 
 it("preserves active and revoked grant state across PGlite reconstruction", async () => {
@@ -621,6 +829,34 @@ it("sweeps expired durable files in fixed-clock batches before startup", async (
   }
 });
 
+it("sweeps expired durable trigger events in fixed-clock batches before startup", async () => {
+  const bundle = await createPgliteStoreBundle();
+  const sweep = vi
+    .spyOn(bundle.triggerEventStore, "sweepExpired")
+    .mockResolvedValueOnce(100)
+    .mockResolvedValueOnce(2);
+  const now = new Date("2026-07-18T08:30:00.000Z");
+  const runtime = await createExecutorRuntime({
+    env: { EYEBALL_DATABASE_URL: "postgresql://contract.invalid/eyeball" },
+    credentialProvider: new MockCredentialProvider([]),
+    persistenceFactory: async () => bundle,
+    clock: { now: () => new Date(now) },
+  });
+  try {
+    expect(sweep).toHaveBeenCalledTimes(2);
+    expect(sweep).toHaveBeenNthCalledWith(1, {
+      limit: 100,
+      now: now.toISOString(),
+    });
+    expect(sweep).toHaveBeenNthCalledWith(2, {
+      limit: 100,
+      now: now.toISOString(),
+    });
+  } finally {
+    await runtime.close();
+  }
+});
+
 it("physically reclaims expired durable files while the runtime stays healthy", async () => {
   const bundle = await createPgliteStoreBundle();
   const projectId = "project_online_file_sweep";
@@ -662,6 +898,71 @@ it("physically reclaims expired durable files while the runtime stays healthy", 
       },
       { interval: 10, timeout: 1_000 },
     );
+  } finally {
+    await runtime.close();
+  }
+});
+
+it("drains more than one bounded trigger-event batch while the runtime stays healthy", async () => {
+  const bundle = await createPgliteStoreBundle();
+  const projectId = "project_online_trigger_event_sweep";
+  let now = Date.parse("2026-07-18T08:30:00.000Z");
+  let clockReads = 0;
+  const runtime = await createExecutorRuntime({
+    env: { EYEBALL_DATABASE_URL: "postgresql://contract.invalid/eyeball" },
+    credentialProvider: new MockCredentialProvider([]),
+    persistenceFactory: async () => bundle,
+    clock: { now: () => new Date(now + clockReads++) },
+    triggerEventSweepIntervalMs: 5,
+  });
+  try {
+    const receivedAt = new Date(now).toISOString();
+    const expiresAt = new Date(now + 60_000).toISOString();
+    for (let index = 0; index < 101; index += 1) {
+      await bundle.triggerEventStore.append(projectId, {
+        arrivalId: createTriggerEventArrivalId(`online_sweep_${index}`),
+        eventId: `evt_trigger_online_sweep_${index}`,
+        subscriptionId: createTriggerSubscriptionId("online_sweep"),
+        trigger: "slack.message_received",
+        deliveryMode: "push",
+        receivedAt,
+        occurredAt: new Date(now - 1_000).toISOString(),
+        dedupStatus: "accepted",
+        deliveryAdmissionStatus: "admitted",
+        requestedWebhookEndpointIds: ["whe_online_sweep"],
+        expiresAt,
+      });
+    }
+    const before = await bundle.client.query<{ count: number }>(
+      "select count(*)::int as count from trigger_events where project_id = $1",
+      [projectId],
+    );
+    expect(before.rows[0]?.count).toBe(101);
+
+    const sweepNow: string[] = [];
+    const sweepExpired = bundle.triggerEventStore.sweepExpired.bind(
+      bundle.triggerEventStore,
+    );
+    vi.spyOn(bundle.triggerEventStore, "sweepExpired").mockImplementation(
+      async (input) => {
+        const deleted = await sweepExpired(input);
+        if (deleted > 0) sweepNow.push(input.now);
+        return deleted;
+      },
+    );
+    now += 60_000;
+    await vi.waitFor(
+      async () => {
+        const after = await bundle.client.query<{ count: number }>(
+          "select count(*)::int as count from trigger_events where project_id = $1",
+          [projectId],
+        );
+        expect(after.rows[0]?.count).toBe(0);
+      },
+      { interval: 10, timeout: 1_000 },
+    );
+    expect(sweepNow).toHaveLength(2);
+    expect(new Set(sweepNow).size).toBe(1);
   } finally {
     await runtime.close();
   }

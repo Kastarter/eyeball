@@ -720,4 +720,136 @@ describe("ExecutorClient", () => {
     ]);
     expect(requests[0]?.headers.get("Content-Type")).toBe("application/json");
   });
+
+  it("projects and serializes redacted project trigger-event history", async () => {
+    let request: Request | undefined;
+    const controller = new AbortController();
+    const forbidden = {
+      payload: "payload-sentinel",
+      providerEventId: "provider-event-sentinel",
+      rawBody: "raw-body-sentinel",
+      pushSecret: "push-secret-sentinel",
+      pushSecretSha256: "push-secret-hash-sentinel",
+      ingestUrl: "ingest-url-sentinel",
+      credentials: "credentials-sentinel",
+      accessToken: "access-token-sentinel",
+      providerCursor: "provider-cursor-sentinel",
+      filters: "filters-sentinel",
+      requestHeaders: "request-headers-sentinel",
+      signature: "signature-sentinel",
+      endpointUrl: "endpoint-url-sentinel",
+      responseBody: "response-body-sentinel",
+    };
+    const fetch: typeof globalThis.fetch = async (input, init) => {
+      request = new Request(input, init);
+      return Response.json({
+        triggerEvents: [
+          {
+            arrivalId: "trgevt_fixture",
+            eventId: "evt_trigger_fixture",
+            subscriptionId: "trgsub_fixture",
+            trigger: "slack.message_received",
+            deliveryMode: "push",
+            receivedAt: "2026-07-21T14:00:00.000Z",
+            occurredAt: "2026-07-21T13:59:58.000Z",
+            dedupStatus: "accepted",
+            deliveryStatus: "succeeded",
+            requestedWebhookEndpointIds: ["whe_fixture"],
+            deliveryTargets: [
+              {
+                endpointId: "whe_fixture",
+                deliveryId: "whd_fixture",
+                status: "succeeded",
+                ...forbidden,
+              },
+            ],
+            expiresAt: "2026-07-28T14:00:00.000Z",
+            ...forbidden,
+          },
+        ],
+        nextCursor: "trigger event cursor/2",
+        ...forbidden,
+      });
+    };
+    const client = new ExecutorClient({
+      baseUrl: "https://executor.example",
+      fetch,
+      projectId: "proj_fixture",
+    });
+
+    const page = await client.listTriggerEvents(
+      {
+        limit: 20,
+        cursor: "event cursor/1",
+        subscriptionId: "trgsub fixture/one",
+        trigger: "slack.message received",
+      },
+      controller.signal,
+    );
+
+    expect(request?.url).toBe(
+      "https://executor.example/v1/trigger-events?limit=20&cursor=event+cursor%2F1&subscriptionId=trgsub+fixture%2Fone&trigger=slack.message+received",
+    );
+    expect(request?.signal.aborted).toBe(false);
+    expect(page).toEqual({
+      triggerEvents: [
+        {
+          arrivalId: "trgevt_fixture",
+          eventId: "evt_trigger_fixture",
+          subscriptionId: "trgsub_fixture",
+          trigger: "slack.message_received",
+          deliveryMode: "push",
+          receivedAt: "2026-07-21T14:00:00.000Z",
+          occurredAt: "2026-07-21T13:59:58.000Z",
+          dedupStatus: "accepted",
+          deliveryStatus: "succeeded",
+          requestedWebhookEndpointIds: ["whe_fixture"],
+          deliveryTargets: [
+            {
+              endpointId: "whe_fixture",
+              deliveryId: "whd_fixture",
+              status: "succeeded",
+            },
+          ],
+          expiresAt: "2026-07-28T14:00:00.000Z",
+        },
+      ],
+      nextCursor: "trigger event cursor/2",
+    });
+    const serialized = JSON.stringify(page);
+    for (const [field, sentinel] of Object.entries(forbidden)) {
+      expect(serialized).not.toContain(field);
+      expect(serialized).not.toContain(sentinel);
+    }
+  });
+
+  it("rejects malformed trigger-event response shapes", async () => {
+    const client = new ExecutorClient({
+      baseUrl: "https://executor.example",
+      fetch: (async () =>
+        Response.json({
+          triggerEvents: [
+            {
+              arrivalId: "trgevt_fixture",
+              eventId: "evt_trigger_fixture",
+              subscriptionId: "trgsub_fixture",
+              trigger: "slack.message_received",
+              deliveryMode: "push",
+              receivedAt: "2026-07-21T14:00:00.000Z",
+              occurredAt: "2026-07-21T13:59:58.000Z",
+              dedupStatus: "accepted",
+              deliveryStatus: "succeeded",
+              requestedWebhookEndpointIds: ["whe_fixture"],
+              deliveryTargets: [{ status: "unknown" }],
+              expiresAt: "2026-07-28T14:00:00.000Z",
+            },
+          ],
+        })) as typeof globalThis.fetch,
+    });
+
+    await expect(client.listTriggerEvents()).rejects.toMatchObject({
+      name: "ExecutorApiError",
+      status: 502,
+    });
+  });
 });

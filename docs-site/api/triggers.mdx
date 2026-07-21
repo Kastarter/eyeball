@@ -81,6 +81,86 @@ For a pinned key, the executor forces the pinned user filter. A conflicting `use
 
 The SDK equivalent is `eyeball.subscriptions.list(options)`.
 
+## List recent trigger events
+
+`GET /v1/trigger-events?limit=100&cursor=...&subscriptionId=trgsub_123&trigger=slack.message_received`
+
+This is project-wide operational history and therefore requires an **unpinned project API key**. Every user-pinned key receives `403 auth_insufficient_scope`; the route does not accept a `userId` query or header override.
+
+| Query parameter | Required | Meaning |
+| --- | --- | --- |
+| `limit` | No | Integer from 1 through 100; defaults to 100. |
+| `cursor` | No | Opaque cursor from the preceding response. |
+| `subscriptionId` | No | Exact valid `trgsub_*` subscription ID. |
+| `trigger` | No | Exact canonical dotted trigger name. |
+
+Rows are newest `receivedAt` first. The response envelope is `{ triggerEvents, nextCursor? }`:
+
+```json
+{
+  "triggerEvents": [
+    {
+      "arrivalId": "trgevt_01JZ...",
+      "eventId": "evt_trigger_8f0...",
+      "subscriptionId": "trgsub_123",
+      "trigger": "slack.message_received",
+      "deliveryMode": "push",
+      "receivedAt": "2026-07-21T14:00:00.000Z",
+      "occurredAt": "2026-07-21T13:59:58.000Z",
+      "dedupStatus": "accepted",
+      "deliveryStatus": "succeeded",
+      "requestedWebhookEndpointIds": ["whe_123"],
+      "deliveryTargets": [
+        {
+          "endpointId": "whe_123",
+          "deliveryId": "whd_123",
+          "status": "succeeded"
+        }
+      ],
+      "expiresAt": "2026-07-28T14:00:00.000Z"
+    }
+  ],
+  "nextCursor": "eyJ..."
+}
+```
+
+`receivedAt` is the executor's normalized-arrival time; `occurredAt` is the validated provider occurrence time. The first arrival has `dedupStatus: "accepted"`. A provider retry inside the dedup window creates a separate row with its own `arrivalId`, the accepted arrival's stable `eventId`, `dedupStatus: "duplicate"`, `deliveryStatus: "not_enqueued"`, and no actual delivery targets.
+
+`requestedWebhookEndpointIds` snapshots the subscription's configured endpoint IDs at admission time. `deliveryTargets` contains only endpoints that the webhook worker actually materialized after checking endpoint existence, activity, and event subscriptions. Aggregate `deliveryStatus` is one of `not_enqueued`, `admission_failed`, `selecting`, `no_targets`, `pending`, `delivering`, `succeeded`, `failed`, or `partial`; each materialized target uses `pending`, `delivering`, `succeeded`, or `failed`.
+
+History expires seven days after `receivedAt`, independently of the 24-hour dedup claim. Expired rows are hidden immediately and physically removed in bounded cleanup batches. If a cursor's anchor has already been swept, the cursor returns `422 invalid_input`; restart pagination from the first page. Deleting a subscription or endpoint does not delete its existing history before `expiresAt`.
+
+The store and response deliberately exclude provider event IDs, payload bodies, canonical webhook data, user/provider message content, filters, polling cursors, ingest URLs and secrets, endpoint URLs, signing secrets, credentials, headers, attempt bodies, and transport error text. History cannot reconstruct the signed webhook body.
+
+```ts
+import { Eyeball } from "@eyeball/sdk";
+
+const eyeball = new Eyeball({
+  apiKey: process.env.EYEBALL_API_KEY!,
+  baseUrl: process.env.EYEBALL_EXECUTOR_URL!,
+});
+
+let page = await eyeball.triggerEvents.list({
+  trigger: "slack.message_received",
+  limit: 20,
+});
+
+for (const event of page.triggerEvents) {
+  console.log(event.eventId, event.deliveryStatus);
+  for (const target of event.deliveryTargets) {
+    console.log(target.endpointId, target.status);
+  }
+}
+
+if (page.nextCursor) {
+  page = await eyeball.triggerEvents.list({
+    trigger: "slack.message_received",
+    limit: 20,
+    cursor: page.nextCursor,
+  });
+}
+```
+
 ## Get a subscription
 
 `GET /v1/subscriptions/:subscriptionId`
@@ -101,7 +181,7 @@ The SDK equivalent is `eyeball.subscriptions.rotateSecret(subscriptionId)`.
 
 `DELETE /v1/subscriptions/:subscriptionId`
 
-Returns `204` when deleted or `404` when the subscription is absent from the authenticated project. A pinned key cannot delete another user's subscription. Deletion removes cursor and dedup state from the configured in-memory or Postgres store and prevents future ingestion.
+Returns `204` when deleted or `404` when the subscription is absent from the authenticated project. A pinned key cannot delete another user's subscription. Deletion removes cursor and dedup state from the configured in-memory or Postgres store and prevents future ingestion. Existing redacted event-history rows remain visible to an unpinned project key until their individual seven-day expiry.
 
 The SDK equivalent is `eyeball.subscriptions.delete(subscriptionId)`.
 
@@ -138,17 +218,17 @@ A valid Slack `event_callback` returns `202`:
 }
 ```
 
-The response acknowledges ingestion into the asynchronous signed webhook pipeline. Inspect outbound attempts through `GET /v1/webhooks/:endpointId/deliveries`.
+The response acknowledges ingestion into the asynchronous signed webhook pipeline. Inspect project trigger-event history through `GET /v1/trigger-events` for arrival and dedup status, then inspect `GET /v1/webhooks/:endpointId/deliveries` for full per-endpoint attempt metadata.
 
 ## Errors
 
 | Status | Typical meaning |
 | ---: | --- |
-| `401` | Missing or invalid API key on subscription CRUD. |
-| `403` | Pinned key attempted to act for a different user. |
+| `401` | Missing or invalid API key on subscription CRUD or event-history reads. |
+| `403` | Pinned key attempted to act for a different user, or any pinned key attempted to read project-wide event history. |
 | `404` | Subscription is missing, cross-project, inactive for ingestion, or has a wrong ingest secret. |
 | `422` | Invalid trigger, connection, scope, endpoint, filter, polling cadence, or provider callback body. |
 
-The project **Triggers** screen in the dashboard exposes subscription creation with catalog-backed trigger selection and mode-specific polling cadence, the reveal-once push ingest URL on create and rotation, confirmed rotation and deletion, and metadata-only subscription listings. It uses the selected project's executor path in both demo and cloud mode.
+The project **Triggers** screen in the dashboard exposes subscription creation with catalog-backed trigger selection and mode-specific polling cadence, the reveal-once push ingest URL on create and rotation, confirmed rotation and deletion, metadata-only subscription listings, and a project-level **Recent events** tab. It uses the selected project's executor path in both demo and cloud mode.
 
 Read [Triggers](/concepts/triggers) for payloads and dedup semantics, and [Webhooks API](/api/webhooks) for endpoint management and delivery logs.

@@ -5906,6 +5906,244 @@ select.field__control {
   font-size: 10px;
 }
 
+.trigger-page-tabs {
+  overflow: hidden;
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--radius-lg);
+  background: var(--bg-panel);
+}
+
+.trigger-page-tabs > .tabs > .tabs__list {
+  padding-inline: var(--space-5);
+}
+
+.trigger-events-panel {
+  min-width: 0;
+}
+
+.trigger-event-filters {
+  display: flex;
+  align-items: end;
+  gap: var(--space-3);
+  padding: var(--space-4) var(--space-5);
+  border-bottom: 1px solid var(--border-subtle);
+  background: var(--bg-subtle);
+}
+
+.trigger-event-filters > label {
+  display: grid;
+  min-width: 220px;
+  flex: 1;
+  gap: var(--space-1);
+  color: var(--text-secondary);
+  font-size: 10px;
+  font-weight: 580;
+}
+
+.trigger-event-filter-actions {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+}
+
+.trigger-events,
+.trigger-events-loading,
+.trigger-event-state {
+  margin: var(--space-5);
+}
+
+.trigger-events {
+  overflow: hidden;
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--radius-md);
+}
+
+.trigger-events > .table-wrap {
+  max-width: 100%;
+  overflow-x: auto;
+  border: 0;
+  border-radius: 0;
+}
+
+.trigger-events .table {
+  min-width: 1320px;
+}
+
+.trigger-events-loading {
+  overflow: hidden;
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--radius-md);
+}
+
+.trigger-events-loading > div {
+  display: flex;
+  min-height: 62px;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--space-3);
+  padding: var(--space-3) var(--space-4);
+  border-bottom: 1px solid var(--border-subtle);
+}
+
+.trigger-events-loading > div:last-child {
+  border-bottom: 0;
+}
+
+.trigger-event-state {
+  display: grid;
+  min-height: 270px;
+  align-content: center;
+  justify-items: center;
+  gap: var(--space-2);
+  padding: var(--space-5);
+  border: 1px dashed var(--border-strong);
+  border-radius: var(--radius-md);
+  background: var(--bg-subtle);
+  text-align: center;
+}
+
+.trigger-event-state > svg {
+  width: 22px;
+  height: 22px;
+  margin-bottom: var(--space-2);
+  color: var(--text-tertiary);
+}
+
+.trigger-event-state h3,
+.trigger-event-state p {
+  margin: 0;
+}
+
+.trigger-event-state h3 {
+  color: var(--text-primary);
+  font-size: 14px;
+}
+
+.trigger-event-state p,
+.trigger-event-state footer {
+  max-width: 430px;
+  color: var(--text-secondary);
+  font-size: 11px;
+  line-height: 1.5;
+}
+
+.trigger-event-state footer {
+  margin-top: var(--space-2);
+  font-family: var(--font-code);
+}
+
+.trigger-event-id-stack {
+  display: grid;
+  gap: 3px;
+}
+
+.trigger-event-id-stack strong {
+  color: var(--accent);
+  font-size: 10px;
+}
+
+.trigger-event-id-stack code,
+.trigger-event-id-stack small {
+  overflow: hidden;
+  max-width: 220px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.trigger-event-id-stack code {
+  color: var(--text-primary);
+  font-family: var(--font-code);
+  font-size: 10px;
+}
+
+.trigger-event-id-stack small {
+  color: var(--text-muted-readable);
+  font-family: var(--font-code);
+  font-size: 9px;
+}
+
+.trigger-event-dedup {
+  display: inline-flex;
+  padding: 3px 7px;
+  border: 1px solid var(--border-subtle);
+  border-radius: 999px;
+  font-size: 9px;
+  font-weight: 650;
+  letter-spacing: 0.02em;
+}
+
+.trigger-event-dedup--accepted {
+  border-color: color-mix(in srgb, var(--success) 28%, transparent);
+  background: color-mix(in srgb, var(--success) 8%, transparent);
+  color: var(--success);
+}
+
+.trigger-event-dedup--duplicate {
+  background: var(--bg-subtle);
+  color: var(--text-secondary);
+}
+
+.trigger-event-target-row > td {
+  padding: 0;
+  background: var(--bg-subtle);
+}
+
+.trigger-event-target-row:hover > td {
+  background: var(--bg-subtle);
+}
+
+.trigger-event-target-row details {
+  border-top: 1px solid var(--border-subtle);
+}
+
+.trigger-event-target-row summary {
+  padding: 9px var(--space-4);
+  color: var(--text-secondary);
+  cursor: pointer;
+  font-size: 10px;
+  font-weight: 580;
+}
+
+.trigger-event-target-row details > p {
+  margin: 0;
+  padding: var(--space-4);
+  color: var(--text-secondary);
+  font-size: 11px;
+}
+
+.trigger-event-target-row ul {
+  display: grid;
+  margin: 0;
+  padding: 0;
+  border-top: 1px solid var(--border-subtle);
+  list-style: none;
+}
+
+.trigger-event-target-row li {
+  display: flex;
+  min-height: 48px;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--space-3);
+  padding: var(--space-2) var(--space-4);
+  border-bottom: 1px solid var(--border-subtle);
+}
+
+.trigger-event-target-row li:last-child {
+  border-bottom: 0;
+}
+
+.trigger-event-target-row li > span {
+  display: grid;
+  gap: 2px;
+}
+
+.trigger-event-target-row li small {
+  color: var(--text-muted-readable);
+  font-family: var(--font-code);
+  font-size: 9px;
+}
+
 @media (max-width: 1180px) {
   .plan-grid {
     grid-template-columns: repeat(2, minmax(0, 1fr));
@@ -6303,8 +6541,25 @@ select.field__control {
 
   .webhook-deliveries,
   .webhook-deliveries-loading,
-  .webhook-delivery-state {
+  .webhook-delivery-state,
+  .trigger-events,
+  .trigger-events-loading,
+  .trigger-event-state {
     margin: var(--space-4);
+  }
+
+  .trigger-event-filters {
+    align-items: stretch;
+    flex-direction: column;
+    padding: var(--space-4);
+  }
+
+  .trigger-event-filters > label {
+    min-width: 0;
+  }
+
+  .trigger-event-filter-actions {
+    flex-wrap: wrap;
   }
 
   .tabs__list {

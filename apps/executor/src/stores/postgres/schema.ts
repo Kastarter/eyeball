@@ -2,6 +2,9 @@ import type {
   ExecuteRequest,
   ExecutionRecord,
   JsonValue,
+  TriggerEventArrivalId,
+  TriggerEventDedupStatus,
+  TriggerEventDeliveryMode,
   TriggerSubscriptionStatus,
   VoiceAgentDefinition,
   WebhookDeliveryStatus,
@@ -28,6 +31,7 @@ import {
 import type { JobState } from "../../jobs/store.js";
 import type { ExecutorJob } from "../../jobs/types.js";
 import type { ExecutionResumeContext } from "../../store.js";
+import type { TriggerEventDeliveryAdmissionStatus } from "../../triggers/event-store.js";
 import type {
   UsageOutboxState,
   UsageReportPayload,
@@ -603,6 +607,11 @@ export const webhookDeliveries = pgTable(
       table.status,
       table.nextRetryAt,
     ),
+    index("webhook_deliveries_project_event_idx").on(
+      table.projectId,
+      table.eventId,
+      table.sequence,
+    ),
   ],
 );
 
@@ -736,6 +745,81 @@ export const triggerSubscriptions = pgTable(
   ],
 );
 
+export const triggerEvents = pgTable(
+  "trigger_events",
+  {
+    sequence: bigserial("sequence", { mode: "number" }).notNull(),
+    arrivalId: text("arrival_id").$type<TriggerEventArrivalId>().primaryKey(),
+    projectId: text("project_id").notNull(),
+    eventId: text("event_id").notNull(),
+    subscriptionId: text("subscription_id").notNull(),
+    trigger: text("trigger").notNull(),
+    deliveryMode: text("delivery_mode")
+      .$type<TriggerEventDeliveryMode>()
+      .notNull(),
+    receivedAt: timestampColumn("received_at").notNull(),
+    occurredAt: timestampColumn("occurred_at").notNull(),
+    dedupStatus: text("dedup_status")
+      .$type<TriggerEventDedupStatus>()
+      .notNull(),
+    deliveryAdmissionStatus: text("delivery_admission_status")
+      .$type<TriggerEventDeliveryAdmissionStatus>()
+      .notNull(),
+    requestedWebhookEndpointIds: jsonb("requested_webhook_endpoint_ids")
+      .$type<readonly string[]>()
+      .notNull(),
+    expiresAt: timestampColumn("expires_at").notNull(),
+  },
+  (table) => [
+    index("trigger_events_project_received_idx").on(
+      table.projectId,
+      table.receivedAt.desc(),
+      table.sequence.desc(),
+    ),
+    index("trigger_events_project_subscription_received_idx").on(
+      table.projectId,
+      table.subscriptionId,
+      table.receivedAt.desc(),
+      table.sequence.desc(),
+    ),
+    index("trigger_events_project_trigger_received_idx").on(
+      table.projectId,
+      table.trigger,
+      table.receivedAt.desc(),
+      table.sequence.desc(),
+    ),
+    index("trigger_events_expiry_idx").on(table.expiresAt, table.sequence),
+    index("trigger_events_project_event_idx").on(
+      table.projectId,
+      table.eventId,
+    ),
+    check(
+      "trigger_events_delivery_mode_check",
+      sql`${table.deliveryMode} IN ('push', 'polling')`,
+    ),
+    check(
+      "trigger_events_dedup_status_check",
+      sql`${table.dedupStatus} IN ('accepted', 'duplicate')`,
+    ),
+    check(
+      "trigger_events_delivery_admission_status_check",
+      sql`${table.deliveryAdmissionStatus} IN ('admitted', 'failed', 'not_enqueued')`,
+    ),
+    check(
+      "trigger_events_status_consistency_check",
+      sql`(${table.dedupStatus} = 'duplicate' AND ${table.deliveryAdmissionStatus} = 'not_enqueued') OR (${table.dedupStatus} = 'accepted' AND ${table.deliveryAdmissionStatus} IN ('admitted', 'failed'))`,
+    ),
+    check(
+      "trigger_events_requested_endpoint_ids_array_check",
+      sql`jsonb_typeof(${table.requestedWebhookEndpointIds}) = 'array'`,
+    ),
+    check(
+      "trigger_events_expiry_after_received_check",
+      sql`${table.expiresAt} > ${table.receivedAt}`,
+    ),
+  ],
+);
+
 export const triggerStates = pgTable("trigger_states", {
   subscriptionId: text("subscription_id").primaryKey(),
   cursor: text("cursor"),
@@ -774,6 +858,7 @@ export const postgresSchema = {
   webhookEvents,
   voiceWebhookSources,
   triggerSubscriptions,
+  triggerEvents,
   triggerStates,
   triggerDedupClaims,
 };
