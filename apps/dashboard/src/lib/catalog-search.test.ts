@@ -38,6 +38,15 @@ describe("dashboard catalog search client", () => {
     );
   });
 
+  it("preserves the HTTP status in search failures for browser recovery UI", async () => {
+    const fetch: typeof globalThis.fetch = async () =>
+      new Response(null, { status: 503 });
+
+    await expect(
+      searchCatalogTools("send email", undefined, fetch),
+    ).rejects.toThrow("Catalog search failed with HTTP 503.");
+  });
+
   it("loads one toolkit detail lazily and verifies its identity", async () => {
     let requestedUrl: string | undefined;
     const fetch: typeof globalThis.fetch = async (input) => {

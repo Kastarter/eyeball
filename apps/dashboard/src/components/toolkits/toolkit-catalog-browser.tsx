@@ -6,9 +6,9 @@ import {
   type ReactNode,
   type SyntheticEvent,
   useCallback,
-  useDeferredValue,
   useEffect,
   useMemo,
+  useReducer,
   useRef,
   useState,
 } from "react";
@@ -42,6 +42,10 @@ import {
   coerceSchemaFormValues,
   initialSchemaFormValues,
 } from "@/src/lib/schema-form";
+import {
+  normalizeToolkitSearchQuery,
+  toolkitSearchReducer,
+} from "./toolkit-search-state";
 
 export interface ToolkitCatalogBrowserProps {
   initialCapability?: string;
@@ -778,6 +782,47 @@ function ToolkitInspectorState({
   );
 }
 
+export function ToolkitSearchFailure({
+  hasDirectMatches,
+  message,
+  onRetry,
+  query,
+}: {
+  hasDirectMatches: boolean;
+  message: string;
+  onRetry: () => void;
+  query: string;
+}) {
+  return (
+    <div
+      className={hasDirectMatches ? "inline-error" : "filtered-empty"}
+      role="alert"
+    >
+      {hasDirectMatches ? (
+        <span className="taxonomy-badge taxonomy-badge--error">
+          catalog_search_failed
+        </span>
+      ) : (
+        <Icon name="activity" />
+      )}
+      {!hasDirectMatches ? <h2>Tool search could not be completed</h2> : null}
+      <p>
+        Tool search for <code>{query}</code> failed: {message}{" "}
+        {hasDirectMatches
+          ? "Local toolkit metadata matches remain available."
+          : "No direct local toolkit metadata matched this query."}
+      </p>
+      <Button
+        onClick={onRetry}
+        {...(hasDirectMatches ? { size: "small" as const } : {})}
+        variant={hasDirectMatches ? "ghost" : "secondary"}
+      >
+        Retry search
+      </Button>
+    </div>
+  );
+}
+
 export function ToolkitCatalogBrowser({
   initialCapability = "all",
   initialQuery = "",
@@ -790,20 +835,19 @@ export function ToolkitCatalogBrowser({
     (toolkit) => toolkit.slug === initialToolkit,
   );
   const [query, setQuery] = useState(initialQuery);
-  const deferredQuery = useDeferredValue(query);
   const [capability, setCapability] = useState(initialCapability);
   const [selectedToolkitSlug, setSelectedToolkitSlug] = useState(
     initialToolkitRecord?.slug,
   );
   const [selectedToolName, setSelectedToolName] = useState(initialTool);
-  const [matchedToolkitSlugs, setMatchedToolkitSlugs] = useState<
-    ReadonlySet<string>
-  >(() => new Set());
+  const [searchState, dispatchSearch] = useReducer(toolkitSearchReducer, {
+    kind: "idle",
+  });
   const [detailState, setDetailState] = useState<ToolkitDetailState>(
     initialToolkitRecord === undefined ? { kind: "idle" } : { kind: "loading" },
   );
   const [detailRequest, setDetailRequest] = useState(0);
-  const [searchPending, setSearchPending] = useState(false);
+  const [searchRequest, setSearchRequest] = useState(0);
   const detailCacheRef = useRef(new Map<string, CatalogToolkitView>());
   const inspectorTriggerRef = useRef<HTMLElement | null>(null);
 
@@ -818,33 +862,43 @@ export function ToolkitCatalogBrowser({
       .sort((left, right) => left.label.localeCompare(right.label));
   }, [toolkits]);
 
+  // biome-ignore lint/correctness/useExhaustiveDependencies: searchRequest is an explicit retry trigger for the current normalized query.
   useEffect(() => {
-    const normalized = deferredQuery.trim();
+    const normalized = normalizeToolkitSearchQuery(query);
     if (normalized.length === 0) {
-      setMatchedToolkitSlugs(new Set());
-      setSearchPending(false);
+      dispatchSearch({ type: "cleared" });
       return;
     }
     let active = true;
-    setSearchPending(true);
+    dispatchSearch({ query: normalized, type: "started" });
     const controller = new AbortController();
     searchCatalogTools(normalized, controller.signal)
       .then((tools) => {
-        if (active)
-          setMatchedToolkitSlugs(new Set(tools.map((tool) => tool.toolkit)));
+        if (active) {
+          dispatchSearch({
+            matchedToolkitSlugs: new Set(tools.map((tool) => tool.toolkit)),
+            query: normalized,
+            type: "succeeded",
+          });
+        }
       })
-      .catch(() => {
-        if (active && !controller.signal.aborted)
-          setMatchedToolkitSlugs(new Set());
-      })
-      .finally(() => {
-        if (active) setSearchPending(false);
+      .catch((caught: unknown) => {
+        if (active && !controller.signal.aborted) {
+          dispatchSearch({
+            message:
+              caught instanceof Error
+                ? caught.message
+                : "Catalog search could not be completed.",
+            query: normalized,
+            type: "failed",
+          });
+        }
       });
     return () => {
       active = false;
       controller.abort();
     };
-  }, [deferredQuery]);
+  }, [query, searchRequest]);
 
   // biome-ignore lint/correctness/useExhaustiveDependencies: detailRequest is an explicit retry trigger after a failed detail fetch.
   useEffect(() => {
@@ -948,7 +1002,12 @@ export function ToolkitCatalogBrowser({
   }
 
   const visibleToolkits = useMemo(() => {
-    const normalizedQuery = deferredQuery.trim().toLocaleLowerCase();
+    const searchQuery = normalizeToolkitSearchQuery(query);
+    const normalizedQuery = searchQuery.toLocaleLowerCase();
+    const matchedToolkitSlugs =
+      searchState.kind === "ready" && searchState.query === searchQuery
+        ? searchState.matchedToolkitSlugs
+        : new Set<string>();
     return toolkits.filter((toolkit) => {
       if (
         capability !== "all" &&
@@ -969,7 +1028,15 @@ export function ToolkitCatalogBrowser({
         .includes(normalizedQuery);
       return directMatch || matchedToolkitSlugs.has(toolkit.slug);
     });
-  }, [capability, deferredQuery, matchedToolkitSlugs, toolkits]);
+  }, [capability, query, searchState, toolkits]);
+
+  const activeSearchQuery = normalizeToolkitSearchQuery(query);
+  const searchPending =
+    searchState.kind === "loading" && searchState.query === activeSearchQuery;
+  const searchError =
+    searchState.kind === "error" && searchState.query === activeSearchQuery
+      ? searchState
+      : undefined;
 
   const selectedToolkit = toolkits.find(
     (toolkit) => toolkit.slug === selectedToolkitSlug,
@@ -1072,6 +1139,14 @@ export function ToolkitCatalogBrowser({
             BM25 tool search / local catalog
           </span>
         </div>
+        {searchError && visibleToolkits.length > 0 ? (
+          <ToolkitSearchFailure
+            hasDirectMatches
+            message={searchError.message}
+            onRetry={() => setSearchRequest((current) => current + 1)}
+            query={searchError.query}
+          />
+        ) : null}
         {visibleToolkits.length > 0 ? (
           <div className="toolkit-grid">
             {visibleToolkits.map((toolkit) => (
@@ -1082,6 +1157,22 @@ export function ToolkitCatalogBrowser({
               />
             ))}
           </div>
+        ) : searchPending ? (
+          <div className="filtered-empty" role="status">
+            <Icon name="search" />
+            <h2>Searching canonical tools</h2>
+            <p>
+              Local metadata did not match directly. Waiting for BM25 tool
+              results for <code>{activeSearchQuery}</code>.
+            </p>
+          </div>
+        ) : searchError ? (
+          <ToolkitSearchFailure
+            hasDirectMatches={false}
+            message={searchError.message}
+            onRetry={() => setSearchRequest((current) => current + 1)}
+            query={searchError.query}
+          />
         ) : (
           <div className="filtered-empty">
             <Icon name="search" />

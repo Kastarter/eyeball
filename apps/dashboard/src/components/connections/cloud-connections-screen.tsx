@@ -5,6 +5,7 @@ import {
   useCallback,
   useEffect,
   useMemo,
+  useReducer,
   useRef,
   useState,
 } from "react";
@@ -16,6 +17,7 @@ import { EmptyState } from "@/src/components/ui/empty-state";
 import { Input, Select } from "@/src/components/ui/form-controls";
 import { Icon } from "@/src/components/ui/icon";
 import { Panel } from "@/src/components/ui/panel";
+import { Skeleton } from "@/src/components/ui/skeleton";
 import { TableShell } from "@/src/components/ui/table";
 import type { CatalogToolkitSummary } from "@/src/lib/catalog";
 import {
@@ -27,6 +29,15 @@ import {
   dashboardCloudClient,
 } from "@/src/lib/cloud-api";
 import { cn } from "@/src/lib/cn";
+import {
+  DIALOG_FOCUSABLE_SELECTOR,
+  focusFirstDialogControl,
+  wrapDialogFocus,
+} from "@/src/lib/dialog-focus";
+import {
+  connectionDrawerUrl,
+  parseConnectionDrawerQuery,
+} from "./connection-drawer-state";
 
 interface HostedConnectLink {
   expiresAt: string;
@@ -85,6 +96,68 @@ function mergeConnection(
         candidate.id === connection.id ? connection : candidate,
       )
     : [connection, ...connections];
+}
+
+export interface CloudConnectionScreenError {
+  code: string;
+  message: string;
+}
+
+export interface CloudConnectionListModel {
+  connections: readonly CloudConnection[];
+  error?: CloudConnectionScreenError | undefined;
+  state: "error" | "loading" | "ready";
+}
+
+export type CloudConnectionListAction =
+  | { type: "refresh_started" }
+  | { connections: readonly CloudConnection[]; type: "refresh_succeeded" }
+  | { error: CloudConnectionScreenError; type: "refresh_failed" }
+  | { connection: CloudConnection; type: "connection_merged" };
+
+export function cloudConnectionListReducer(
+  current: CloudConnectionListModel,
+  action: CloudConnectionListAction,
+): CloudConnectionListModel {
+  switch (action.type) {
+    case "refresh_started":
+      return { connections: current.connections, state: "loading" };
+    case "refresh_succeeded":
+      return { connections: action.connections, state: "ready" };
+    case "refresh_failed":
+      return {
+        connections: current.connections,
+        error: action.error,
+        state: "error",
+      };
+    case "connection_merged":
+      return {
+        ...current,
+        connections: mergeConnection(current.connections, action.connection),
+      };
+  }
+}
+
+export function CloudConnectionLoadBanner({
+  error,
+  onRetry,
+}: {
+  error: CloudConnectionScreenError;
+  onRetry: () => void;
+}) {
+  return (
+    <div className="offline-banner" role="status">
+      <Icon name="activity" />
+      <div>
+        <strong>Cloud connection refresh failed</strong>
+        <p>{error.message}</p>
+        <small className="mono">{error.code}</small>
+      </div>
+      <Button onClick={onRetry} size="small" variant="secondary">
+        Retry
+      </Button>
+    </div>
+  );
 }
 
 export function cloudConnectionRequest({
@@ -171,15 +244,42 @@ export function confirmCloudConnectionRevocation(
 export function HostedConnectLinkDialog({
   link,
   onClose,
+  returnFocusTo,
 }: {
   link: HostedConnectLink;
   onClose: () => void;
+  returnFocusTo?: HTMLElement | null;
 }) {
+  const dialogRef = useRef<HTMLDivElement>(null);
+
+  useEffect(() => {
+    const previousOverflow = document.body.style.overflow;
+    document.body.style.overflow = "hidden";
+    focusFirstDialogControl(dialogRef.current);
+    function handleKey(event: KeyboardEvent) {
+      if (event.key === "Escape") {
+        onClose();
+        return;
+      }
+      const focusable = dialogRef.current?.querySelectorAll<HTMLElement>(
+        DIALOG_FOCUSABLE_SELECTOR,
+      );
+      wrapDialogFocus(event, [...(focusable ?? [])], document.activeElement);
+    }
+    window.addEventListener("keydown", handleKey);
+    return () => {
+      window.removeEventListener("keydown", handleKey);
+      document.body.style.overflow = previousOverflow;
+      window.requestAnimationFrame(() => returnFocusTo?.focus());
+    };
+  }, [onClose, returnFocusTo]);
+
   return (
     <div
       aria-labelledby="hosted-connect-title"
       aria-modal="true"
       className="modal-overlay"
+      ref={dialogRef}
       role="dialog"
     >
       <button
@@ -267,11 +367,16 @@ function CloudNewConnectionPanel({
   useEffect(() => {
     const previousOverflow = document.body.style.overflow;
     document.body.style.overflow = "hidden";
-    dialogRef.current
-      ?.querySelector<HTMLElement>("input, select, button")
-      ?.focus();
+    focusFirstDialogControl(dialogRef.current);
     function handleKey(event: KeyboardEvent) {
-      if (event.key === "Escape" && !submitting) onClose();
+      if (event.key === "Escape" && !submitting) {
+        onClose();
+        return;
+      }
+      const focusable = dialogRef.current?.querySelectorAll<HTMLElement>(
+        DIALOG_FOCUSABLE_SELECTOR,
+      );
+      wrapDialogFocus(event, [...(focusable ?? [])], document.activeElement);
     }
     window.addEventListener("keydown", handleKey);
     return () => {
@@ -325,7 +430,6 @@ function CloudNewConnectionPanel({
         }),
       );
       onCreated(result.connection);
-      onClose();
       if ("redirectUrl" in result) {
         onHostedLink({
           expiresAt: result.expiresAt,
@@ -333,6 +437,7 @@ function CloudNewConnectionPanel({
           toolkit: selectedToolkit.displayName,
         });
       }
+      onClose();
     } catch (caught) {
       const apiError = caught instanceof CloudApiError ? caught : undefined;
       setError({
@@ -498,8 +603,18 @@ export function CloudConnectionsScreen({
   project,
   toolkits,
 }: CloudConnectionsScreenProps) {
-  const [connections, setConnections] =
-    useState<readonly CloudConnection[]>(initialConnections);
+  const [connectionList, dispatchConnectionList] = useReducer(
+    cloudConnectionListReducer,
+    {
+      connections: initialConnections,
+      state: "ready",
+    },
+  );
+  const {
+    connections,
+    error: loadError,
+    state: connectionListState,
+  } = connectionList;
   const [query, setQuery] = useState("");
   const [statusFilter, setStatusFilter] = useState<
     CloudConnectionStatus | "all"
@@ -514,6 +629,9 @@ export function CloudConnectionsScreen({
     message: string;
   }>();
   const triggerRef = useRef<HTMLElement | null>(null);
+  const hostedLinkTriggerRef = useRef<HTMLElement | null>(null);
+  const suppressDrawerFocusRestoreRef = useRef(false);
+  const listRequestRef = useRef<AbortController | undefined>(undefined);
   const toolkitBySlug = useMemo(
     () => new Map(toolkits.map((toolkit) => [toolkit.slug, toolkit])),
     [toolkits],
@@ -521,19 +639,28 @@ export function CloudConnectionsScreen({
 
   const refresh = useCallback(
     async (signal?: AbortSignal) => {
+      dispatchConnectionList({ type: "refresh_started" });
       try {
         const page = await dashboardCloudClient().listConnections(
           project,
           signal,
         );
-        if (!signal?.aborted) setConnections(page.connections);
+        if (!signal?.aborted) {
+          dispatchConnectionList({
+            connections: page.connections,
+            type: "refresh_succeeded",
+          });
+        }
       } catch (caught) {
         if (signal?.aborted) return;
         const apiError = caught instanceof CloudApiError ? caught : undefined;
-        setActionError({
-          code: apiError?.code ?? "cloud_unavailable",
-          message:
-            apiError?.message ?? "Connection data could not be refreshed.",
+        dispatchConnectionList({
+          error: {
+            code: apiError?.code ?? "cloud_unavailable",
+            message:
+              apiError?.message ?? "Connection data could not be refreshed.",
+          },
+          type: "refresh_failed",
         });
       }
     },
@@ -542,9 +669,33 @@ export function CloudConnectionsScreen({
 
   useEffect(() => {
     const controller = new AbortController();
+    listRequestRef.current = controller;
     void refresh(controller.signal);
     return () => controller.abort();
   }, [refresh]);
+
+  useEffect(() => () => listRequestRef.current?.abort(), []);
+
+  const retryRefresh = useCallback(() => {
+    listRequestRef.current?.abort();
+    const controller = new AbortController();
+    listRequestRef.current = controller;
+    void refresh(controller.signal);
+  }, [refresh]);
+
+  useEffect(() => {
+    function restorePanelState() {
+      const next = parseConnectionDrawerQuery(
+        new URL(window.location.href),
+      ).newConnectionOpen;
+      setNewConnectionOpen(next);
+      if (!next) {
+        window.requestAnimationFrame(() => triggerRef.current?.focus());
+      }
+    }
+    window.addEventListener("popstate", restorePanelState);
+    return () => window.removeEventListener("popstate", restorePanelState);
+  }, []);
 
   const visibleConnections = connections.filter((connection) => {
     const normalized = query.trim().toLocaleLowerCase();
@@ -565,18 +716,40 @@ export function CloudConnectionsScreen({
     );
   });
 
-  function openNewConnection() {
+  const openNewConnection = useCallback(() => {
     triggerRef.current =
       document.activeElement instanceof HTMLElement
         ? document.activeElement
         : null;
     setNewConnectionOpen(true);
-  }
+    window.history.pushState(
+      {},
+      "",
+      connectionDrawerUrl(new URL(window.location.href), true),
+    );
+  }, []);
 
-  function closeNewConnection() {
+  const closeNewConnection = useCallback(() => {
+    const restoreFocus = !suppressDrawerFocusRestoreRef.current;
+    suppressDrawerFocusRestoreRef.current = false;
     setNewConnectionOpen(false);
-    window.requestAnimationFrame(() => triggerRef.current?.focus());
-  }
+    window.history.replaceState(
+      {},
+      "",
+      connectionDrawerUrl(new URL(window.location.href), false),
+    );
+    if (restoreFocus) {
+      window.requestAnimationFrame(() => triggerRef.current?.focus());
+    }
+  }, []);
+
+  const closeHostedLink = useCallback(() => setHostedLink(undefined), []);
+
+  const showHostedLinkFromDrawer = useCallback((link: HostedConnectLink) => {
+    hostedLinkTriggerRef.current = triggerRef.current;
+    suppressDrawerFocusRestoreRef.current = true;
+    setHostedLink(link);
+  }, []);
 
   async function revoke(connection: CloudConnection) {
     if (!confirmCloudConnectionRevocation(connection, window.confirm)) return;
@@ -586,7 +759,7 @@ export function CloudConnectionsScreen({
       const result = (
         await dashboardCloudClient().revokeConnection(project, connection.id)
       ).connection;
-      setConnections((current) => mergeConnection(current, result));
+      dispatchConnectionList({ connection: result, type: "connection_merged" });
     } catch (caught) {
       const apiError = caught instanceof CloudApiError ? caught : undefined;
       setActionError({
@@ -603,6 +776,10 @@ export function CloudConnectionsScreen({
   }
 
   async function reauthorize(connection: CloudConnection) {
+    const reauthorizeTrigger =
+      document.activeElement instanceof HTMLElement
+        ? document.activeElement
+        : null;
     setActionError(undefined);
     setBusy((current) => new Set(current).add(connection.id));
     try {
@@ -610,7 +787,11 @@ export function CloudConnectionsScreen({
         project,
         connection.id,
       );
-      setConnections((current) => mergeConnection(current, result.connection));
+      dispatchConnectionList({
+        connection: result.connection,
+        type: "connection_merged",
+      });
+      hostedLinkTriggerRef.current = reauthorizeTrigger;
       setHostedLink({
         expiresAt: result.expiresAt,
         redirectUrl: result.redirectUrl,
@@ -667,10 +848,27 @@ export function CloudConnectionsScreen({
           <span>need attention</span>
         </div>
         <div className="connection-summary__executor">
-          <span className="status-dot status-dot--success" />
-          Cloud vault connected
+          <span
+            className={cn(
+              "status-dot",
+              connectionListState === "ready"
+                ? "status-dot--success"
+                : connectionListState === "loading"
+                  ? "status-dot--accent status-dot--pulse"
+                  : "status-dot--error",
+            )}
+          />
+          {connectionListState === "ready"
+            ? "Cloud vault connected"
+            : connectionListState === "loading"
+              ? "Refreshing cloud vault"
+              : "Cloud vault attention required"}
         </div>
       </section>
+
+      {connectionListState === "error" && loadError ? (
+        <CloudConnectionLoadBanner error={loadError} onRetry={retryRefresh} />
+      ) : null}
 
       {actionError ? (
         <div className="inline-error" role="alert">
@@ -678,13 +876,43 @@ export function CloudConnectionsScreen({
             {actionError.code}
           </span>
           <p>{actionError.message}</p>
-          <Button onClick={() => void refresh()} size="small" variant="ghost">
-            Retry
-          </Button>
         </div>
       ) : null}
 
-      {connections.length === 0 ? (
+      {connectionListState === "loading" && connections.length === 0 ? (
+        <section
+          aria-label="Cloud connections loading"
+          className="connections-loading"
+        >
+          <div className="connections-loading__filters">
+            <Skeleton
+              height={38}
+              label="Cloud connection search loading"
+              width="min(100%, 420px)"
+            />
+            <Skeleton height={38} label="Status filter loading" width={124} />
+          </div>
+          {["one", "two", "three"].map((row) => (
+            <div className="connections-loading__row" key={row}>
+              <Skeleton
+                height={14}
+                label="Cloud connection identity loading"
+                width="32%"
+              />
+              <Skeleton
+                height={14}
+                label="Cloud connection toolkit loading"
+                width="18%"
+              />
+              <Skeleton
+                height={24}
+                label="Cloud connection status loading"
+                width={92}
+              />
+            </div>
+          ))}
+        </section>
+      ) : connections.length === 0 && connectionListState === "ready" ? (
         <EmptyState
           actions={
             <Button
@@ -699,7 +927,7 @@ export function CloudConnectionsScreen({
           description="Choose a toolkit, bind it to an external user ID, then provide API-key fields or share the returned hosted OAuth link."
           title="No cloud connections"
         />
-      ) : (
+      ) : connections.length > 0 ? (
         <section className="connections-table-section">
           <div className="table-filters">
             <label className="table-filters__search">
@@ -835,15 +1063,18 @@ export function CloudConnectionsScreen({
             </TableShell>
           )}
         </section>
-      )}
+      ) : null}
 
       {newConnectionOpen ? (
         <CloudNewConnectionPanel
           onClose={closeNewConnection}
           onCreated={(connection) =>
-            setConnections((current) => mergeConnection(current, connection))
+            dispatchConnectionList({
+              connection,
+              type: "connection_merged",
+            })
           }
-          onHostedLink={setHostedLink}
+          onHostedLink={showHostedLinkFromDrawer}
           oauthApps={oauthApps}
           oauthRedirectOrigins={oauthRedirectOrigins}
           project={project}
@@ -853,7 +1084,8 @@ export function CloudConnectionsScreen({
       {hostedLink ? (
         <HostedConnectLinkDialog
           link={hostedLink}
-          onClose={() => setHostedLink(undefined)}
+          onClose={closeHostedLink}
+          returnFocusTo={hostedLinkTriggerRef.current}
         />
       ) : null}
     </div>

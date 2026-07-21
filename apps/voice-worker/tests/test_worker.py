@@ -206,6 +206,15 @@ def test_config_normalizes_blank_optional_compose_values() -> None:
     assert docker_config.executor_url == "http://host.docker.internal:8787"
 
 
+def test_compose_forwards_fake_transport_opt_in() -> None:
+    compose = (Path(__file__).resolve().parents[1] / "compose.yaml").read_text()
+
+    assert (
+        "EYEBALL_VOICE_ALLOW_FAKE_TRANSPORT: "
+        "${EYEBALL_VOICE_ALLOW_FAKE_TRANSPORT:-false}"
+    ) in compose
+
+
 def test_start_contract_rejects_noncanonical_fake_tool_names() -> None:
     payload = start_payload()
     payload["transport"]["turns"][0]["toolCall"]["name"] = "gmail__send_email"

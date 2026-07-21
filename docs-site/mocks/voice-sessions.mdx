@@ -18,7 +18,140 @@ Deepgram maps fixture audio IDs to timed text. ElevenLabs maps text to stable au
 
 The harness uses `MockCredentialProvider`, the normal executor, real schema validation, and real allowlist enforcement. It does not add a test-only field to the production agent definition.
 
-Use the full [restaurant reservation tutorial](/capabilities/voice-agents) to create the agent, start a scripted call, poll events, and inspect the transcript artifact.
+This zero-account smoke test creates an agent through the ordinary SDK, starts a scripted
+session, advances the development clock, and verifies that the child tool execution remains
+traceable through both the ordered event log and transcript:
+
+```ts
+import { Eyeball } from "@eyeball/sdk";
+
+const eyeball = new Eyeball({
+  apiKey: process.env.EYEBALL_API_KEY!,
+  baseUrl: process.env.EYEBALL_EXECUTOR_URL!,
+});
+const executorUrl = process.env.EYEBALL_EXECUTOR_URL!.replace(/\/$/u, "");
+const userId = "voice_mock_smoke";
+const object = (value: unknown): Record<string, unknown> => {
+  if (typeof value !== "object" || value === null || Array.isArray(value)) {
+    throw new Error("Expected an object");
+  }
+  return value as Record<string, unknown>;
+};
+
+const created = object(
+  await eyeball.tools.run(
+    "voice-agents.create_voice_agent",
+    {
+      agent: {
+        name: "Mock confirmation agent",
+        systemPrompt: "Send the confirmation requested by the scripted caller.",
+        llm: { model: "model:fixture:voice-smoke" },
+        voice: {
+          tts: { provider: "elevenlabs", voiceId: "voice_fixture_smoke" },
+          stt: { provider: "deepgram", model: "nova-3", language: "en" },
+        },
+        transport: "pstn:twilio",
+        tools: ["gmail.send_email"],
+        guardrails: {
+          maxDurationSeconds: 60,
+          handoffToHuman: { enabled: false },
+        },
+        webhooks: {
+          endpointIds: [],
+          transcript: true,
+          events: ["session.lifecycle", "turn.transcript", "tool_call", "tool_result"],
+        },
+        recordingPolicy: {
+          mode: "disabled",
+          consent: "external",
+          retentionDays: 0,
+          redactDtmf: true,
+        },
+      },
+    },
+    { userId, idempotencyKey: "voice-smoke:create-agent" },
+  ),
+);
+const agent = object(created.agent);
+
+const pending = await eyeball.tools.execute("voice-agents.start_agent_call", {
+  userId,
+  mode: "async",
+  idempotencyKey: "voice-smoke:start-session",
+  input: {
+    agentId: String(agent.id),
+    revision: Number(agent.revision),
+    to: "+12025550111",
+    from: "+12025550112",
+    transportConnectionId: "conn_twilio_voice_smoke",
+    script: [
+      { caller: "Send the confirmation to sam@example.com." },
+      {
+        expect_tool_call: "gmail.send_email",
+        input: {
+          to: ["sam@example.com"],
+          subject: "Confirmed",
+          body: "Your mock voice session completed.",
+        },
+      },
+    ],
+  },
+});
+const started = await eyeball.executions.wait(pending.executionId);
+if (started.status !== "succeeded") throw new Error("Session failed to start");
+const sessionId = String(object(object(started.output).session).id);
+
+let afterSequence = 0;
+let state = "created";
+const events: Record<string, unknown>[] = [];
+while (!["completed", "failed", "abandoned"].includes(state)) {
+  const advanced = await fetch(
+    `${executorUrl}/v1/dev/voice-sessions/${sessionId}/advance`,
+    {
+      method: "POST",
+      headers: {
+        authorization: `Bearer ${process.env.EYEBALL_API_KEY!}`,
+        "content-type": "application/json",
+      },
+      body: JSON.stringify({ userId, milliseconds: 1_000 }),
+    },
+  );
+  if (!advanced.ok) throw new Error(`Clock advance returned ${advanced.status}`);
+
+  const page = object(
+    await eyeball.tools.run(
+      "voice-agents.get_agent_session",
+      { sessionId, afterSequence, eventLimit: 100 },
+      { userId },
+    ),
+  );
+  const pageEvents = Array.isArray(page.events) ? page.events.map(object) : [];
+  events.push(...pageEvents);
+  afterSequence = Number(page.nextSequence);
+  state = String(object(page.session).state);
+}
+
+const eventTypes = events.map((event) => String(object(event.data).type));
+if (!eventTypes.includes("tool_call") || !eventTypes.includes("tool_result")) {
+  throw new Error("Expected the scripted child tool events");
+}
+const transcript = object(
+  await eyeball.tools.run(
+    "voice-agents.get_session_transcript",
+    { sessionId },
+    { userId },
+  ),
+);
+const turnsValue = object(transcript.artifact).turns;
+const turns = Array.isArray(turnsValue) ? turnsValue.map(object) : [];
+const toolTurns = turns.filter((turn) => turn.speaker === "tool");
+if (toolTurns.length !== 1 || typeof toolTurns[0]?.executionId !== "string") {
+  throw new Error("Expected one traceable child execution in the transcript");
+}
+console.log({ sessionId, childExecutionId: toolTurns[0].executionId });
+```
+
+Use the full [restaurant reservation tutorial](/capabilities/voice-agents) for a two-tool flow and transcript walkthrough.
 
 <Tip>
   Advance the controllable clock for ringing, connection, silence, maximum duration, wrap-up, failure, and abandonment. Never sleep in a voice contract test.

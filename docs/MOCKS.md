@@ -6,6 +6,11 @@
 - HTTP framework: Hono
 - Consumers: executor, SDK, MCP gateway, contract tests, and end-to-end agent loops
 
+Implementation coverage: the nested mocks repository currently contains eight workspaces,
+164 tests, and 30 provider services mounted by Mockhouse. That implementation count is
+separate from the frozen 34-slug catalog 1.0 specification in section 6: several slugs share
+one mounted provider service, while the catalog 1.1 `voice-agents` toolkit is counted separately.
+
 ## 1. Purpose and conformance
 
 `eyeball-mocks` is a standalone repository of deterministic mock provider APIs for the
@@ -297,7 +302,7 @@ the canonical lists below; provider subsets remain explicit and missing tools mu
 | Calendar | `list_calendars`, `list_events`, `get_event`, `create_event`, `update_event`, `delete_event`, `find_available_times`, `create_scheduling_link`, `respond_to_event` |
 | Messaging | `send_message`, `list_channels`, `list_messages`, `get_message`, `reply_to_message`, `add_reaction`, `create_channel`, `list_members` |
 | Voice | `start_call`, `get_call`, `list_calls`, `end_call`, `transfer_call`, `send_dtmf`, `create_room`, `join_room`, `synthesize_speech`, `transcribe_audio`, `start_voice_pipeline`, `get_voice_pipeline` |
-| Voice agents (catalog 1.1) | `create_voice_agent`, `get_voice_agent`, `list_voice_agents`, `update_voice_agent`, `delete_voice_agent`, `start_agent_call`, `attach_agent_to_number`, `get_agent_session`, `list_agent_sessions`, `get_session_transcript`, `send_session_message` |
+| Voice agents (catalog 1.1) | `create_voice_agent`, `get_voice_agent`, `list_voice_agents`, `update_voice_agent`, `delete_voice_agent`, `start_agent_call`, `create_web_session`, `buy_number`, `list_numbers`, `attach_agent_to_number`, `detach_number`, `release_number`, `get_agent_session`, `list_agent_sessions`, `get_session_transcript`, `send_session_message`, `stop_agent_session` |
 | SMS | `send_sms`, `get_sms`, `list_sms`, `send_mms`, `get_delivery_status`, `send_verification_code`, `check_verification_code` |
 | CRM | contact/company/deal CRUD subsets, `list_activities`, `add_note` |
 | ERP/accounting | customer, invoice, bill, payment, account, journal, and record-search operations |
@@ -315,7 +320,7 @@ the canonical lists below; provider subsets remain explicit and missing tools mu
 ```text
 eyeball-mocks/
   apps/mockhouse/                 # combined CLI and server composition
-  packages/shared/mock-kit/       # clock, stores, IDs, auth, controls, server API
+  packages/mock-kit/              # clock, stores, IDs, auth, controls, server API
   packages/mocks-email/           # Gmail, Microsoft Outlook
   packages/mocks-messaging/       # Slack, Discord, Telegram, WhatsApp Business
   packages/mocks-voice/           # Twilio, LiveKit, Pipecat, ElevenLabs, Deepgram, voice-agents
@@ -330,7 +335,7 @@ eyeball-mocks/
 
 ### 8.1 Package responsibilities
 
-`shared/mock-kit` owns no provider routes. It supplies `startMockServer`, Hono composition,
+`packages/mock-kit` owns no provider routes. It supplies `startMockServer`, Hono composition,
 control handlers, the simulated clock, deterministic IDs, store primitives, auth triggers,
 fixture validation, and shared test assertions.
 

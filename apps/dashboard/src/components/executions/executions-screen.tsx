@@ -48,6 +48,7 @@ export interface ExecutionFilters {
 }
 
 export interface ExecutionsScreenProps {
+  emptySnippet: string;
   initialExecution?: string;
   initialExecutionDetail?: ExecutionRecord;
   initialExecutions?: readonly ExecutionRecord[];
@@ -374,6 +375,7 @@ function ExecutionDrawer({
 }
 
 export function ExecutionsScreen({
+  emptySnippet,
   initialExecution,
   initialExecutionDetail,
   initialExecutions,
@@ -672,7 +674,7 @@ export function ExecutionsScreen({
             </div>
           ) : (
             <EmptyState
-              code={`await eyeball.tools.execute("gmail.send_email", {\n  input: { to: ["sam@example.com"], subject: "Hello", body: "Hi" }\n});`}
+              code={emptySnippet}
               description="Every synchronous and asynchronous tool call will appear here with its normalized terminal envelope."
               title="No executions yet"
             />

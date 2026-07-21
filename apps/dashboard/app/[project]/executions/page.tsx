@@ -1,5 +1,6 @@
 import type { Metadata } from "next";
 import { ExecutionsScreen } from "@/src/components/executions/executions-screen";
+import { executionEmptySnippet } from "@/src/lib/catalog-examples";
 
 export const metadata: Metadata = { title: "Executions" };
 
@@ -23,6 +24,7 @@ export default async function Page({
   const userId = first(query.userId);
   return (
     <ExecutionsScreen
+      emptySnippet={executionEmptySnippet}
       {...(execution === undefined ? {} : { initialExecution: execution })}
       initialFilters={{
         ...(status === "pending" ||

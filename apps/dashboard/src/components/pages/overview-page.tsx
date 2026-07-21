@@ -2,11 +2,15 @@ import Link from "next/link";
 import { CodeBlock } from "@/src/components/ui/code-block";
 import { Icon } from "@/src/components/ui/icon";
 import type { CatalogMetrics } from "@/src/lib/catalog";
+import {
+  formatCatalogExampleInput,
+  gmailSendEmailExampleInput,
+} from "@/src/lib/catalog-examples";
 import { ExecutorHealthCard } from "./executor-health";
 import { OverviewActivity } from "./overview-activity";
 import { PageHeader } from "./page-header";
 
-const quickstart = `import { Eyeball } from "@eyeball/sdk";
+export const overviewQuickstart = `import { Eyeball } from "@eyeball/sdk";
 
 const eb = new Eyeball({
   apiKey: process.env.EYEBALL_API_KEY!,
@@ -20,11 +24,7 @@ await eb.connections.create({
 
 await eb.tools.execute("gmail.send_email", {
   userId: "user_123",
-  input: {
-    to: ["agent@example.com"],
-    subject: "Hello from eyeball",
-    text: "Your first tool call is observable.",
-  },
+  input: ${formatCatalogExampleInput(gmailSendEmailExampleInput, 2)},
 });`;
 
 export function OverviewPage({
@@ -108,7 +108,10 @@ export function OverviewPage({
             </li>
           </ol>
         </div>
-        <CodeBlock code={quickstart} label="Three-step SDK quickstart" />
+        <CodeBlock
+          code={overviewQuickstart}
+          label="Three-step SDK quickstart"
+        />
       </section>
     </div>
   );

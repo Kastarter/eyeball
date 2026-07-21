@@ -99,7 +99,9 @@ Open-core tool and integration platform for AI agents: one typed, authenticated 
 - The project Files surface stages local files as padded base64 and lists metadata-only staged files behind the project-authority `/v1/files` route; the toolkit Try-It panel renders staged-file attachment pickers for attachment-capable canonical tools and submits `fileId` references only.
 - Execution detail/list now project a durable first-write-wins replay observation without rewriting terminal JSON, verified voice children link back to exact historical sessions under their execution user, and attachment-capable executions retain distinct staged-file IDs/count only; the dashboard renders canonical `error.retryAfter` seconds and preserves the explicit rate/retry response-header allowlist.
 - The dashboard voice panel activates `webrtc:livekit` agents through `create_web_session` (join grant shown only from the create response and discarded on dismiss) and manages the owned-number inventory with buy/attach/detach/release flows; release stays disabled while a number is bound.
-- Cloud mode has full Billing and Organization surfaces for usage, plan changes, members, BYO OAuth apps, redirect origins, organization rename, and audit navigation; OAuth connection setup can select an app and validated return URL, and the dashboard suite has 110 serial tests.
+- Cloud mode has full Billing and Organization surfaces for usage, plan changes, members, BYO OAuth apps, redirect origins, organization rename, and audit navigation; OAuth connection setup can select an app and validated return URL, and the dashboard suite has 137 serial tests.
+- Dashboard connection drawers and hosted-link dialogs now preserve query/history state and keyboard focus; executor and cloud connection lists distinguish confirmed-empty data from load failures, and toolkit semantic search exposes query-keyed failures and retry without applying stale matches.
+- Advertised canonical-tool snippets are generated or validated from catalog schemas, including the Gmail quickstart's required `body`; the dedicated mock-session and self-hosted worker docs include independently runnable provider-free end-to-end TypeScript examples, and the worker Compose path forwards the explicit fake-transport opt-in with a secure `false` default.
 - Search-mode MCP exposes both discovery and a generic executor-backed dispatch tool.
 - MCP Streamable HTTP supports JSON and SSE POST responses, authenticated GET event streams, DELETE teardown, one-way credential-and-scope-bound sessions, and opt-in 2025-11-25 Tasks with execution-backed polling and progress notifications.
 - `pnpm dev:stack` boots 30-provider Mockhouse, executor, and MCP gateway with dev connections.
@@ -123,7 +125,7 @@ Open-core tool and integration platform for AI agents: one typed, authenticated 
 
 ## Known Issues
 
-- The read-only nested `mocks/README.md` still reports 163 tests; the current suite is expected to report 164 after the Twilio number-inventory addition and must be corrected in that repository by its owner.
+- The nested `mocks/README.md` count is corrected to 164 in local, unpushed commit `babba0d`; `mocks/CLAUDE.md` still reports 163 because M5.6 explicitly permitted only the README change, so the residual should be corrected in a later nested-repository change.
 - The Activepieces spike is not a production breadth layer: pieces need per-tool canonical mappings, isolated execution/egress, auth alignment, license provenance, and mock/real certification before catalog promotion; do not vendor the monorepo wholesale.
 - Hosted OAuth and billing are implemented in private cloud source, but cloud deployment/KMS/backup operations, live Stripe/provider validation, license finalization, and real-provider certification are not complete.
 - Cloud dashboard executor keys are not auto-provisioned into UI sessions; an operator must copy a reveal-once project key into each selected project's Settings screen.

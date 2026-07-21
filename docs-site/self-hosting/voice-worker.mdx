@@ -120,6 +120,123 @@ PYTHONPATH=src python -m pytest
 
 The fake transport is accepted only with both `EYEBALL_VOICE_MEDIA_MODE=fake` and `EYEBALL_VOICE_ALLOW_FAKE_TRANSPORT=true`. Tests prove ordered HTTP event pages, stable child identity, restart replay, allowlist enforcement, chat concurrency/idempotency, the Anthropic tool-result message shape through an injected fake SDK, control authentication, and deterministic Twilio request/media-URL construction. They do not prove provider acceptance or audio behavior.
 
+For a provider-free control-plane smoke test, start the worker with the test-only transport
+explicitly enabled and no provider credentials:
+
+```bash
+EYEBALL_VOICE_MEDIA_MODE=fake \
+EYEBALL_VOICE_ALLOW_FAKE_TRANSPORT=true \
+EYEBALL_VOICE_WORKER_TOKEN='replace-with-a-long-random-token' \
+  docker compose --env-file .env up --build
+```
+
+Then create a fake session over the v2 HTTP contract, wait for its terminal state, and verify
+the persisted event page has a gap-free sequence. The supplied assistant turn means this path
+does not call a model provider.
+
+```ts
+export {};
+
+const workerUrl = process.env.EYEBALL_VOICE_WORKER_URL!.replace(/\/$/u, "");
+const controlToken = process.env.EYEBALL_VOICE_WORKER_TOKEN!;
+const contractVersion = "eyeball.voice-worker.v2";
+const sessionId = `session_${crypto.randomUUID().replaceAll("-", "")}`;
+const terminalStates = new Set(["completed", "failed", "abandoned"]);
+
+const object = (value: unknown): Record<string, unknown> => {
+  if (typeof value !== "object" || value === null || Array.isArray(value)) {
+    throw new Error("Expected an object");
+  }
+  return value as Record<string, unknown>;
+};
+const headers = {
+  authorization: `Bearer ${controlToken}`,
+  "content-type": "application/json",
+  "X-Eyeball-Voice-Worker-Version": contractVersion,
+};
+const workerRequest = async (
+  path: string,
+  init?: RequestInit,
+): Promise<Record<string, unknown>> => {
+  const response = await fetch(`${workerUrl}${path}`, {
+    ...init,
+    headers: { ...headers, ...init?.headers },
+  });
+  if (!response.ok) {
+    throw new Error(`${init?.method ?? "GET"} ${path} returned ${response.status}`);
+  }
+  return object(await response.json());
+};
+
+const created = await workerRequest("/v1/sessions", {
+  method: "POST",
+  body: JSON.stringify({
+    contractVersion,
+    sessionId,
+    scope: { projectId: "proj_worker_smoke", userId: "user_worker_smoke" },
+    agent: {
+      id: "va_worker_smoke",
+      revision: 1,
+      systemPrompt: "Return the scripted assistant response.",
+      llm: { provider: "anthropic", model: "fixture/provider-free" },
+      voice: {},
+      allowedTools: [],
+      guardrails: {
+        maxDurationSeconds: 30,
+        handoffToHuman: { enabled: false },
+      },
+      webhooks: { endpointIds: [], transcript: true, events: [] },
+      recordingPolicy: {
+        mode: "disabled",
+        consent: "external",
+        retentionDays: 0,
+        redactDtmf: true,
+      },
+      bargeIn: { enabled: true },
+    },
+    transport: {
+      kind: "fake",
+      turns: [
+        {
+          caller: "Is the control plane durable?",
+          assistant: "Yes. This response came from the fake transport.",
+          delayMs: 0,
+        },
+      ],
+    },
+  }),
+});
+if (created.contractVersion !== contractVersion) {
+  throw new Error("Worker returned the wrong contract version");
+}
+
+let state = String(object(created.session).state);
+for (let attempt = 0; attempt < 100 && !terminalStates.has(state); attempt += 1) {
+  await new Promise((resolve) => setTimeout(resolve, 25));
+  const snapshot = await workerRequest(`/v1/sessions/${sessionId}`);
+  state = String(object(snapshot.session).state);
+}
+if (state !== "completed") throw new Error(`Fake session ended in ${state}`);
+
+const page = await workerRequest(
+  `/v1/sessions/${sessionId}/events?afterSequence=0&limit=200`,
+);
+const eventsValue = page.events;
+const events = Array.isArray(eventsValue) ? eventsValue.map(object) : [];
+const sequences = events.map((event) => Number(event.sequence));
+if (
+  sequences.length === 0 ||
+  sequences.some((sequence, index) => sequence !== index + 1) ||
+  Number(page.nextSequence) !== sequences.at(-1)
+) {
+  throw new Error(`Event history is not gap-free: ${sequences.join(", ")}`);
+}
+console.log({ sessionId, state, sequences });
+```
+
+This smoke test certifies only the provider-free v2 control plane. It does not certify the
+Twilio, LiveKit, Deepgram, ElevenLabs, or model-provider live paths.
+
 ## Current operational boundaries
 
 - Run exactly one worker replica per SQLite volume. Multi-replica scheduling needs a distributed repository and session lease.

@@ -1,7 +1,7 @@
 # eyeball — Planned work
 
 State as of 2026-07-21. The 0.2.0 source cut is complete, M5 is underway with
-M5.5 complete, and two audit sweeps
+M5.6 complete, and two audit sweeps
 (cross-feature wiring; dashboard/SDK/docs parity) produced a milestone-ordered
 gap ledger. Milestones **M1 (hosted execution slice)**, **M2 (billing as a
 product)**, **M3 (restart-state durability)**, and **M4 (voice hardening)** are
@@ -79,15 +79,17 @@ change. Never bind ports in tests; use in-process apps (`app.request`, PGlite).
   `retryAfter` seconds and the executor proxy forwards the explicit
   `RateLimit-*`/`Retry-After` allowlist. Raw idempotency keys, canonical inputs,
   and file bytes remain private. A-07..A-10 closed.
+- M5.6 XS polish batch: cloud connection drawers and the hosted-link dialog now
+  preserve URL/history and keyboard-focus contracts; toolkit search has
+  query-keyed loading/error/retry state; executor and cloud connection lists
+  separate load from action failures and gate confirmed-empty states; canonical
+  dashboard tool snippets are schema-generated or validated; mock coverage
+  documentation is reconciled; the nested README has a local unpushed 164-test
+  correction; and both dedicated voice pages include standalone provider-free
+  end-to-end TypeScript examples. A-11..A-15, D-01, D-02, and C-01 closed.
 
 ## M5 — Local dashboard surfaces (demo mode; executor APIs mostly exist)
 
-11. **M5.6 XS polish batch.** Drawer/search/connection error-state fidelity
-    (A-11..A-14); **A-15: the overview quickstart sends `text` instead of
-    `body` — the advertised first execution fails schema validation** (fix +
-    source snippets from the catalog); stale MOCKS.md coverage note (D-01);
-    mocks README test count 163→164 (D-02, edit inside `mocks/` repo); voice
-    docs end-to-end snippets (C-01).
 12. **M5.7 Trigger event history (L).** No queryable trigger-event API exists —
     add a redacted project-scoped `TriggerEventStore`, paginated
     `GET /v1/trigger-events`, SDK client, and a recent-events UI. A-03.

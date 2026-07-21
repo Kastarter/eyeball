@@ -1,3 +1,9 @@
+import {
+  formatCatalogExampleInput,
+  gmailSendEmailExampleInput,
+  validateCatalogExampleInput,
+} from "./catalog-examples";
+
 export interface RouteScaffoldContent {
   action: string;
   description: string;
@@ -8,6 +14,39 @@ export interface RouteScaffoldContent {
   snippet: string;
   title: string;
 }
+
+const voiceAgentDraft = {
+  name: "Table host",
+  systemPrompt: "Confirm time, party size, and email.",
+  llm: { model: "project/default-conversation" },
+  voice: {
+    tts: { provider: "elevenlabs", voiceId: "warm-host" },
+    stt: { provider: "deepgram" },
+  },
+  transport: "chat",
+  tools: ["google-calendar.create_event"],
+  guardrails: {
+    maxDurationSeconds: 600,
+    handoffToHuman: { enabled: false },
+  },
+  webhooks: { endpointIds: [], transcript: true, events: [] },
+  recordingPolicy: {
+    mode: "disabled",
+    consent: "external",
+    retentionDays: 0,
+    redactDtmf: true,
+  },
+};
+
+const validatedVoiceAgentInput = validateCatalogExampleInput(
+  "voice-agents.create_voice_agent",
+  { agent: voiceAgentDraft },
+);
+const validatedVoiceAgentDraft = JSON.stringify(
+  validatedVoiceAgentInput.agent,
+  null,
+  2,
+);
 
 export const routeContent = {
   toolkits: {
@@ -63,28 +102,7 @@ const connection = await eb.connections.create({
     emptyTitle: "No voice agents defined",
     eyebrow: "Definitions and sessions",
     previewLabel: "Definition builder and live test panel",
-    snippet: `const draft = {
-  name: "Table host",
-  systemPrompt: "Confirm time, party size, and email.",
-  llm: { model: "project/default-conversation" },
-  voice: {
-    tts: { provider: "elevenlabs", voiceId: "warm-host" },
-    stt: { provider: "deepgram" },
-  },
-  transport: "chat",
-  tools: ["google-calendar.create_event"],
-  guardrails: {
-    maxDurationSeconds: 600,
-    handoffToHuman: { enabled: false },
-  },
-  webhooks: { endpointIds: [], transcript: true, events: [] },
-  recordingPolicy: {
-    mode: "disabled",
-    consent: "external",
-    retentionDays: 0,
-    redactDtmf: true,
-  },
-};
+    snippet: `const draft = ${validatedVoiceAgentDraft};
 
 await eb.tools.execute("voice-agents.create_voice_agent", {
   userId: "user_123",
@@ -103,11 +121,7 @@ await eb.tools.execute("voice-agents.create_voice_agent", {
     previewLabel: "Streaming execution table and inspector",
     snippet: `const result = await eb.tools.execute("gmail.send_email", {
   userId: "user_123",
-  input: {
-    to: ["agent@example.com"],
-    subject: "First eyeball call",
-    text: "The executor is connected.",
-  },
+  input: ${formatCatalogExampleInput(gmailSendEmailExampleInput, 2)},
 });
 
 const execution = await eb.executions.get(result.executionId);`,

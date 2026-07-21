@@ -41,6 +41,7 @@ describe("ExecutionsScreen server rendering", () => {
   it("renders the filterable execution table and pagination affordance", () => {
     const markup = renderToStaticMarkup(
       <ExecutionsScreen
+        emptySnippet="fixture snippet"
         initialExecutions={[failedExecution]}
         initialFilters={{ status: "failed", tool: "gmail.send_email" }}
         initialNextCursor="cursor_next"
@@ -62,6 +63,7 @@ describe("ExecutionsScreen server rendering", () => {
   it("renders a deep-linked detail drawer with the public execution record", () => {
     const markup = renderToStaticMarkup(
       <ExecutionsScreen
+        emptySnippet="fixture snippet"
         initialExecution={failedExecution.executionId}
         initialExecutionDetail={failedExecution}
         initialExecutions={[failedExecution]}
