@@ -9,7 +9,15 @@ import {
   useState,
 } from "react";
 import { PageHeader } from "@/src/components/pages/page-header";
-import { Button, CodeBlock, Icon, Input, Select } from "@/src/components/ui";
+import {
+  Button,
+  CodeBlock,
+  CopyButton,
+  Icon,
+  Input,
+  Select,
+  TableShell,
+} from "@/src/components/ui";
 import {
   dashboardExecutorClient,
   type ExecuteToolResponse,
@@ -230,6 +238,22 @@ async function runVoiceTool(
   return outputRecord(await terminalExecution(execution));
 }
 
+async function resolveTransportConnectionId(toolkit: string): Promise<string> {
+  const page = await dashboardExecutorClient().listConnections();
+  const match = page.connections.find(
+    (connection) =>
+      connection.toolkit === toolkit &&
+      connection.userId === DASHBOARD_USER_ID &&
+      connection.status === "connected",
+  );
+  if (match === undefined) {
+    throw new Error(
+      `No connected ${toolkit} connection exists for ${DASHBOARD_USER_ID}; create one on the Connections screen first.`,
+    );
+  }
+  return match.connectionId;
+}
+
 function defaultBuilder(tools: readonly CatalogToolOption[]): BuilderState {
   const available = new Set(tools.map(({ name }) => name));
   const preferred = ["google-calendar.create_event", "gmail.send_email"].filter(
@@ -392,6 +416,326 @@ function ToolEvent({
   );
 }
 
+interface OwnedNumberBinding {
+  bindingId: string;
+  agentId: string;
+  revision: number;
+}
+
+interface OwnedNumber {
+  numberId: string;
+  phoneNumber: string;
+  friendlyName: string;
+  provider: string;
+  bindingStatus: "bound" | "unbound";
+  binding?: OwnedNumberBinding;
+  createdAt: string;
+}
+
+function parseOwnedNumbers(value: unknown): readonly OwnedNumber[] {
+  if (!Array.isArray(value)) return [];
+  return value.map((entry) => {
+    const record = asRecord(entry, "Owned number");
+    const binding =
+      typeof record.binding === "object" &&
+      record.binding !== null &&
+      !Array.isArray(record.binding)
+        ? (record.binding as Readonly<Record<string, unknown>>)
+        : undefined;
+    return {
+      numberId: String(record.numberId),
+      phoneNumber: String(record.phoneNumber),
+      friendlyName: String(record.friendlyName),
+      provider: String(record.provider),
+      bindingStatus: record.bindingStatus === "bound" ? "bound" : "unbound",
+      ...(binding === undefined
+        ? {}
+        : {
+            binding: {
+              bindingId: String(binding.bindingId),
+              agentId: String(binding.agentId),
+              revision: Number(binding.revision),
+            },
+          }),
+      createdAt: String(record.createdAt),
+    };
+  });
+}
+
+export function VoiceNumbersSection({
+  agents,
+}: {
+  agents: readonly VoiceAgentSummary[];
+}) {
+  const [numbers, setNumbers] = useState<readonly OwnedNumber[]>();
+  const [message, setMessage] = useState<string>();
+  const [buyPhoneNumber, setBuyPhoneNumber] = useState("");
+  const [buyFriendlyName, setBuyFriendlyName] = useState("");
+  const [attachTargets, setAttachTargets] = useState<
+    Readonly<Record<string, string>>
+  >({});
+  const [busyAction, setBusyAction] = useState<string>();
+
+  const loadNumbers = useCallback(async () => {
+    try {
+      const output = await runVoiceTool("twilio.list_numbers", {
+        pageSize: 50,
+      });
+      setNumbers(parseOwnedNumbers(output.numbers));
+      setMessage(undefined);
+    } catch (error) {
+      setNumbers([]);
+      setMessage(
+        error instanceof Error
+          ? error.message
+          : "Owned numbers could not be listed.",
+      );
+    }
+  }, []);
+
+  useEffect(() => {
+    void loadNumbers();
+  }, [loadNumbers]);
+
+  async function runNumberAction(key: string, action: () => Promise<void>) {
+    setBusyAction(key);
+    setMessage(undefined);
+    try {
+      await action();
+      await loadNumbers();
+    } catch (error) {
+      setMessage(error instanceof Error ? error.message : "The action failed.");
+    } finally {
+      setBusyAction(undefined);
+    }
+  }
+
+  async function buyNumber(event: FormEvent<HTMLFormElement>) {
+    event.preventDefault();
+    const phoneNumber = buyPhoneNumber.trim();
+    if (phoneNumber.length === 0) return;
+    await runNumberAction("buy", async () => {
+      const friendlyName = buyFriendlyName.trim();
+      await runVoiceTool(
+        "twilio.buy_number",
+        {
+          phoneNumber,
+          ...(friendlyName.length === 0 ? {} : { friendlyName }),
+        },
+        "sync",
+        true,
+      );
+      setBuyPhoneNumber("");
+      setBuyFriendlyName("");
+    });
+  }
+
+  async function attachAgent(number: OwnedNumber) {
+    const target = attachTargets[number.numberId];
+    if (target === undefined || target.length === 0) {
+      setMessage("Choose a published agent revision to attach.");
+      return;
+    }
+    const [agentId, revisionValue] = target.split(":");
+    await runNumberAction(`attach:${number.numberId}`, async () => {
+      await runVoiceTool(
+        "voice-agents.attach_agent_to_number",
+        {
+          agentId: agentId ?? "",
+          revision: Number(revisionValue),
+          phoneNumber: number.phoneNumber,
+          transportConnectionId: await resolveTransportConnectionId("twilio"),
+        },
+        "sync",
+        true,
+      );
+    });
+  }
+
+  async function detachNumber(number: OwnedNumber) {
+    await runNumberAction(`detach:${number.numberId}`, async () => {
+      await runVoiceTool(
+        "voice-agents.detach_number",
+        { phoneNumber: number.phoneNumber },
+        "sync",
+        true,
+      );
+    });
+  }
+
+  async function releaseNumber(number: OwnedNumber) {
+    if (
+      !window.confirm(
+        `Release ${number.phoneNumber} back to the provider? Bound numbers must be detached first; release cannot be undone.`,
+      )
+    ) {
+      return;
+    }
+    await runNumberAction(`release:${number.numberId}`, async () => {
+      await runVoiceTool(
+        "twilio.release_number",
+        { phoneNumber: number.phoneNumber },
+        "sync",
+        true,
+      );
+    });
+  }
+
+  const agentLabel = (binding: OwnedNumberBinding): string => {
+    const summary = agents.find(({ id }) => id === binding.agentId);
+    return summary === undefined
+      ? `${binding.agentId} r${binding.revision}`
+      : `${summary.name} r${binding.revision}`;
+  };
+
+  return (
+    <section aria-label="Owned telephone numbers" className="voice-numbers">
+      <div className="voice-numbers__heading">
+        <div>
+          <p className="eyebrow">Inventory</p>
+          <h2>Numbers</h2>
+          <p>
+            Provider-owned inbound numbers and their agent bindings.
+            Reassignment is detach followed by attach; bound numbers cannot be
+            released.
+          </p>
+        </div>
+        <form className="voice-numbers__buy" onSubmit={buyNumber}>
+          <Input
+            label="Buy number (E.164)"
+            mono
+            onChange={(event) => setBuyPhoneNumber(event.currentTarget.value)}
+            placeholder="+15005550006"
+            value={buyPhoneNumber}
+          />
+          <Input
+            label="Label"
+            onChange={(event) => setBuyFriendlyName(event.currentTarget.value)}
+            placeholder="Front desk"
+            value={buyFriendlyName}
+          />
+          <Button
+            disabled={busyAction === "buy" || buyPhoneNumber.trim() === ""}
+            type="submit"
+            variant="primary"
+          >
+            {busyAction === "buy" ? "Buying…" : "Buy number"}
+          </Button>
+        </form>
+      </div>
+      {message === undefined ? null : (
+        <div className="inline-error" role="alert">
+          <p>{message}</p>
+        </div>
+      )}
+      {numbers === undefined ? (
+        <p className="voice-numbers__empty">Loading owned numbers…</p>
+      ) : numbers.length === 0 ? (
+        <p className="voice-numbers__empty">
+          No provider-owned numbers yet. Buy one above with a connected twilio
+          account-free mock connection, then attach a published agent revision.
+        </p>
+      ) : (
+        <TableShell
+          caption="Provider-owned telephone numbers"
+          columns={[
+            { key: "number", label: "Number" },
+            { key: "binding", label: "Binding" },
+            { key: "created", label: "Created" },
+            { key: "actions", label: "Actions" },
+          ]}
+        >
+          {numbers.map((number) => (
+            <tr key={number.numberId}>
+              <td>
+                <span className="webhook-endpoint-identity">
+                  <span>
+                    <strong className="mono">{number.phoneNumber}</strong>
+                  </span>
+                  <span>
+                    <code>{number.friendlyName}</code>
+                  </span>
+                </span>
+              </td>
+              <td>
+                {number.bindingStatus === "bound" && number.binding ? (
+                  <code>{agentLabel(number.binding)}</code>
+                ) : (
+                  <code>unbound</code>
+                )}
+              </td>
+              <td className="mono">{number.createdAt.slice(0, 10)}</td>
+              <td>
+                <span className="row-actions voice-numbers__actions">
+                  {number.bindingStatus === "bound" ? (
+                    <Button
+                      disabled={busyAction !== undefined}
+                      onClick={() => void detachNumber(number)}
+                      size="small"
+                      variant="secondary"
+                    >
+                      {busyAction === `detach:${number.numberId}`
+                        ? "Detaching…"
+                        : "Detach"}
+                    </Button>
+                  ) : (
+                    <>
+                      <select
+                        aria-label={`Agent for ${number.phoneNumber}`}
+                        className="field__control"
+                        onChange={(event) =>
+                          setAttachTargets((current) => ({
+                            ...current,
+                            [number.numberId]: event.currentTarget.value,
+                          }))
+                        }
+                        value={attachTargets[number.numberId] ?? ""}
+                      >
+                        <option value="">Choose agent…</option>
+                        {agents.map((agent) => (
+                          <option
+                            key={agent.id}
+                            value={`${agent.id}:${agent.activeRevision}`}
+                          >
+                            {agent.name} r{agent.activeRevision}
+                          </option>
+                        ))}
+                      </select>
+                      <Button
+                        disabled={busyAction !== undefined}
+                        onClick={() => void attachAgent(number)}
+                        size="small"
+                        variant="secondary"
+                      >
+                        {busyAction === `attach:${number.numberId}`
+                          ? "Attaching…"
+                          : "Attach"}
+                      </Button>
+                    </>
+                  )}
+                  <Button
+                    disabled={
+                      busyAction !== undefined ||
+                      number.bindingStatus === "bound"
+                    }
+                    onClick={() => void releaseNumber(number)}
+                    size="small"
+                    variant="danger"
+                  >
+                    {busyAction === `release:${number.numberId}`
+                      ? "Releasing…"
+                      : "Release"}
+                  </Button>
+                </span>
+              </td>
+            </tr>
+          ))}
+        </TableShell>
+      )}
+    </section>
+  );
+}
+
 export function VoiceAgentsScreen({
   initialAgents,
   initialDefinitions = {},
@@ -439,6 +783,11 @@ export function VoiceAgentsScreen({
   const [testMessage, setTestMessage] = useState<string>();
   const [progressionAvailable, setProgressionAvailable] = useState(true);
   const [chatMessage, setChatMessage] = useState("");
+  const [joinGrant, setJoinGrant] = useState<{
+    expiresAt: string;
+    participantToken: string;
+    roomUrl: string;
+  }>();
   const pollingRef = useRef(false);
 
   const selectedSummary = agents.find(({ id }) => id === selectedId);
@@ -731,22 +1080,6 @@ export function VoiceAgentsScreen({
     }));
   }
 
-  async function resolveTwilioConnectionId(): Promise<string> {
-    const page = await dashboardExecutorClient().listConnections();
-    const match = page.connections.find(
-      (connection) =>
-        connection.toolkit === "twilio" &&
-        connection.userId === DASHBOARD_USER_ID &&
-        connection.status === "connected",
-    );
-    if (match === undefined) {
-      throw new Error(
-        `No connected twilio connection exists for ${DASHBOARD_USER_ID}; create one on the Connections screen first.`,
-      );
-    }
-    return match.connectionId;
-  }
-
   async function startTestCall() {
     if (selectedDefinition === undefined) return;
     setTestState("starting");
@@ -761,7 +1094,7 @@ export function VoiceAgentsScreen({
           revision: selectedDefinition.revision,
           to: "+966500000111",
           from: "+966500000222",
-          transportConnectionId: await resolveTwilioConnectionId(),
+          transportConnectionId: await resolveTransportConnectionId("twilio"),
           script: RESERVATION_SCRIPT,
         },
         "async",
@@ -777,6 +1110,59 @@ export function VoiceAgentsScreen({
         error instanceof Error
           ? error.message
           : "The test call could not start.",
+      );
+    }
+  }
+
+  async function startWebSession() {
+    if (selectedDefinition === undefined) return;
+    setTestState("starting");
+    setTestMessage(undefined);
+    setEvents([]);
+    setArtifact(undefined);
+    setJoinGrant(undefined);
+    try {
+      const output = await runVoiceTool(
+        "voice-agents.create_web_session",
+        {
+          agentId: selectedDefinition.id,
+          revision: selectedDefinition.revision,
+          transportConnectionId: await resolveTransportConnectionId("livekit"),
+          participantIdentity: DASHBOARD_USER_ID,
+          participantName: "Dashboard test participant",
+        },
+        "sync",
+        true,
+      );
+      const nextSession = parseSession(output.session);
+      const grant = output.joinGrant;
+      if (
+        typeof grant === "object" &&
+        grant !== null &&
+        !Array.isArray(grant)
+      ) {
+        const record = grant as Record<string, unknown>;
+        if (
+          typeof record.roomUrl === "string" &&
+          typeof record.participantToken === "string" &&
+          typeof record.expiresAt === "string"
+        ) {
+          setJoinGrant({
+            expiresAt: record.expiresAt,
+            participantToken: record.participantToken,
+            roomUrl: record.roomUrl,
+          });
+        }
+      }
+      setSession(nextSession);
+      setTestState("watching");
+      await refreshSession(nextSession);
+    } catch (error) {
+      setTestState("error");
+      setTestMessage(
+        error instanceof Error
+          ? error.message
+          : "The web session could not be created.",
       );
     }
   }
@@ -1238,19 +1624,56 @@ export function VoiceAgentsScreen({
                 </Button>
               </form>
             ) : selectedDefinition?.transport === "webrtc:livekit" ? (
-              <div className="voice-runtime-note">
-                <strong>WebRTC activation is not defined yet</strong>
-                <p>
-                  The revision can be published, but RFC 002 does not yet define
-                  the browser session activation tool.
-                </p>
-              </div>
+              session === undefined || terminalSession(session.state) ? (
+                <Button
+                  disabled={testState === "starting"}
+                  icon={<Icon name="voice" />}
+                  onClick={() => void startWebSession()}
+                  variant="primary"
+                >
+                  {testState === "starting"
+                    ? "Creating session…"
+                    : "Create web session"}
+                </Button>
+              ) : (
+                <Button onClick={() => void endCall()} variant="danger">
+                  End session
+                </Button>
+              )
             ) : (
               <p className="voice-test-panel__prompt">
                 Choose an agent card or create and publish a revision.
               </p>
             )}
           </div>
+
+          {joinGrant !== undefined ? (
+            <div className="voice-join-grant" role="note">
+              <strong>Short-lived join grant</strong>
+              <p>
+                Room <code>{joinGrant.roomUrl}</code>
+                <CopyButton label="Copy room URL" value={joinGrant.roomUrl} />
+              </p>
+              <p>
+                Participant token expires {joinGrant.expiresAt}
+                <CopyButton
+                  label="Copy participant token"
+                  value={joinGrant.participantToken}
+                />
+              </p>
+              <small>
+                The join grant appears only in this create response; provider
+                API secrets never enter session output. Dismissing discards it.
+              </small>
+              <Button
+                onClick={() => setJoinGrant(undefined)}
+                size="small"
+                variant="secondary"
+              >
+                Dismiss grant
+              </Button>
+            </div>
+          ) : null}
 
           {!progressionAvailable &&
           session !== undefined &&
@@ -1316,6 +1739,7 @@ export function VoiceAgentsScreen({
           </footer>
         </aside>
       </div>
+      <VoiceNumbersSection agents={agents} />
     </main>
   );
 }

@@ -231,4 +231,6 @@ Keep the agent draft, policy, allowlist, and canonical tool inputs. For a certif
   The repository ships a durable control plane and deploy assets, but the account-free parity suites do not prove or claim live-call capability. With Postgres, remote-observer cursor/retry state and complete voice webhook envelopes survive restart and reconcile against the worker's durable event log; the zero-database fallback remains process-local. Provider-backed recording is disabled, and the worker currently treats `llm.model` as a direct Anthropic model ID. Real-account, end-to-end certification is required before treating `start_agent_call` as production-ready.
 </Warning>
 
+The dashboard's **Voice Agents** screen tests PSTN and chat agents against the dev-stack fixtures, creates LiveKit web sessions for `webrtc:livekit` agents (surfacing the create-time-only join grant), and manages the owned-number inventory — buy, attach, detach, release — with detach-before-release enforced by the executor.
+
 See [Voice Agents toolkit](/toolkits/generated/voice-agents) for all 17 tools and schemas.

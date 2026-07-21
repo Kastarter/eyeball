@@ -1,7 +1,7 @@
 # eyeball — Planned work
 
 State as of 2026-07-21. The 0.2.0 source cut is complete, M5 is underway with
-M5.3 complete, and two audit sweeps
+M5.4 complete, and two audit sweeps
 (cross-feature wiring; dashboard/SDK/docs parity) produced a milestone-ordered
 gap ledger. Milestones **M1 (hosted execution slice)**, **M2 (billing as a
 product)**, **M3 (restart-state durability)**, and **M4 (voice hardening)** are
@@ -68,13 +68,14 @@ change. Never bind ports in tests; use in-process apps (`app.request`, PGlite).
   schema-driven attachment pickers in Try-It that submit `fileId` references
   only. Bytes never reach list responses or the browser beyond upload encoding.
   A-04 closed.
+- M5.4 Voice panel WebRTC + Numbers: the stale WebRTC activation note is
+  replaced by a working `create_web_session` test with a create-response-only
+  join grant, and a Numbers inventory section drives buy/attach/detach/release
+  through the canonical number tools with detach-before-release intact.
+  A-05 and A-06 closed.
 
 ## M5 — Local dashboard surfaces (demo mode; executor APIs mostly exist)
 
-9. **M5.4 Voice panel: WebRTC web-session test + Numbers section.** The stale
-   WebRTC branch says activation is undefined although
-   `voice-agents.create_web_session` shipped; number lifecycle tools have no
-   UI. A-05, A-06.
 10. **M5.5 Execution provenance + rate-limit visibility.** Safe replay
     metadata (never the raw idempotency key), voice-session source link on
     child executions, attachments summary (metadata only), fix

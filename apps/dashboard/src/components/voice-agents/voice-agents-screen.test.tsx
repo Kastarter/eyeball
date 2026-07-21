@@ -4,6 +4,7 @@ import {
   type VoiceAgentDefinition,
   type VoiceAgentSummary,
   VoiceAgentsScreen,
+  VoiceNumbersSection,
 } from "./voice-agents-screen";
 
 const summary = {
@@ -100,5 +101,46 @@ describe("VoiceAgentsScreen server rendering", () => {
     expect(markup).toContain("model:fixture:restaurant-concierge");
     expect(markup).toContain("Maximum duration (seconds)");
     expect(markup).toContain("Ready for a test session");
+  });
+  it("offers a working WebRTC web-session test instead of the stale activation note", () => {
+    const webrtcSummary = {
+      ...summary,
+      id: "vag_web_host",
+      transport: "webrtc:livekit",
+    } as const satisfies VoiceAgentSummary;
+    const webrtcDefinition = {
+      ...definition,
+      id: webrtcSummary.id,
+      transport: "webrtc:livekit",
+    } as const satisfies VoiceAgentDefinition;
+    const markup = renderToStaticMarkup(
+      <VoiceAgentsScreen
+        initialAgents={[webrtcSummary]}
+        initialDefinitions={{
+          [`${webrtcSummary.id}:${webrtcSummary.activeRevision}`]:
+            webrtcDefinition,
+        }}
+        initialRevision={webrtcSummary.activeRevision}
+        initialSelectedAgent={webrtcSummary.id}
+        project="restaurant-demo"
+        tools={catalogTools}
+      />,
+    );
+
+    expect(markup).toContain("WebRTC · LiveKit");
+    expect(markup).toContain("Create web session");
+    expect(markup).not.toContain("WebRTC activation is not defined yet");
+  });
+
+  it("renders the numbers inventory with buy, attach, detach, and release affordances", () => {
+    const markup = renderToStaticMarkup(
+      <VoiceNumbersSection agents={[summary]} />,
+    );
+
+    expect(markup).toContain("Numbers");
+    expect(markup).toContain("Buy number (E.164)");
+    expect(markup).toContain("detach followed by attach");
+    expect(markup).toContain("bound numbers cannot be");
+    expect(markup).toContain("Loading owned numbers…");
   });
 });

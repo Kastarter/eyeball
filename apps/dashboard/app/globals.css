@@ -6539,3 +6539,95 @@ select.field__control {
   font-family: var(--font-code);
   font-size: 11px;
 }
+
+/* Voice web-session join grant + owned numbers inventory (M5.4). */
+
+.voice-join-grant {
+  display: grid;
+  gap: var(--space-2);
+  padding: var(--space-3) var(--space-4);
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--radius-md);
+  background: var(--bg-subtle);
+  font-size: 11px;
+}
+
+.voice-join-grant strong {
+  color: var(--text-primary);
+  font-size: 12px;
+}
+
+.voice-join-grant p {
+  display: flex;
+  min-width: 0;
+  align-items: center;
+  gap: var(--space-2);
+  color: var(--text-secondary);
+}
+
+.voice-join-grant code {
+  overflow: hidden;
+  color: var(--text-primary);
+  font-family: var(--font-code);
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.voice-join-grant small {
+  color: var(--text-muted-readable);
+  line-height: 1.45;
+}
+
+.voice-join-grant .button {
+  justify-self: start;
+}
+
+.voice-numbers {
+  display: grid;
+  gap: var(--space-4);
+  padding: var(--space-5);
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--radius-lg);
+  background: var(--bg-surface);
+}
+
+.voice-numbers__heading {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: flex-end;
+  justify-content: space-between;
+  gap: var(--space-4);
+}
+
+.voice-numbers__heading h2 {
+  color: var(--text-primary);
+  font-size: 16px;
+}
+
+.voice-numbers__heading p {
+  max-width: 52ch;
+  color: var(--text-secondary);
+  font-size: 11px;
+  line-height: 1.5;
+}
+
+.voice-numbers__buy {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: flex-end;
+  gap: var(--space-3);
+}
+
+.voice-numbers__empty {
+  color: var(--text-secondary);
+  font-size: 11px;
+}
+
+.voice-numbers__actions {
+  flex-wrap: wrap;
+  gap: var(--space-2);
+}
+
+.voice-numbers__actions select {
+  max-width: 180px;
+}
