@@ -55,6 +55,8 @@ export interface LeaseMutation {
 
 /** Durable state-machine contract shared by memory, pg, and PGlite. */
 export interface JobStore {
+  /** Verifies that durable admission can reach its required store capabilities. */
+  checkReadiness(signal?: AbortSignal): Promise<void>;
   ensure(job: JobEnvelope): Promise<EnsureJobResult>;
   get(jobId: string): Promise<StoredJob | undefined>;
   cancelPending(input: {

@@ -27,6 +27,11 @@ import {
   type JobStore,
   recoverExecutorJobs,
 } from "./queue.js";
+import {
+  createExecutorReadiness,
+  type DatabaseReadinessProbes,
+  type ExecutorReadiness,
+} from "./readiness.js";
 import type { FileStore } from "./staged-files.js";
 import {
   createPgStoreBundle,
@@ -88,11 +93,13 @@ export interface CreateExecutorRuntimeOptions {
 }
 
 export interface ExecutorPersistence extends PostgresStoreSet {
+  readiness: DatabaseReadinessProbes;
   close(): Promise<void>;
 }
 
 export interface ExecutorRuntime {
   engine: ExecutionEngine;
+  readiness: ExecutorReadiness;
   apiKeyAuthenticator: ApiKeyAuthenticator;
   voiceSessionGrantVerifier?: VoiceSessionGrantVerifier;
   triggerPollingScheduler: TriggerPollingScheduler;
@@ -610,6 +617,13 @@ export async function createExecutorRuntime(
     await voiceSessionObserver?.reconcileAtBoot();
     taskSystem.start();
     const runningTaskSystem = taskSystem;
+    const readiness = createExecutorReadiness({
+      ...(initializedPersistence === undefined
+        ? {}
+        : { database: initializedPersistence.readiness }),
+      credentialProvider,
+      queue: runningTaskSystem,
+    });
     const triggerPollingScheduler = new TriggerPollingScheduler({
       service: engine.triggerService,
       logger: telemetry.logger,
@@ -626,6 +640,7 @@ export async function createExecutorRuntime(
     }
     return {
       engine,
+      readiness,
       apiKeyAuthenticator,
       ...(voiceSessionGrantAuthority === undefined
         ? {}

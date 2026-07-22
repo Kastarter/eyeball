@@ -46,6 +46,10 @@ import {
   type RateLimitResult,
   rateLimitCapacity,
 } from "./rate-limit.js";
+import {
+  createExecutorReadiness,
+  type ExecutorReadiness,
+} from "./readiness.js";
 import type { FileStore } from "./staged-files.js";
 import type { HttpRequestClass, HttpRequestMethod } from "./telemetry/index.js";
 import {
@@ -103,6 +107,7 @@ type ExecutorContext = Context<{ Variables: ExecutorVariables }>;
 
 export interface ExecutorAppOptions {
   engine?: ExecutionEngine;
+  readiness?: ExecutorReadiness;
   fileStore?: FileStore;
   apiKeys?: ApiKeyringInput;
   apiKeyAuthenticator?: ApiKeyAuthenticator;
@@ -174,7 +179,7 @@ function retryAfterSeconds(result: RateLimitResult): number {
 }
 
 function telemetryRequestClass(method: string, path: string): HttpRequestClass {
-  if (path === "/health") return "health";
+  if (path === "/health" || path === "/ready") return "health";
   if (path.startsWith("/v1/ingest/")) return "ingest";
   if (method === "POST" && path === "/v1/execute") return "execute";
   return "standard";
@@ -557,6 +562,12 @@ export function createExecutorApp(options: ExecutorAppOptions = {}): Hono<{
   const rateLimiter = options.rateLimiter ?? new InMemoryRateLimiter();
   const rateLimitPolicies =
     options.rateLimitPolicies ?? createRateLimitPolicies(env);
+  const readiness =
+    options.readiness ??
+    createExecutorReadiness({
+      credentialProvider: engine.credentialProvider,
+      queue: engine.queue,
+    });
   const app = new Hono<{ Variables: ExecutorVariables }>();
 
   app.use("*", async (context, next) => {
@@ -578,6 +589,12 @@ export function createExecutorApp(options: ExecutorAppOptions = {}): Hono<{
   app.get("/health", (context) =>
     context.json({ status: "ok", service: "executor" }),
   );
+
+  app.get("/ready", async (context) => {
+    const report = await readiness.inspect();
+    context.header("Cache-Control", "no-store");
+    return context.json(report, report.status === "ready" ? 200 : 503);
+  });
 
   app.use("/v1/*", async (context, next) => {
     context.set("requestId", requestIdFactory());

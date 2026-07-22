@@ -54,6 +54,13 @@ export class QueueJobConflictError extends Error {
   }
 }
 
+export class QueueNotAcceptingError extends Error {
+  constructor() {
+    super("The executor queue is not accepting new work.");
+    this.name = "QueueNotAcceptingError";
+  }
+}
+
 interface Deferred {
   readonly promise: Promise<void>;
   readonly resolve: () => void;
@@ -116,6 +123,7 @@ export class ExecutorTaskSystem implements ManagedTaskQueue {
   readonly #manual: boolean;
   #handlers?: JobHandlerRegistry;
   #started = false;
+  #accepting = true;
   #claiming = false;
   #tick: Promise<void> | undefined;
   #timer: ReturnType<typeof setTimeout> | undefined;
@@ -178,7 +186,19 @@ export class ExecutorTaskSystem implements ManagedTaskQueue {
     this.#wake();
   }
 
+  async checkReadiness(signal?: AbortSignal): Promise<void> {
+    if (!this.#started || !this.#accepting || !this.#claiming) {
+      throw new Error("The executor queue is not accepting work.");
+    }
+    await this.jobStore.checkReadiness(signal);
+  }
+
   submit(job: ExecutorJob, options: SubmitJobOptions = {}): JobSubmission {
+    if (!this.#accepting) {
+      const rejected = Promise.reject(new QueueNotAcceptingError());
+      void rejected.catch(() => {});
+      return { accepted: rejected, completed: rejected };
+    }
     const envelope = createJobEnvelope(job, options, this.#now());
     const completion = this.#attached.get(envelope.jobId) ?? deferred();
     this.#attached.set(envelope.jobId, completion);
@@ -206,6 +226,7 @@ export class ExecutorTaskSystem implements ManagedTaskQueue {
   }
 
   async stopClaiming(): Promise<void> {
+    this.#accepting = false;
     this.#claiming = false;
     if (this.#timer !== undefined) clearTimeout(this.#timer);
     this.#timer = undefined;

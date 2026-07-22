@@ -10,12 +10,46 @@ Before production:
 - run the executor, gateway, and dashboard behind TLS and authentication;
 - rate-limit bearer keys and MCP sessions;
 - configure the executor's redacted logs and optional OpenTelemetry export, then add deployment metrics for queue age and provider saturation;
+- route executor traffic only to instances whose public `GET /ready` probe returns `200`; use `GET /health` separately for process liveness;
 - keep provider credentials and staged-file bytes out of custom logs, traces, errors, collector configuration, and client bundles;
 - back up execution/voice history, immutable voice-agent revisions, bindings, pointers, receipts, `voice_agent_session_observers`, `voice_webhook_sources`, MCP sessions/tasks, and any retained staged-file rows according to retention policy, then test restore paths;
 - monitor database growth and vacuum behavior for potentially large `bytea` rows; monitor and clean untouched expired `mcp_sessions` by indexed `expires_at` without weakening logical expiry; plan for TTL cleanup and replacement with an object-store-backed `FileStore` when workload or retention makes inline blobs inappropriate;
 - monitor durable queue age, expired leases, repeated recovery, `execution_interrupted` outcomes, observer retry age, exhausted observers, exhausted-but-unsignaled rows, repeated observer lease takeover, voice-source invariant misses, and exhausted webhook deliveries; signing and retry semantics are fixed by RFC 001.
 
 The dashboard uses a server-side proxy; keep `EYEBALL_API_KEY` server-only. Mockhouse and `/_mock` must stay on loopback or an isolated test network.
+
+## Executor health checks
+
+Configure the executor's own routes directly on the workload or load balancer:
+
+```yaml
+livenessProbe:
+  httpGet:
+    path: /health
+    port: 3000
+readinessProbe:
+  httpGet:
+    path: /ready
+    port: 3000
+  periodSeconds: 15
+  timeoutSeconds: 12
+  failureThreshold: 2
+```
+
+`/health` proves only that the executor process is responsive. Do not use it to
+admit traffic. `/ready` returns `503` when Postgres is unreachable, the applied
+migration journal differs from the committed executor migrations, the selected
+credential provider is unhealthy, the task queue is not accepting work, or its
+durable store cannot perform the non-writing admission capability check. Every
+dependency check has an executor-owned 10-second deadline, below the caller
+timeout above. The body contains only per-check `ok` or `error` status and is
+safe for probe logs.
+
+Keep `/ready` unauthenticated for orchestrators, but expose it only through the
+same network controls used for other operational endpoints. During a dependency
+outage, remove an unready instance from service while leaving liveness alone;
+restarting an otherwise responsive process cannot repair an unreachable shared
+database or Cloud credential endpoint.
 
 ## Upgrade order
 

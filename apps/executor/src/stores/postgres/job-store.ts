@@ -32,6 +32,19 @@ import { sameExecutorJob } from "../../jobs/types.js";
 import type { EyeballPostgresDatabase } from "./database.js";
 import { taskJobs } from "./schema.js";
 
+export const JOB_STORE_READINESS_QUERIES = [
+  `SELECT 1 / (
+     has_table_privilege(current_user, 'task_jobs', 'INSERT')::integer *
+     has_table_privilege(current_user, 'task_jobs', 'SELECT')::integer *
+     has_sequence_privilege(current_user, pg_get_serial_sequence('task_jobs', 'sequence'), 'USAGE')::integer
+   ) AS "ready"`,
+  `EXPLAIN INSERT INTO "task_jobs" ("job_id", "queue_name", "kind", "payload", "state", "run_after", "attempts", "created_at", "updated_at")
+   SELECT '__eyeball_readiness_probe__', 'execution', 'execution.run.v1', '{}'::jsonb, 'pending', CURRENT_TIMESTAMP, 0, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP
+   WHERE FALSE
+   ON CONFLICT ("job_id") DO NOTHING`,
+  `SELECT "job_id" FROM "task_jobs" WHERE "job_id" = '__eyeball_readiness_probe__' LIMIT 1`,
+] as const;
+
 function iso(value: string): string {
   return new Date(value).toISOString();
 }
@@ -82,9 +95,26 @@ export class PostgresJobStore<
 > implements JobStore
 {
   readonly #database: EyeballPostgresDatabase<TQueryResult>;
+  readonly #readinessCheck: (signal?: AbortSignal) => Promise<void>;
 
-  constructor(database: EyeballPostgresDatabase<TQueryResult>) {
+  constructor(
+    database: EyeballPostgresDatabase<TQueryResult>,
+    readinessCheck?: (signal?: AbortSignal) => Promise<void>,
+  ) {
     this.#database = database;
+    this.#readinessCheck =
+      readinessCheck ??
+      (async (signal) => {
+        signal?.throwIfAborted();
+        for (const query of JOB_STORE_READINESS_QUERIES) {
+          await database.execute(sql.raw(query));
+          signal?.throwIfAborted();
+        }
+      });
+  }
+
+  async checkReadiness(signal?: AbortSignal): Promise<void> {
+    await this.#readinessCheck(signal);
   }
 
   async ensure(job: JobEnvelope): Promise<EnsureJobResult> {

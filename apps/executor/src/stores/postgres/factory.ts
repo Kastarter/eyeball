@@ -9,8 +9,12 @@ import {
   drizzle as drizzlePglite,
   type PgliteDatabase,
 } from "drizzle-orm/pglite";
-import { Pool } from "pg";
+import { Pool, type PoolClient } from "pg";
 import type { JobStore } from "../../jobs/store.js";
+import {
+  type DatabaseReadinessProbes,
+  DEFAULT_READINESS_PROBE_TIMEOUT_MS,
+} from "../../readiness.js";
 import type { FileStore } from "../../staged-files.js";
 import type { ExecutionStore } from "../../store.js";
 import type { TriggerEventStore } from "../../triggers/event-store.js";
@@ -26,8 +30,12 @@ import { PostgresAgentStore } from "./agent-store.js";
 import type { EyeballPostgresDatabase } from "./database.js";
 import { PostgresExecutionStore } from "./execution-store.js";
 import { PostgresFileStore } from "./file-store.js";
-import { PostgresJobStore } from "./job-store.js";
-import { migrate } from "./migrate.js";
+import { JOB_STORE_READINESS_QUERIES, PostgresJobStore } from "./job-store.js";
+import {
+  type AppliedMigration,
+  createDatabaseReadiness,
+  migrate,
+} from "./migrate.js";
 import { type PostgresSchema, postgresSchema } from "./schema.js";
 import { PostgresTriggerEventStore } from "./trigger-event-store.js";
 import { PostgresTriggerStateStore } from "./trigger-state-store.js";
@@ -58,12 +66,14 @@ export interface PostgresStoreSet {
 export interface PgStoreBundle extends PostgresStoreSet {
   database: NodePgDatabase<PostgresSchema>;
   pool: Pool;
+  readiness: DatabaseReadinessProbes;
   close(): Promise<void>;
 }
 
 export interface PgliteStoreBundle extends PostgresStoreSet {
   client: PGlite;
   database: PgliteDatabase<PostgresSchema>;
+  readiness: DatabaseReadinessProbes;
   close(): Promise<void>;
 }
 
@@ -84,6 +94,7 @@ function maxConnections(value: number | undefined): number {
 
 function stores<TQueryResult extends PgQueryResultHKT>(
   database: EyeballPostgresDatabase<TQueryResult>,
+  jobStore: JobStore = new PostgresJobStore(database),
 ): PostgresStoreSet {
   return {
     agentStore: new PostgresAgentStore(database),
@@ -95,11 +106,34 @@ function stores<TQueryResult extends PgQueryResultHKT>(
     triggerEventStore: new PostgresTriggerEventStore(database),
     triggerStateStore: new PostgresTriggerStateStore(database),
     usageOutboxStore: new PostgresUsageOutboxStore(database),
-    jobStore: new PostgresJobStore(database),
+    jobStore,
     webhookWorkStore: new PostgresWebhookWorkStore(database),
     voiceObserverStore: new PostgresVoiceSessionObserverStore(database),
     voiceWebhookSourceStore: new PostgresVoiceWebhookSourceStore(database),
   };
+}
+
+async function withPgReadinessClient<T>(
+  pool: Pool,
+  signal: AbortSignal | undefined,
+  operation: (client: PoolClient) => Promise<T>,
+): Promise<T> {
+  signal?.throwIfAborted();
+  const client = await pool.connect();
+  let released = false;
+  const abort = () => {
+    if (released) return;
+    released = true;
+    client.release(true);
+  };
+  signal?.addEventListener("abort", abort, { once: true });
+  try {
+    signal?.throwIfAborted();
+    return await operation(client);
+  } finally {
+    signal?.removeEventListener("abort", abort);
+    if (!released) client.release();
+  }
 }
 
 /** Creates the production pg pool, migrates it, and binds every durable store. */
@@ -112,6 +146,7 @@ export async function createPgStoreBundle(
   const pool = new Pool({
     connectionString: options.connectionString,
     max: maxConnections(options.maxConnections),
+    connectionTimeoutMillis: DEFAULT_READINESS_PROBE_TIMEOUT_MS,
   });
   const database = drizzleNodePg(pool, { schema: postgresSchema });
   try {
@@ -122,10 +157,43 @@ export async function createPgStoreBundle(
     await pool.end();
     throw error;
   }
+  const jobStore = new PostgresJobStore(database, async (signal) => {
+    await withPgReadinessClient(pool, signal, async (client) => {
+      for (const query of JOB_STORE_READINESS_QUERIES) {
+        await client.query(query);
+      }
+    });
+  });
   return {
     database,
     pool,
-    ...stores(database),
+    readiness: createDatabaseReadiness(
+      {
+        ping: async (signal) => {
+          await withPgReadinessClient(pool, signal, async (client) => {
+            await client.query("SELECT 1");
+          });
+        },
+        readAppliedMigrations: async (signal) => {
+          return withPgReadinessClient(pool, signal, async (client) => {
+            const result = await client.query<{
+              hash: string;
+              created_at: string | null;
+            }>(
+              "SELECT hash, created_at FROM drizzle.__drizzle_migrations ORDER BY created_at ASC",
+            );
+            return result.rows.map(
+              (row): AppliedMigration => ({
+                hash: row.hash,
+                createdAt: row.created_at,
+              }),
+            );
+          });
+        },
+      },
+      options.migrationsFolder,
+    ),
+    ...stores(database, jobStore),
     close: async () => pool.end(),
   };
 }
@@ -150,6 +218,28 @@ export async function createPgliteStoreBundle(
   return {
     client,
     database,
+    readiness: createDatabaseReadiness(
+      {
+        ping: async () => {
+          await client.query("SELECT 1");
+        },
+        readAppliedMigrations: async () => {
+          const result = await client.query<{
+            hash: string;
+            created_at: number | null;
+          }>(
+            "SELECT hash, created_at FROM drizzle.__drizzle_migrations ORDER BY created_at ASC",
+          );
+          return result.rows.map(
+            (row): AppliedMigration => ({
+              hash: row.hash,
+              createdAt: row.created_at,
+            }),
+          );
+        },
+      },
+      options.migrationsFolder,
+    ),
     ...stores(database),
     close: async () => client.close(),
   };

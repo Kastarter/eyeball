@@ -1,7 +1,7 @@
 # eyeball — Planned work
 
-State as of 2026-07-21. The 0.2.0 source cut, M5, and M6.1 are complete; M6.2 is next,
-and two audit sweeps
+State as of 2026-07-21. The 0.2.0 source cut, M5, M6.1, and M6.2 are complete;
+M6.3 is next, and two audit sweeps
 (cross-feature wiring; dashboard/SDK/docs parity) produced a milestone-ordered
 gap ledger. Milestones **M1 (hosted execution slice)**, **M2 (billing as a
 product)**, **M3 (restart-state durability)**, **M4 (voice hardening)**, and
@@ -100,12 +100,17 @@ change. Never bind ports in tests; use in-process apps (`app.request`, PGlite).
   pre-dispatch fencing and usage release; honest post-dispatch best-effort abort
   and reporting; recovery-safe terminal reconciliation; `execution.cancelled`
   webhooks; MCP `tasks/cancel`; SDK, dashboard, worker, and docs parity.
+- M6.2 Readiness endpoint: public, no-store `/ready` fails closed with a
+  redacted per-check breakdown for database connectivity, exact applied
+  migration parity, credential-provider health, and task-queue admission. Each
+  check has an executor-owned hard deadline; hosted credentials exercise the
+  real resolver path with an impossible sentinel, and durable queue readiness
+  verifies its table and admission permissions without inserting a job.
+  `/health` remains dependency-free liveness, and zero-database mode is ready
+  after runtime boot. Audit finding 14 closed.
 
 ## M6 — Quality of life
 
-14. **M6.2 Readiness endpoint.** `/health` is liveness-only; add `/ready`
-    failing closed on DB/migrations/credential-provider/queue admission.
-    Audit finding 14.
 15. **M6.3 Landing anchors + deploy manifests.** Fragment links break on legal
     pages (`site-chrome.tsx:18` → `/#providers`); add checked-in deploy
     manifests for control plane, dashboard, landing. Audit findings 16 + 6.

@@ -92,6 +92,8 @@ export interface CredentialRefreshContext extends CredentialContext {
 
 export interface CredentialProvider {
   readonly kind: "env" | "mock" | "local-vault" | "cloud";
+  /** Verifies provider-wide configuration without resolving a user's secret. */
+  checkReadiness?(signal?: AbortSignal): Promise<void>;
   resolve(context: CredentialContext): Promise<ResolvedCredential>;
   refresh?(context: CredentialRefreshContext): Promise<OAuth2Credential>;
   invalidate?(context: CredentialContext): Promise<void>;
@@ -214,6 +216,17 @@ export class EnvCredentialProvider implements CredentialProvider {
           );
         }
       }
+    }
+  }
+
+  async checkReadiness(): Promise<void> {
+    if (
+      this.#allowedProjectId.trim().length === 0 ||
+      this.#allowedUserId.trim().length === 0
+    ) {
+      throw new Error(
+        "Environment credential provider scope IDs must not be empty.",
+      );
     }
   }
 
@@ -414,6 +427,8 @@ export class MockCredentialProvider implements CredentialProvider {
     this.#fixtures = [...fixtures];
   }
 
+  async checkReadiness(): Promise<void> {}
+
   #candidates(context: CredentialContext): readonly MockCredentialFixture[] {
     return this.#fixtures.filter((fixture) => baseMatch(fixture, context));
   }
@@ -485,6 +500,10 @@ export interface CloudCredentialProvider extends CredentialProvider {
 /** Compatibility placeholder; stock hosted composition lives in `@eyeball/executor`. */
 export class CloudCredentialProviderStub implements CloudCredentialProvider {
   readonly kind = "cloud" as const;
+
+  async checkReadiness(): Promise<void> {
+    throw new Error("The cloud credential provider is not configured.");
+  }
 
   async resolve(_context: CredentialContext): Promise<ResolvedCredential> {
     throw new Error(

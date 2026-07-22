@@ -183,6 +183,9 @@ describe("LocalVaultCredentialProvider", () => {
       allowedProjectId: baseContext.projectId,
       env: fixture.env,
     });
+    await expect(reopened.checkReadiness()).rejects.toThrow(
+      /Unable to decrypt.*vault file integrity/u,
+    );
     await expect(
       reopened.resolve({ ...baseContext, toolkitSlug: "stripe" }),
     ).rejects.toThrow(/Unable to decrypt.*vault file integrity/u);

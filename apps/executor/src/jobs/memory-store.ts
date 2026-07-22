@@ -37,6 +37,8 @@ export class InMemoryJobStore implements JobStore {
   readonly #jobs = new Map<string, StoredJob>();
   #sequence = 0;
 
+  async checkReadiness(): Promise<void> {}
+
   async ensure(job: JobEnvelope): Promise<EnsureJobResult> {
     timestamp(job.runAfter, "Job runAfter");
     const existing = this.#jobs.get(job.jobId);

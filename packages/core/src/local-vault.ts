@@ -899,6 +899,10 @@ export class LocalVaultCredentialProvider implements CredentialProvider {
       );
   }
 
+  async checkReadiness(): Promise<void> {
+    await this.list();
+  }
+
   async remove(selector: LocalVaultRecordSelector): Promise<boolean> {
     return this.#withMutation(async () => {
       const vault = await this.#read();

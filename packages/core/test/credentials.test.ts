@@ -119,6 +119,19 @@ describe("EnvCredentialProvider", () => {
         }),
     ).toThrow("EYEBALL_CRED_GMAIL_*");
   });
+
+  it("fails readiness when its local scope invariant is empty", async () => {
+    const provider = new EnvCredentialProvider({
+      allowedProjectId: "",
+      allowedUserId: "user-1",
+      env: {},
+      mappings: { gmail: { type: "none" } },
+    });
+
+    await expect(provider.checkReadiness()).rejects.toThrow(
+      "scope IDs must not be empty",
+    );
+  });
 });
 
 describe("MockCredentialProvider", () => {

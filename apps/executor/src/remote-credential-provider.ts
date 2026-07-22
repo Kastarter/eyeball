@@ -17,6 +17,12 @@ export interface RemoteCredentialProviderOptions {
 
 const DEFAULT_TIMEOUT_MS = 10_000;
 const MAX_RESPONSE_BYTES = 64 * 1024;
+const READINESS_SENTINEL = {
+  projectId: "__eyeball_readiness_probe__",
+  userId: "eyeball-readiness-probe",
+  toolkit: "eyeball-readiness-probe",
+  connectionId: "__eyeball_readiness_probe__",
+} as const;
 const ERROR_CODES = new Set<CredentialProviderErrorCode>([
   "auth_missing",
   "auth_expired",
@@ -275,6 +281,41 @@ export class RemoteCredentialProvider implements CredentialProvider {
       options.timeoutMs ?? DEFAULT_TIMEOUT_MS,
       "Cloud credential request timeout",
     );
+  }
+
+  async checkReadiness(signal?: AbortSignal): Promise<void> {
+    let response: Response;
+    try {
+      response = await this.#fetchImpl(this.#endpoint, {
+        method: "POST",
+        headers: {
+          Accept: "application/json",
+          Authorization: `Bearer ${this.#internalApiSecret}`,
+          "Cache-Control": "no-store",
+          "Content-Type": "application/json",
+        },
+        body: JSON.stringify(READINESS_SENTINEL),
+        cache: "no-store",
+        redirect: "manual",
+        signal:
+          signal === undefined
+            ? AbortSignal.timeout(this.#timeoutMs)
+            : AbortSignal.any([signal, AbortSignal.timeout(this.#timeoutMs)]),
+      });
+    } catch {
+      throw new Error("The cloud credential endpoint could not be reached.");
+    }
+    const body = await responseJson(response);
+    if (
+      response.status !== 404 ||
+      !isObject(body) ||
+      !isObject(body.error) ||
+      body.error.code !== "auth_missing"
+    ) {
+      throw new Error(
+        "The cloud credential endpoint did not accept the readiness probe.",
+      );
+    }
   }
 
   async resolve(context: CredentialContext): Promise<ResolvedCredential> {

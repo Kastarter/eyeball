@@ -6,6 +6,7 @@ export * from "./dev-voice-sessions.js";
 export * from "./engine.js";
 export * from "./queue.js";
 export * from "./rate-limit.js";
+export * from "./readiness.js";
 export * from "./remote-credential-provider.js";
 export * from "./routes.js";
 export * from "./runtime.js";
@@ -28,6 +29,7 @@ export const engine = executorRuntime.engine;
 export const triggerPollingScheduler = executorRuntime.triggerPollingScheduler;
 export const app = createExecutorApp({
   engine,
+  readiness: executorRuntime.readiness,
   apiKeyAuthenticator: executorRuntime.apiKeyAuthenticator,
   ...(executorRuntime.voiceSessionGrantVerifier === undefined
     ? {}

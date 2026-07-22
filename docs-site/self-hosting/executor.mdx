@@ -12,11 +12,35 @@ EYEBALL_API_KEYS="eyeball_local_key:proj_local" \
   pnpm --filter @eyeball/executor start
 ```
 
-Check health:
+Use liveness to confirm that the process can answer HTTP requests, and readiness
+to decide whether it should receive execution traffic:
 
 ```bash
 curl http://127.0.0.1:3000/health
+curl http://127.0.0.1:3000/ready
 ```
+
+`GET /health` is dependency-free liveness and remains `200` while the executor
+process is responsive. `GET /ready` is the fail-closed traffic-admission check.
+It returns `200` only when every dependency reports `ok`, or `503` with a
+redacted `database`, `migrations`, `credentials`, and `queue` breakdown. Both
+routes are public so an orchestrator does not need a project API key; readiness
+responses use `Cache-Control: no-store` and never include connection strings,
+credential material, endpoint URLs, or underlying errors. Each dependency check
+has an executor-owned 10-second deadline, so a stalled dependency cannot leave
+the request open indefinitely.
+
+Without `EYEBALL_DATABASE_URL`, the process-local database and migration checks
+are ready once the runtime has booted. With Postgres enabled, readiness verifies
+both a live database query and exact parity between the applied Drizzle journal
+and the executor's committed migrations. The credential check validates the
+selected local provider's invariants; Cloud mode sends an authenticated,
+schema-valid impossible sentinel through the configured resolver and accepts
+only its redacted missing-credential terminal response. This reaches the
+resolver's billing and vault dependencies without reading a real credential.
+The queue check requires the task system to be started, admitting submissions,
+accepting claims, and able to access the durable job table and its required
+admission permissions.
 
 `EYEBALL_API_KEYS` is a comma-separated keyring. Use `key:projectId` for project-wide authority or `key:projectId:userId` to pin a key to one end user. A pinned key rejects conflicting request-body, header, query, and MCP metadata identities. Duplicate keys and malformed entries fail startup.
 
@@ -32,7 +56,7 @@ To add credentials, create your own server entry point and pass a configured `Ex
 
 ## Hosted mode against eyeball Cloud
 
-The stock runtime can verify Cloud-issued API keys dynamically, resolve hosted OAuth connections, and enforce Cloud execution usage without a custom server entry point. The three bridges are independent: configure only the ones the deployment needs, or configure all three for a complete hosted data plane.
+The stock runtime can verify Cloud-issued API keys dynamically, resolve hosted OAuth connections, and enforce Cloud execution usage without a custom server entry point. The three bridges are independent: configure only the ones the deployment needs, or configure all three for a complete hosted data plane. When hosted credentials are selected, `/ready` fails closed until the resolver URL and internal secret are configured and the exact resolver endpoint returns the expected missing-credential response for the authenticated sentinel probe.
 
 | Executor variable | Required | Purpose |
 |---|---:|---|

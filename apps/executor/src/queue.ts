@@ -11,6 +11,8 @@ export interface JobSubmission {
 
 export interface TaskQueue<J extends ExecutorJob = ExecutorJob> {
   readonly jobStore: JobStore;
+  /** Rejects when this process is not admitting work to the queue. */
+  checkReadiness(signal?: AbortSignal): Promise<void>;
   submit(job: J, options?: SubmitJobOptions): JobSubmission;
   /** Compatibility convenience with completion, rather than admission, semantics. */
   enqueue(job: J, options?: SubmitJobOptions): Promise<void>;

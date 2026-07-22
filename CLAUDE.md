@@ -15,7 +15,7 @@ Open-core tool and integration platform for AI agents: one typed, authenticated 
 - Release and docs copy must distinguish checked-in private Cloud source from a deployed hosted service and must not imply npm or live-provider certification.
 - Changesets keeps `core`, `catalog`, `toolkits`, and `sdk` in one fixed version group; every Node app and the experimental bridge are explicitly ignored and remain private.
 - Canonical tools use `toolkit.operation`; restricted names use reversible `toolkit__operation`.
-- `/v1/*` is API-key/project scoped; `/health` is public.
+- `/v1/*` is API-key/project scoped; `/health` and `/ready` are public. `/health` is dependency-free liveness; `/ready` is no-store, fail-closed traffic admission.
 - Staged-file uploads use padded-base64 JSON; defaults are 25 MiB and one hour via `EYEBALL_FILE_MAX_BYTES` / `EYEBALL_FILE_TTL_MS`, with a pre-buffer body ceiling for encoded content plus 16 KiB metadata overhead.
 - Credential env vars use `EYEBALL_CRED_<TOOLKIT>_*`; `EYEBALL_API_KEYS` accepts `key:project[:user]`.
 - Manifest `endpoint.baseUrlOverrideEnv` values are the only trusted provider endpoint override seam.
@@ -123,6 +123,7 @@ Open-core tool and integration platform for AI agents: one typed, authenticated 
 - The security posture pass added product/cloud threat models, an incident-response runbook, SHA-pinned CI actions, trigger-secret rotation, and query/log/redirect hardening.
 - The 2026-07-19 Apple M4 in-process executor baseline is 0.247 ms p95 and 4,922 req/s for sync Gmail execution; adapter dispatch is the largest named traced stage.
 - The stock executor composes Cloud-issued key verification and hosted credential resolution independently through bearer-authenticated, no-store, in-process-testable HTTP seams.
+- The stock executor exposes public `/health` liveness and public, no-store `/ready` traffic admission. Readiness fails closed with an executor-owned 10-second deadline and redacted per-check breakdown for Postgres connectivity, exact committed/applied migration parity, credential-provider health, and task-queue admission; Cloud probes traverse billing/vault with an impossible sentinel, durable queue probes validate the job table and admission permissions without inserting a job, and zero-database mode is ready after boot.
 
 ## Known Issues
 
