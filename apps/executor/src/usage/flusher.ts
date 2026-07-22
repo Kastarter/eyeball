@@ -5,7 +5,13 @@ import {
 } from "../adapters/index.js";
 import type { ExecutorTelemetryRuntime } from "../telemetry/index.js";
 import type { CloudUsageClient } from "./cloud.js";
-import type { UsageOutboxRecord, UsageOutboxStore } from "./outbox.js";
+import {
+  isUsageReleasePayload,
+  type UsageOutboxRecord,
+  type UsageOutboxStore,
+  type UsageReleasePayload,
+  type UsageReportPayload,
+} from "./outbox.js";
 
 const MAX_BATCH_SIZE = 50;
 const MAX_BACKOFF_MS = 60 * 60_000;
@@ -34,6 +40,26 @@ function positiveInteger(value: number, name: string): number {
 
 function retryDelayMs(attempt: number): number {
   return Math.min(MAX_BACKOFF_MS, 1_000 * 2 ** Math.min(attempt - 1, 12));
+}
+
+type UsageReleaseOutboxRecord = UsageOutboxRecord & {
+  readonly payload: UsageReleasePayload;
+};
+
+type UsageReportOutboxRecord = UsageOutboxRecord & {
+  readonly payload: UsageReportPayload;
+};
+
+function isUsageReleaseRecord(
+  record: UsageOutboxRecord,
+): record is UsageReleaseOutboxRecord {
+  return isUsageReleasePayload(record.payload);
+}
+
+function isUsageReportRecord(
+  record: UsageOutboxRecord,
+): record is UsageReportOutboxRecord {
+  return !isUsageReleasePayload(record.payload);
 }
 
 export class UsageOutboxFlusher {
@@ -127,44 +153,83 @@ export class UsageOutboxFlusher {
       this.#telemetry.setUsageOutboxDepth(await this.#store.depth());
       return { selected: 0, sent: 0, failed: 0 };
     }
-    try {
-      const result = await this.#client.report(
-        records.map((record) => record.payload),
-      );
-      const completedAt = this.#now().toISOString();
-      await this.#store.markSent(
-        records.map((record) => record.executionId),
-        completedAt,
-      );
-      this.#telemetry.recordUsageReport("accepted", result.accepted);
-      this.#telemetry.recordUsageReport("duplicate", result.duplicates);
-      this.#logger.info("usage.report_batch_succeeded", {
-        batchSize: records.length,
-        accepted: result.accepted,
-        duplicates: result.duplicates,
-      });
-      this.#telemetry.setUsageOutboxDepth(await this.#store.depth());
-      return { selected: records.length, sent: records.length, failed: 0 };
-    } catch (error) {
-      const failedAt = this.#now();
-      await this.#store.markFailed(
-        records.map((record) => ({
-          executionId: record.executionId,
-          nextRetryAt: new Date(
-            failedAt.valueOf() + retryDelayMs(record.attempts + 1),
-          ).toISOString(),
-        })),
-        failedAt.toISOString(),
-      );
-      this.#telemetry.recordUsageReport("failed", records.length);
-      this.#logger.warn("usage.report_batch_failed", {
-        batchSize: records.length,
-        errorName: error instanceof Error ? error.name : "unknown",
-      });
-      this.#alertRetained(records);
-      this.#telemetry.setUsageOutboxDepth(await this.#store.depth());
-      return { selected: records.length, sent: 0, failed: records.length };
+
+    const sent: UsageOutboxRecord[] = [];
+    const failed: UsageOutboxRecord[] = [];
+    const reports = records.filter(isUsageReportRecord);
+    if (reports.length > 0) {
+      try {
+        const result = await this.#client.report(
+          reports.map((record) => record.payload),
+        );
+        sent.push(...reports);
+        this.#telemetry.recordUsageReport("accepted", result.accepted);
+        this.#telemetry.recordUsageReport("duplicate", result.duplicates);
+        this.#logger.info("usage.report_batch_succeeded", {
+          batchSize: reports.length,
+          accepted: result.accepted,
+          duplicates: result.duplicates,
+        });
+      } catch (error) {
+        failed.push(...reports);
+        this.#telemetry.recordUsageReport("failed", reports.length);
+        this.#logger.warn("usage.report_batch_failed", {
+          batchSize: reports.length,
+          errorName: error instanceof Error ? error.name : "unknown",
+        });
+      }
     }
+
+    for (const record of records.filter(isUsageReleaseRecord)) {
+      try {
+        await this.#client.release({
+          reservationId: record.payload.reservationId,
+          projectId: record.payload.projectId,
+          localExecutionId: record.payload.executionId,
+          idempotencyKey: record.payload.idempotencyKey,
+          ...(record.payload.cloudExecutionId === undefined
+            ? {}
+            : { cloudExecutionId: record.payload.cloudExecutionId }),
+          ...(record.payload.reservedAt === undefined
+            ? {}
+            : { reservedAt: record.payload.reservedAt }),
+        });
+        sent.push(record);
+        this.#logger.info("usage.reservation_released", {
+          projectId: record.payload.projectId,
+          executionId: record.payload.executionId,
+        });
+      } catch (error) {
+        failed.push(record);
+        this.#logger.warn("usage.reservation_release_failed", {
+          projectId: record.payload.projectId,
+          executionId: record.payload.executionId,
+          errorName: error instanceof Error ? error.name : "unknown",
+        });
+      }
+    }
+
+    const completedAt = this.#now();
+    await this.#store.markSent(
+      sent.map((record) => record.executionId),
+      completedAt.toISOString(),
+    );
+    await this.#store.markFailed(
+      failed.map((record) => ({
+        executionId: record.executionId,
+        nextRetryAt: new Date(
+          completedAt.valueOf() + retryDelayMs(record.attempts + 1),
+        ).toISOString(),
+      })),
+      completedAt.toISOString(),
+    );
+    this.#alertRetained(failed);
+    this.#telemetry.setUsageOutboxDepth(await this.#store.depth());
+    return {
+      selected: records.length,
+      sent: sent.length,
+      failed: failed.length,
+    };
   }
 
   #alertRetained(records: readonly UsageOutboxRecord[]): void {

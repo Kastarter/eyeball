@@ -53,6 +53,10 @@ describe("webhook signature verification", () => {
     );
     expect(OBSERVER_FAILURE.type).toBe("voice.observer.failed");
   });
+  it("accepts the first-class execution cancellation subscription", () => {
+    expect(isWebhookSubscriptionEventType("execution.cancelled")).toBe(true);
+    expect(isWebhookSubscriptionEventType("execution.canceled")).toBe(false);
+  });
   it("accepts the exact signed raw payload inside the replay window", () => {
     expect(
       verifyWebhookSignature({

@@ -3,27 +3,16 @@ import { and, asc, count, eq, inArray, lte, ne, or, sql } from "drizzle-orm";
 import type { PgQueryResultHKT } from "drizzle-orm/pg-core";
 import type {
   UsageOutboxFailure,
+  UsageOutboxPayload,
   UsageOutboxRecord,
   UsageOutboxStore,
-  UsageReportPayload,
 } from "../../usage/outbox.js";
+import { sameUsageOutboxPayload } from "../../usage/outbox.js";
 import type { EyeballPostgresDatabase } from "./database.js";
 import { usageOutbox } from "./schema.js";
 
 function copy<T>(value: T): T {
   return structuredClone(value);
-}
-
-function samePayload(left: UsageReportPayload, right: UsageReportPayload) {
-  return (
-    left.projectId === right.projectId &&
-    left.executionId === right.executionId &&
-    left.cloudExecutionId === right.cloudExecutionId &&
-    left.idempotencyKey === right.idempotencyKey &&
-    left.dimension === right.dimension &&
-    left.quantity === right.quantity &&
-    left.occurredAt === right.occurredAt
-  );
 }
 
 function toRecord(row: typeof usageOutbox.$inferSelect): UsageOutboxRecord {
@@ -50,7 +39,7 @@ export class PostgresUsageOutboxStore<
   }
 
   async enqueue(
-    payload: UsageReportPayload,
+    payload: UsageOutboxPayload,
     enqueuedAt: string,
   ): Promise<void> {
     const inserted = await this.#database
@@ -72,7 +61,7 @@ export class PostgresUsageOutboxStore<
     if (existing === undefined) {
       throw new Error("Usage outbox row disappeared during enqueue.");
     }
-    if (!samePayload(existing.payload, payload)) {
+    if (!sameUsageOutboxPayload(existing.payload, payload)) {
       throw new Error(
         `Conflicting usage outbox payload for execution ${payload.executionId}.`,
       );

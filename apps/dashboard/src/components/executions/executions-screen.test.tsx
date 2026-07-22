@@ -37,6 +37,25 @@ const failedExecution = {
   userId: "user_sam",
 } as const satisfies ExecutionRecord;
 
+const cancelledExecution = {
+  catalogVersion: "2026.07.21",
+  completedAt: "2026-07-21T09:00:00.145Z",
+  createdAt: "2026-07-21T09:00:00.000Z",
+  error: {
+    code: "execution_cancelled",
+    message:
+      "Execution was cancelled after provider dispatch may have begun; upstream work may still complete.",
+    retryable: false,
+  },
+  executionId: "exe_cancelled_123",
+  latencyMs: 145,
+  status: "cancelled",
+  cancellation: { dispatchMayHaveBegun: true },
+  tool: "gmail.send_email",
+  toolVersion: "1.4.0",
+  userId: "user_sam",
+} as const satisfies ExecutionRecord;
+
 describe("ExecutionsScreen server rendering", () => {
   it("renders the filterable execution table and pagination affordance", () => {
     const markup = renderToStaticMarkup(
@@ -98,5 +117,27 @@ describe("ExecutionsScreen server rendering", () => {
     ]) {
       expect(markup).not.toContain(privateSentinel);
     }
+  });
+
+  it("renders cancellation as terminal non-success with an honest dispatch warning", () => {
+    const markup = renderToStaticMarkup(
+      <ExecutionsScreen
+        emptySnippet="fixture snippet"
+        initialExecution={cancelledExecution.executionId}
+        initialExecutionDetail={cancelledExecution}
+        initialExecutions={[cancelledExecution]}
+        initialFilters={{ status: "cancelled" }}
+        project="restaurant-demo"
+      />,
+    );
+
+    expect(markup).toContain("Cancelled");
+    expect(markup).toContain("Cancellation");
+    expect(markup).toContain("execution_cancelled");
+    expect(markup).toContain(
+      "Upstream work or external side effects may still complete",
+    );
+    expect(markup).toContain("Waiting");
+    expect(markup).not.toContain("Response</h3>");
   });
 });

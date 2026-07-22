@@ -72,6 +72,29 @@ A synchronous tool failure is a terminal HTTP 200 response, not a transport erro
 }
 ```
 
+## Cancelled response
+
+A synchronous request can race with cancellation, and an idempotent replay can resolve to an already-cancelled execution. Like a tool failure, cancellation is a terminal HTTP 200 execution response:
+
+```json
+{
+  "executionId": "exe_01JZ6WA0Q73ZQ5B51SRYB6M4Z8",
+  "tool": "gmail.send_email",
+  "toolVersion": "1.0.0",
+  "catalogVersion": "1.1",
+  "status": "cancelled",
+  "error": {
+    "code": "execution_cancelled",
+    "message": "Execution was cancelled before provider dispatch.",
+    "retryable": false
+  },
+  "latencyMs": 19,
+  "cancellation": {
+    "dispatchMayHaveBegun": false
+  }
+}
+```
+
 ## Pending or running response
 
 ```json
@@ -86,4 +109,4 @@ A synchronous tool failure is a terminal HTTP 200 response, not a transport erro
 
 Poll pending work at [`GET /v1/executions/:id`](/api/executions/get-execution).
 
-Async mode returns HTTP 202 with `pending`. Replaying the same async request while its execution is in flight returns HTTP 202 with the latest `pending` or `running` state. A synchronous replay waits for the original execution and returns its terminal HTTP 200 response.
+Async mode returns HTTP 202 with `pending`. Replaying the same async request while its execution is in flight returns HTTP 202 with the latest `pending` or `running` state. A synchronous replay waits for the original execution and returns its terminal `succeeded`, `failed`, or `cancelled` HTTP 200 response.

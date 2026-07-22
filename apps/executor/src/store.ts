@@ -1,12 +1,16 @@
 import { isDeepStrictEqual } from "node:util";
 import type {
+  CancelledExecutionRecord,
   ConnectionId,
   ExecuteRequest,
   ExecutionId,
   ExecutionRecord,
   ExecutionStatus,
+  FailedExecutionRecord,
   JsonValue,
   QualifiedToolName,
+  SucceededExecutionRecord,
+  TerminalExecutionRecord,
 } from "@eyeball/core";
 import type {
   UsageReportContext,
@@ -89,6 +93,15 @@ export type ExecutionAllocationInspection =
   | { kind: "replay"; record: ExecutionRecord }
   | { kind: "conflict" };
 
+export type ExecutionCancellationResult =
+  | { kind: "cancelled"; record: CancelledExecutionRecord }
+  | { kind: "already_cancelled"; record: CancelledExecutionRecord }
+  | {
+      kind: "already_terminal";
+      record: SucceededExecutionRecord | FailedExecutionRecord;
+    }
+  | { kind: "not_found" };
+
 export interface ExecutionListFilters {
   status?: ExecutionStatus;
   tool?: QualifiedToolName;
@@ -139,10 +152,15 @@ export interface ExecutionStore {
     observedAt: string,
   ): Promise<boolean>;
   update(projectId: string, record: ExecutionRecord): Promise<void>;
+  cancelExecution(
+    projectId: string,
+    executionId: ExecutionId,
+    cancelledAt: string,
+  ): Promise<ExecutionCancellationResult>;
   waitForTerminal(
     projectId: string,
     executionId: ExecutionId,
-  ): Promise<ExecutionRecord & { status: "succeeded" | "failed" }>;
+  ): Promise<TerminalExecutionRecord>;
   setResolvedConnection(
     projectId: string,
     executionId: ExecutionId,
@@ -213,6 +231,48 @@ export function projectExecutionRecord(
   replayObservedAt: string | null | undefined,
 ): ExecutionRecord {
   return replayObservedAt == null ? record : { ...record, replayed: true };
+}
+
+/** Constructs the one canonical immutable cancellation payload for every store. */
+export function cancelledExecutionRecord(
+  record: Extract<ExecutionRecord, { status: "pending" | "running" }>,
+  cancelledAt: string,
+  dispatchStartedAt?: string,
+): CancelledExecutionRecord {
+  const completedAt = new Date(cancelledAt);
+  if (Number.isNaN(completedAt.valueOf())) {
+    throw new TypeError("Execution cancellation time must be a timestamp.");
+  }
+  const latencyStart = record.startedAt ?? record.createdAt;
+  const latencyStartMs = Date.parse(latencyStart);
+  if (!Number.isFinite(latencyStartMs)) {
+    throw new TypeError("Execution latency start must be a timestamp.");
+  }
+  const dispatchMayHaveBegun = dispatchStartedAt !== undefined;
+  return {
+    executionId: record.executionId,
+    tool: record.tool,
+    toolVersion: record.toolVersion,
+    catalogVersion: record.catalogVersion,
+    status: "cancelled",
+    userId: record.userId,
+    createdAt: record.createdAt,
+    ...(record.startedAt === undefined ? {} : { startedAt: record.startedAt }),
+    ...(record.source === undefined ? {} : { source: record.source }),
+    ...(record.attachments === undefined
+      ? {}
+      : { attachments: record.attachments }),
+    completedAt: completedAt.toISOString(),
+    latencyMs: Math.max(0, completedAt.valueOf() - latencyStartMs),
+    error: {
+      code: "execution_cancelled",
+      retryable: false,
+      message: dispatchMayHaveBegun
+        ? "Execution was cancelled after provider dispatch may have begun; upstream work may still complete."
+        : "Execution was cancelled before provider dispatch.",
+    },
+    cancellation: { dispatchMayHaveBegun },
+  };
 }
 
 function idempotencyStorageKey(
@@ -291,13 +351,27 @@ export function assertExecutionTransition(
 
   const valid =
     (previous.status === "pending" &&
-      (next.status === "running" || next.status === "failed")) ||
+      (next.status === "running" ||
+        next.status === "failed" ||
+        next.status === "cancelled")) ||
     (previous.status === "running" &&
-      (next.status === "succeeded" || next.status === "failed"));
+      (next.status === "succeeded" ||
+        next.status === "failed" ||
+        next.status === "cancelled"));
   if (!valid) {
-    throw new Error(
-      `Invalid execution transition: ${previous.status} -> ${next.status}`,
-    );
+    throw new ExecutionTransitionConflictError(previous.status, next.status);
+  }
+}
+
+export class ExecutionTransitionConflictError extends Error {
+  readonly previousStatus: ExecutionStatus;
+  readonly nextStatus: ExecutionStatus;
+
+  constructor(previousStatus: ExecutionStatus, nextStatus: ExecutionStatus) {
+    super(`Invalid execution transition: ${previousStatus} -> ${nextStatus}`);
+    this.name = "ExecutionTransitionConflictError";
+    this.previousStatus = previousStatus;
+    this.nextStatus = nextStatus;
   }
 }
 
@@ -307,7 +381,7 @@ export class InMemoryExecutionStore implements ExecutionStore {
   readonly #idempotencyByExecution = new Map<string, string>();
   readonly #terminalWaiters = new Map<
     string,
-    Set<(record: ExecutionRecord & { status: "succeeded" | "failed" }) => void>
+    Set<(record: TerminalExecutionRecord) => void>
   >();
   #sequence = 0;
 
@@ -488,35 +562,81 @@ export class InMemoryExecutionStore implements ExecutionStore {
     }
     assertExecutionTransition(stored.record, record);
     stored.record = clone(record);
-    if (record.status === "succeeded" || record.status === "failed") {
+    if (
+      record.status === "succeeded" ||
+      record.status === "failed" ||
+      record.status === "cancelled"
+    ) {
       const key = executionStorageKey(projectId, record.executionId);
       const waiters = this.#terminalWaiters.get(key);
       this.#terminalWaiters.delete(key);
       for (const resolve of waiters ?? []) {
         resolve(
-          clone(projectExecutionRecord(record, stored.replayObservedAt)) as
-            | (ExecutionRecord & { status: "succeeded" })
-            | (ExecutionRecord & { status: "failed" }),
+          clone(
+            projectExecutionRecord(record, stored.replayObservedAt),
+          ) as TerminalExecutionRecord,
         );
       }
     }
   }
 
+  async cancelExecution(
+    projectId: string,
+    executionId: ExecutionId,
+    cancelledAt: string,
+  ): Promise<ExecutionCancellationResult> {
+    const stored = this.#executions.get(projectId)?.get(executionId);
+    if (stored === undefined) return { kind: "not_found" };
+    const current = stored.record;
+    if (current.status === "cancelled") {
+      return {
+        kind: "already_cancelled",
+        record: clone(
+          projectExecutionRecord(current, stored.replayObservedAt),
+        ) as CancelledExecutionRecord,
+      };
+    }
+    if (current.status === "succeeded" || current.status === "failed") {
+      return {
+        kind: "already_terminal",
+        record: clone(
+          projectExecutionRecord(current, stored.replayObservedAt),
+        ) as SucceededExecutionRecord | FailedExecutionRecord,
+      };
+    }
+    const cancelled = cancelledExecutionRecord(
+      current,
+      cancelledAt,
+      stored.dispatchStartedAt,
+    );
+    assertExecutionTransition(current, cancelled);
+    stored.record = clone(cancelled);
+    const key = executionStorageKey(projectId, executionId);
+    const waiters = this.#terminalWaiters.get(key);
+    this.#terminalWaiters.delete(key);
+    const projected = clone(
+      projectExecutionRecord(cancelled, stored.replayObservedAt),
+    ) as CancelledExecutionRecord;
+    for (const resolve of waiters ?? []) resolve(clone(projected));
+    return { kind: "cancelled", record: projected };
+  }
+
   async waitForTerminal(
     projectId: string,
     executionId: ExecutionId,
-  ): Promise<ExecutionRecord & { status: "succeeded" | "failed" }> {
+  ): Promise<TerminalExecutionRecord> {
     const stored = this.#executions.get(projectId)?.get(executionId);
     if (stored === undefined) {
       throw new Error(`Unknown execution ID: ${executionId}`);
     }
     if (
       stored.record.status === "succeeded" ||
-      stored.record.status === "failed"
+      stored.record.status === "failed" ||
+      stored.record.status === "cancelled"
     ) {
       return clone(
         projectExecutionRecord(stored.record, stored.replayObservedAt),
-      ) as ExecutionRecord & { status: "succeeded" | "failed" };
+      ) as TerminalExecutionRecord;
     }
     const key = executionStorageKey(projectId, executionId);
     return new Promise((resolve) => {

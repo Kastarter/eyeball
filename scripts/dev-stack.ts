@@ -352,7 +352,7 @@ async function createMockBackedExecutor(
       });
       const response = outcome.response;
       if (response.status === "succeeded") return response.output;
-      if (response.status === "failed") {
+      if (response.status === "failed" || response.status === "cancelled") {
         throw new EyeballError({
           code: response.error.code,
           message: response.error.message,

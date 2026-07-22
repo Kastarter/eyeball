@@ -683,6 +683,14 @@ describe("voice-session grant route confinement", () => {
       headers: { Authorization: `Bearer ${issued.token}` },
     });
     expect(wrongRoute.status).toBe(403);
+    const cancelRoute = await harness.app.request(
+      "/v1/executions/exe_voice_grant_cancel/cancel",
+      {
+        method: "POST",
+        headers: { Authorization: `Bearer ${issued.token}` },
+      },
+    );
+    expect(cancelRoute.status).toBe(403);
     expect(harness.adapter.execute).not.toHaveBeenCalled();
     await expect(harness.engine.listExecutions(PROJECT)).resolves.toEqual({
       executions: [],

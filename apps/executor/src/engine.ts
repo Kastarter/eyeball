@@ -1,6 +1,7 @@
 import { createHash } from "node:crypto";
 import { defaultCatalog } from "@eyeball/catalog";
 import {
+  type CancelledExecutionRecord,
   type CredentialProvider,
   CredentialProviderError,
   createExecutionId,
@@ -31,6 +32,7 @@ import {
   type ResolvedCredential,
   type StagedFileMetadata,
   type StagedFilePage,
+  type TerminalExecutionRecord,
   TOOL_ERROR_CODES,
   type ToolDefinition,
   validateInput,
@@ -48,6 +50,7 @@ import {
 import { executionAttachmentSummary } from "./execution-provenance.js";
 import {
   createExecutorJobHandlerRegistry,
+  executorJobId,
   InMemoryTaskQueue,
   type JobHandlerContext,
   type JobHandlerResult,
@@ -73,6 +76,7 @@ import {
   type ExecutionPage,
   type ExecutionResumeContext,
   type ExecutionStore,
+  ExecutionTransitionConflictError,
   type IdempotencyReservation,
   InMemoryExecutionStore,
   InvalidExecutionCursorError,
@@ -426,6 +430,14 @@ function executeResponse(record: ExecutionRecord): ExecuteHttpResponse {
         error: record.error,
         latencyMs: record.latencyMs,
       };
+    case "cancelled":
+      return {
+        ...base,
+        status: "cancelled",
+        error: record.error,
+        latencyMs: record.latencyMs,
+        cancellation: record.cancellation,
+      };
   }
 }
 
@@ -602,6 +614,8 @@ export class ExecutionEngine {
   readonly #executionIdFactory: () => ExecutionId;
   readonly #fileIdFactory: () => FileId;
   readonly #idempotencyRetentionMs: number;
+  readonly #activeExecutions = new Map<string, Set<AbortController>>();
+  readonly #terminalReconciliations = new Map<string, Promise<void>>();
   constructor(options: ExecutionEngineOptions = {}) {
     this.catalog = options.catalog ?? defaultCatalog;
     this.adapters =
@@ -1218,7 +1232,8 @@ export class ExecutionEngine {
             : allocation.record;
         if (
           replayRecord.status === "succeeded" ||
-          replayRecord.status === "failed"
+          replayRecord.status === "failed" ||
+          replayRecord.status === "cancelled"
         ) {
           await this.#reconcileReplayedTerminal(
             command.projectId,
@@ -1333,6 +1348,73 @@ export class ExecutionEngine {
     return execution;
   }
 
+  /** Durably cancels pending/running work and reconciles its terminal effects. */
+  async cancelExecution(
+    projectId: string,
+    executionId: string,
+  ): Promise<CancelledExecutionRecord> {
+    if (!isExecutionId(executionId)) {
+      throw new ExecutionRequestError(404, {
+        code: TOOL_ERROR_CODES.NOT_FOUND,
+        message: "Execution was not found.",
+      });
+    }
+    const result = await this.store.cancelExecution(
+      projectId,
+      executionId,
+      this.#now().toISOString(),
+    );
+    if (result.kind === "not_found") {
+      throw new ExecutionRequestError(404, {
+        code: TOOL_ERROR_CODES.NOT_FOUND,
+        message: "Execution was not found.",
+      });
+    }
+    if (result.kind === "already_terminal") {
+      throw new ExecutionRequestError(409, {
+        code: TOOL_ERROR_CODES.INVALID_INPUT,
+        message: `Execution is already in terminal status '${result.record.status}'.`,
+      });
+    }
+
+    this.#abortActiveExecution(projectId, executionId);
+    await this.reconcileTerminalExecution({
+      projectId,
+      record: result.record,
+    });
+
+    const job = {
+      kind: "execution.run.v1",
+      payload: { projectId, executionId },
+    } as const;
+    const queueResult = await this.queue.jobStore.cancelPending({
+      jobId: executorJobId(job),
+      expectedDescription: job,
+      now: this.#now().toISOString(),
+    });
+    if (queueResult.kind === "conflict") {
+      throw new Error(
+        "Execution cancellation found a conflicting deterministic queue job.",
+      );
+    }
+    if (result.kind === "cancelled") {
+      this.telemetry.recordExecution(
+        result.record.tool,
+        "cancelled",
+        result.record.latencyMs,
+      );
+      this.#logger.info("execution.terminal", {
+        executionId: result.record.executionId,
+        tool: result.record.tool,
+        projectId,
+        latencyMs: result.record.latencyMs,
+        status: result.record.status,
+        dispatchMayHaveBegun: result.record.cancellation.dispatchMayHaveBegun,
+      });
+    }
+    return result.record;
+  }
+
   async getExecutionDetail(
     projectId: string,
     executionId: string,
@@ -1400,7 +1482,8 @@ export class ExecutionEngine {
     try {
       if (
         recoverable.record.status === "succeeded" ||
-        recoverable.record.status === "failed"
+        recoverable.record.status === "failed" ||
+        recoverable.record.status === "cancelled"
       ) {
         await this.reconcileTerminalExecution({
           projectId: payload.projectId,
@@ -1414,11 +1497,10 @@ export class ExecutionEngine {
           ...(recoverable.webhookEventId === undefined
             ? {}
             : { webhookEventId: recoverable.webhookEventId }),
-          dispatchMayHaveBegun:
-            recoverable.record.status === "succeeded" ||
-            recoverable.dispatchStartedAt !== undefined,
         });
-        return { type: "complete" };
+        return recoverable.record.status === "cancelled"
+          ? { type: "cancelled" }
+          : { type: "complete" };
       }
 
       if (recoverable.resumeContext === undefined) {
@@ -1540,6 +1622,8 @@ export class ExecutionEngine {
           resume.usageReport,
           resume.usageReservation,
           recoverable.webhookEventId,
+          undefined,
+          context.signal,
         );
       } catch {
         const latest = await this.store.getRecoverable(
@@ -1548,7 +1632,8 @@ export class ExecutionEngine {
         );
         if (
           latest?.record.status === "succeeded" ||
-          latest?.record.status === "failed"
+          latest?.record.status === "failed" ||
+          latest?.record.status === "cancelled"
         ) {
           await this.reconcileTerminalExecution({
             projectId: payload.projectId,
@@ -1562,18 +1647,23 @@ export class ExecutionEngine {
             ...(latest.webhookEventId === undefined
               ? {}
               : { webhookEventId: latest.webhookEventId }),
-            dispatchMayHaveBegun:
-              latest.record.status === "succeeded" ||
-              latest.dispatchStartedAt !== undefined,
           });
-          return { type: "complete" };
+          return latest.record.status === "cancelled"
+            ? { type: "cancelled" }
+            : { type: "complete" };
         }
         return {
           type: "reschedule",
           runAfter: new Date(Date.parse(context.now()) + 1_000).toISOString(),
         };
       }
-      return { type: "complete" };
+      const latest = await this.store.get(
+        payload.projectId,
+        recoverable.record.executionId,
+      );
+      return latest?.status === "cancelled"
+        ? { type: "cancelled" }
+        : { type: "complete" };
     } catch {
       return {
         type: "reschedule",
@@ -1585,11 +1675,34 @@ export class ExecutionEngine {
   /** Reconciles usage and webhook terminal effects before queue acknowledgement. */
   async reconcileTerminalExecution(input: {
     readonly projectId: string;
-    readonly record: ExecutionRecord & { status: "succeeded" | "failed" };
+    readonly record: TerminalExecutionRecord;
     readonly usageReport?: UsageReportContext;
     readonly usageReservation?: UsageReservationHandle;
     readonly webhookEventId?: string;
-    readonly dispatchMayHaveBegun: boolean;
+  }): Promise<void> {
+    const key = this.#activeExecutionKey(
+      input.projectId,
+      input.record.executionId,
+    );
+    const active = this.#terminalReconciliations.get(key);
+    if (active !== undefined) return active;
+    const pending = this.#reconcileTerminalExecutionEffects(input).finally(
+      () => {
+        if (this.#terminalReconciliations.get(key) === pending) {
+          this.#terminalReconciliations.delete(key);
+        }
+      },
+    );
+    this.#terminalReconciliations.set(key, pending);
+    return pending;
+  }
+
+  async #reconcileTerminalExecutionEffects(input: {
+    readonly projectId: string;
+    readonly record: TerminalExecutionRecord;
+    readonly usageReport?: UsageReportContext;
+    readonly usageReservation?: UsageReservationHandle;
+    readonly webhookEventId?: string;
   }): Promise<void> {
     const stored = await this.store.getRecoverable(
       input.projectId,
@@ -1597,14 +1710,20 @@ export class ExecutionEngine {
     );
     const record =
       stored?.record.status === "succeeded" ||
-      stored?.record.status === "failed"
+      stored?.record.status === "failed" ||
+      stored?.record.status === "cancelled"
         ? stored.record
         : input.record;
+    const dispatchMayHaveBegun =
+      record.status === "succeeded" ||
+      (record.status === "cancelled"
+        ? record.cancellation.dispatchMayHaveBegun
+        : stored?.dispatchStartedAt !== undefined);
     if (stored?.usageFinalizedAt === undefined) {
       const usageReport =
         input.usageReport ??
         stored?.resumeContext?.usageReport ??
-        (input.dispatchMayHaveBegun && input.usageReservation !== undefined
+        (dispatchMayHaveBegun && input.usageReservation !== undefined
           ? {
               projectId: input.usageReservation.projectId,
               executionId: input.usageReservation.localExecutionId,
@@ -1622,12 +1741,12 @@ export class ExecutionEngine {
           : undefined);
       const reservation =
         input.usageReservation ?? stored?.resumeContext?.usageReservation;
-      if (input.dispatchMayHaveBegun && usageReport !== undefined) {
+      if (dispatchMayHaveBegun && usageReport !== undefined) {
         await this.usageGate.reportTerminal({
           context: usageReport,
           record,
         });
-      } else if (!input.dispatchMayHaveBegun && reservation !== undefined) {
+      } else if (!dispatchMayHaveBegun && reservation !== undefined) {
         await this.usageGate.release(reservation);
       }
       await this.store.markUsageFinalized(
@@ -1699,7 +1818,6 @@ export class ExecutionEngine {
         ? {}
         : { usageReservation: recoverable.resumeContext.usageReservation }),
       webhookEventId,
-      dispatchMayHaveBegun,
     });
   }
 
@@ -1766,7 +1884,7 @@ export class ExecutionEngine {
 
   async #reconcileReplayedTerminal(
     projectId: string,
-    record: ExecutionRecord & { status: "succeeded" | "failed" },
+    record: TerminalExecutionRecord,
   ): Promise<void> {
     const recoverable = await this.store.getRecoverable(
       projectId,
@@ -1777,7 +1895,8 @@ export class ExecutionEngine {
       projectId,
       record:
         recoverable.record.status === "succeeded" ||
-        recoverable.record.status === "failed"
+        recoverable.record.status === "failed" ||
+        recoverable.record.status === "cancelled"
           ? recoverable.record
           : record,
       ...(recoverable.resumeContext?.usageReport === undefined
@@ -1789,9 +1908,6 @@ export class ExecutionEngine {
       ...(recoverable.webhookEventId === undefined
         ? {}
         : { webhookEventId: recoverable.webhookEventId }),
-      dispatchMayHaveBegun:
-        record.status === "succeeded" ||
-        recoverable.dispatchStartedAt !== undefined,
     });
   }
 
@@ -1810,13 +1926,24 @@ export class ExecutionEngine {
     usageReservation?: UsageReservationHandle,
     webhookEventId?: string,
     reservedPermit?: ConcurrencyPermit,
+    externalSignal?: AbortSignal,
   ): Promise<void> {
+    const cancellationController = new AbortController();
+    this.#registerActiveExecution(
+      projectId,
+      pending.executionId,
+      cancellationController,
+    );
+    const signal =
+      externalSignal === undefined
+        ? cancellationController.signal
+        : AbortSignal.any([cancellationController.signal, externalSignal]);
     let concurrencyPermit: ConcurrencyPermit | undefined;
     let dispatchAttempted = false;
     let dispatchFenced = false;
     let usageFinalized = false;
     let terminalPersisted = false;
-    let terminalStatus: "succeeded" | "failed" | undefined;
+    let terminalStatus: "succeeded" | "failed" | "cancelled" | undefined;
     let terminalError: unknown;
     try {
       concurrencyPermit =
@@ -1827,6 +1954,7 @@ export class ExecutionEngine {
               concurrencyBucketKey,
               concurrencyLimit,
             ));
+      signal.throwIfAborted();
       const startedAt =
         pending.status === "running"
           ? new Date(pending.startedAt ?? pending.createdAt)
@@ -1915,11 +2043,7 @@ export class ExecutionEngine {
           });
           throw error;
         }
-        this.#logger.info("execution.dispatched", {
-          executionId: pending.executionId,
-          tool: tool.name,
-          projectId,
-        });
+        signal.throwIfAborted();
         const output = await inTelemetrySpan(
           this.telemetry,
           "eyeball.execute.adapter-dispatch",
@@ -1929,6 +2053,7 @@ export class ExecutionEngine {
             "eyeball.toolkit": tool.toolkit,
           },
           async (dispatchContext) => {
+            signal.throwIfAborted();
             const dispatchStartedAt = this.#now().toISOString();
             const marked = await this.store.markDispatchStarted(
               projectId,
@@ -1940,6 +2065,11 @@ export class ExecutionEngine {
               throw new ExecutionDispatchFencedError();
             }
             dispatchAttempted = true;
+            this.#logger.info("execution.dispatched", {
+              executionId: pending.executionId,
+              tool: tool.name,
+              projectId,
+            });
             return adapter.execute({
               projectId,
               userId: request.userId,
@@ -1950,6 +2080,7 @@ export class ExecutionEngine {
               fetchImpl: this.#fetchImpl,
               clock: this.#clock,
               logger: this.#logger,
+              signal,
               ...(this.telemetry.tracer === undefined
                 ? {}
                 : {
@@ -2014,7 +2145,6 @@ export class ExecutionEngine {
           ...(usageReport === undefined ? {} : { usageReport }),
           ...(usageReservation === undefined ? {} : { usageReservation }),
           ...(webhookEventId === undefined ? {} : { webhookEventId }),
-          dispatchMayHaveBegun: true,
         });
         usageFinalized = true;
         terminalStatus = "succeeded";
@@ -2070,7 +2200,6 @@ export class ExecutionEngine {
           ...(usageReport === undefined ? {} : { usageReport }),
           ...(usageReservation === undefined ? {} : { usageReservation }),
           ...(webhookEventId === undefined ? {} : { webhookEventId }),
-          dispatchMayHaveBegun: dispatchAttempted,
         });
         usageFinalized = true;
         terminalStatus = "failed";
@@ -2096,6 +2225,34 @@ export class ExecutionEngine {
     } catch (error) {
       terminalError ??= error;
       if (
+        error instanceof ExecutionTransitionConflictError ||
+        error instanceof ExecutionDispatchFencedError ||
+        signal.aborted
+      ) {
+        const winner = await this.store.getRecoverable(
+          projectId,
+          pending.executionId,
+        );
+        if (winner?.record.status === "cancelled") {
+          await this.reconcileTerminalExecution({
+            projectId,
+            record: winner.record,
+            ...(winner.resumeContext?.usageReport === undefined
+              ? {}
+              : { usageReport: winner.resumeContext.usageReport }),
+            ...(winner.resumeContext?.usageReservation === undefined
+              ? {}
+              : { usageReservation: winner.resumeContext.usageReservation }),
+            ...(winner.webhookEventId === undefined
+              ? {}
+              : { webhookEventId: winner.webhookEventId }),
+          });
+          usageFinalized = true;
+          terminalStatus = "cancelled";
+          return;
+        }
+      }
+      if (
         !dispatchAttempted &&
         !dispatchFenced &&
         !usageFinalized &&
@@ -2107,9 +2264,47 @@ export class ExecutionEngine {
       throw error;
     } finally {
       concurrencyPermit?.release();
+      this.#unregisterActiveExecution(
+        projectId,
+        pending.executionId,
+        cancellationController,
+      );
       if (finishTrace) {
         executionTrace.finish(terminalStatus ?? "failed", terminalError);
       }
+    }
+  }
+
+  #activeExecutionKey(projectId: string, executionId: ExecutionId): string {
+    return JSON.stringify([projectId, executionId]);
+  }
+
+  #registerActiveExecution(
+    projectId: string,
+    executionId: ExecutionId,
+    controller: AbortController,
+  ): void {
+    const key = this.#activeExecutionKey(projectId, executionId);
+    const controllers = this.#activeExecutions.get(key) ?? new Set();
+    controllers.add(controller);
+    this.#activeExecutions.set(key, controllers);
+  }
+
+  #unregisterActiveExecution(
+    projectId: string,
+    executionId: ExecutionId,
+    controller: AbortController,
+  ): void {
+    const key = this.#activeExecutionKey(projectId, executionId);
+    const controllers = this.#activeExecutions.get(key);
+    controllers?.delete(controller);
+    if (controllers?.size === 0) this.#activeExecutions.delete(key);
+  }
+
+  #abortActiveExecution(projectId: string, executionId: ExecutionId): void {
+    const key = this.#activeExecutionKey(projectId, executionId);
+    for (const controller of this.#activeExecutions.get(key) ?? []) {
+      controller.abort(new Error("Execution was cancelled."));
     }
   }
 

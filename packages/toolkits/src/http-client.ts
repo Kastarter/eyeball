@@ -210,6 +210,13 @@ export function createProviderHttpClient(
     if (authorization !== undefined) {
       headers.set("Authorization", authorization);
     }
+    const requestSignal = init.signal ?? undefined;
+    const signal =
+      context.signal === undefined
+        ? requestSignal
+        : requestSignal === undefined
+          ? context.signal
+          : AbortSignal.any([context.signal, requestSignal]);
 
     try {
       let response: Response;
@@ -218,6 +225,7 @@ export function createProviderHttpClient(
           ...init,
           headers,
           redirect: "manual",
+          ...(signal === undefined ? {} : { signal }),
         });
       } catch (error) {
         throw new EyeballError({

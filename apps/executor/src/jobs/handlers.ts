@@ -10,6 +10,7 @@ export interface JobHandlerContext {
 
 export type JobHandlerResult =
   | { readonly type: "complete" }
+  | { readonly type: "cancelled" }
   | { readonly type: "reschedule"; readonly runAfter: string }
   | { readonly type: "fail"; readonly errorCode: SafeJobErrorCode };
 

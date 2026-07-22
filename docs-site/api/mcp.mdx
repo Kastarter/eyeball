@@ -108,17 +108,17 @@ Terminal tool results include:
 
 Provider-tool descriptors include `_meta["dev.eyeball/tool"]`; the built-in search and generic execute descriptors do not.
 
-## Experimental Tasks
+## Tasks
 
-Tasks are opt-in per initialized session. A Tasks-capable client requests Eyeball's experimental profile in its initialize capabilities:
+Tasks are opt-in per initialized session. Under MCP `2025-11-25`, a Tasks-capable client requests the top-level Tasks capability during initialization:
 
 ```json
 {
-  "experimental": {
-    "tasks": {}
-  }
+  "tasks": {}
 }
 ```
+
+The legacy `capabilities.experimental.tasks` alias is still accepted for compatibility, but new clients should use the top-level capability.
 
 When the executor supports async allocation and status reads, the initialize result advertises `tasks.requests.tools.call`. `tools/list` then includes async-by-nature tools and adds `execution.taskSupport`: `"required"` for async-by-nature tools and `"optional"` for ordinary tools. Without this negotiation, async tools remain omitted and the existing terminal tool-result behavior is unchanged.
 
@@ -156,8 +156,10 @@ The create response contains only the task. Its `taskId` is the underlying `exe_
 }
 ```
 
-Poll with `tasks/get`. `pending` and `running` executions map to `working`; successful executions map to `completed`; failed tool results map to `failed`. Retrieve the canonical terminal `CallToolResult` with `tasks/result`. That method waits if work is still active, and its result includes both `_meta["dev.eyeball/execution"]` and `_meta["io.modelcontextprotocol/related-task"]`.
+Poll with `tasks/get`. `pending` and `running` executions map to `working`; successful executions map to `completed`; failed tool results map to `failed`; cancelled executions map to `cancelled`. Retrieve the canonical terminal `CallToolResult` with `tasks/result`. That method waits if work is still active, and its result includes both `_meta["dev.eyeball/execution"]` and `_meta["io.modelcontextprotocol/related-task"]`. A cancelled task returns the underlying non-success tool result with `execution_cancelled` and the authoritative execution metadata rather than a fabricated protocol error.
 
 If the original call supplied `_meta.progressToken`, the gateway publishes `notifications/progress` at queued, running, and terminal transitions. It also publishes optional `notifications/tasks/status` terminal notifications; clients must still poll `tasks/get`.
 
-`tasks/cancel` is advertised only when an injected executor bridge implements cancellation. The stock HTTP executor has no execution-cancel route, so it deliberately does not advertise cancellation. Task state is bound to the authenticated MCP session, retained for one hour by default, and stored through the injectable `SessionStore` seam.
+The stock HTTP bridge advertises `tasks/cancel` and forwards it to the executor only after resolving the task inside the currently authenticated MCP session. Cancellation returns the complete updated Task without related-task metadata. Cancelling a locally terminal task, or losing a downstream race to success or failure, returns JSON-RPC `-32602`.
+
+Pre-dispatch cancellation is deterministic. If provider dispatch may already have begun, the returned Task is still durably `cancelled`, but local interruption is best effort and upstream work or external side effects may complete. A gateway retry reconstructs the cancelled task from the executor when the downstream response was lost. Task state is bound to the authenticated MCP session, retained for one hour by default, and stored through the injectable `SessionStore` seam.

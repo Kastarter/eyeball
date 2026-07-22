@@ -99,7 +99,7 @@ preserves the hand-authored onboarding order.
       "api/overview", "api/authentication",
       { "group": "Executions", "pages": [
         "api/executions/execute", "api/executions/list-executions",
-        "api/executions/get-execution"
+        "api/executions/get-execution", "api/executions/cancel-execution"
       ]},
       { "group": "Connections dev API", "pages": [
         "api/connections/create-connection", "api/connections/list-connections",
@@ -218,7 +218,7 @@ while (true) {
       idempotencyKey: `anthropic:${call.id}` });
     return { type: "tool_result" as const, tool_use_id: call.id,
       content: JSON.stringify(run.status === "succeeded" ? run.output : run.error),
-      is_error: run.status === "failed" };
+      is_error: run.status !== "succeeded" };
   }));
   messages.push({ role: "user", content: results });
 }
@@ -363,7 +363,8 @@ guides may surround them but must not fork endpoint truth into hand-written tabl
 
 Errors are documentation. `api/errors` and `concepts/error-handling` provide stable anchors
 for `invalid_input`, `auth_missing`, `auth_expired`, `auth_insufficient_scope`, `not_found`,
-`rate_limited`, `provider_unavailable`, `provider_error`, `timeout`, and `not_supported`.
+`rate_limited`, `provider_unavailable`, `provider_error`, `timeout`, `not_supported`,
+`execution_interrupted`, and `execution_cancelled`.
 
 Each anchor includes meaning, retry safety, a failing request/response, exact remediation,
 framework handling, relevant links, and sanitized-detail rules. SDK and dashboard errors link

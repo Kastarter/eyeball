@@ -1,6 +1,11 @@
 import { EXECUTOR_PROJECT_HEADER } from "./executor-key-shared";
 
-export type ExecutionStatus = "pending" | "running" | "succeeded" | "failed";
+export type ExecutionStatus =
+  | "pending"
+  | "running"
+  | "succeeded"
+  | "failed"
+  | "cancelled";
 
 export type JsonValue =
   | null
@@ -54,6 +59,15 @@ export type ExecutionRecord = ExecutionRecordBase &
     | { status: "pending" | "running" }
     | { latencyMs: number; output: JsonValue; status: "succeeded" }
     | { error: NormalizedToolError; latencyMs: number; status: "failed" }
+    | {
+        cancellation: { dispatchMayHaveBegun: boolean };
+        error: NormalizedToolError & {
+          code: "execution_cancelled";
+          retryable: false;
+        };
+        latencyMs: number;
+        status: "cancelled";
+      }
   );
 
 export interface ExecutionPage {
@@ -108,6 +122,7 @@ export type WebhookSubscriptionEventType =
   | "execution.completed"
   | "execution.succeeded"
   | "execution.failed"
+  | "execution.cancelled"
   | "voice.session.event"
   | "voice.transcript.ready"
   | "voice.observer.failed"
@@ -364,6 +379,19 @@ export type ExecuteToolResponse =
       executionId: `exe_${string}`;
       latencyMs: number;
       status: "failed";
+      tool: string;
+      toolVersion: string;
+    }
+  | {
+      cancellation: { dispatchMayHaveBegun: boolean };
+      catalogVersion: string;
+      error: NormalizedToolError & {
+        code: "execution_cancelled";
+        retryable: false;
+      };
+      executionId: `exe_${string}`;
+      latencyMs: number;
+      status: "cancelled";
       tool: string;
       toolVersion: string;
     };

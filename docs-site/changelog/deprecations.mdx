@@ -8,7 +8,7 @@ There are no deprecated APIs in the `0.2.0` source cut. No npm release is claime
 ## Not implemented, not deprecated
 
 - The current AI SDK callback does not propagate a stable framework call ID, so mutation use is not launch-safe.
-- MCP Tasks are opt-in and experimental; stock cancellation and SSE replay are not implemented.
+- MCP Tasks are opt-in and experimental, and stock SSE replay is not implemented. Cancellation is supported, but work already dispatched to a provider is best effort and external side effects may still complete.
 - Hosted OAuth routes exist in private cloud source but are not deployed or live-provider certified.
 
 These are gaps, not old APIs that callers should continue using.

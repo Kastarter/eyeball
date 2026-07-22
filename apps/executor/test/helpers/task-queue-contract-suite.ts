@@ -1,5 +1,6 @@
 import { describe, expect, it, vi } from "vitest";
 import {
+  createJobEnvelope,
   ExecutorTaskSystem,
   type ExecutorTaskSystemOptions,
   executorJobId,
@@ -187,6 +188,154 @@ export function registerTaskQueueContractSuite(
       await competitor.drainOwned();
       await submitter.runOnce();
       await expect(submission.completed).resolves.toBeUndefined();
+    });
+
+    it("cancels pending work durably and settles attachment without dispatch", async () => {
+      const scope = identity(implementation.name);
+      const execute = vi.fn(async () => ({ type: "complete" as const }));
+      const taskSystem = await queue(implementation, {
+        ...completingHandlers,
+        "execution.run.v1": execute,
+      });
+      const job = executionJob(`${scope}_pending_cancel`);
+      const submission = taskSystem.submit(job, {
+        runAfter: "2099-01-01T00:00:00.000Z",
+      });
+      await submission.accepted;
+      const result = await taskSystem.jobStore.cancelPending({
+        jobId: executorJobId(job),
+        expectedDescription: job,
+        now: "2026-07-18T00:00:01.000Z",
+      });
+      expect(result).toMatchObject({
+        kind: "cancelled",
+        job: {
+          state: "cancelled",
+          completedAt: "2026-07-18T00:00:01.000Z",
+        },
+      });
+      await taskSystem.runOnce();
+      await expect(submission.completed).resolves.toBeUndefined();
+      expect(execute).not.toHaveBeenCalled();
+      await expect(
+        taskSystem.jobStore.reopenForRecovery({
+          jobId: executorJobId(job),
+          expectedDescription: job,
+          runAfter: "2026-07-18T00:00:02.000Z",
+        }),
+      ).resolves.toBe(false);
+      await expect(
+        taskSystem.jobStore.cancelPending({
+          jobId: executorJobId(job),
+          expectedDescription: job,
+          now: "2026-07-18T00:00:03.000Z",
+        }),
+      ).resolves.toMatchObject({ kind: "already_cancelled" });
+    });
+
+    it("preserves a running lease and fences worker cancellation", async () => {
+      const scope = identity(implementation.name);
+      const store = await implementation.jobStore();
+      const job = executionJob(`${scope}_claimed_cancel`);
+      const envelope = createJobEnvelope(
+        job,
+        { runAfter: "2026-07-18T00:00:00.000Z" },
+        new Date("2026-07-18T00:00:00.000Z"),
+      );
+      await store.ensure(envelope);
+      const [claimed] = await store.claim({
+        queueName: "execution",
+        workerId: `worker_${scope}`,
+        now: "2026-07-18T00:00:01.000Z",
+        leaseExpiresAt: "2026-07-18T00:00:31.000Z",
+        limit: 1,
+      });
+      expect(claimed).toBeDefined();
+      if (claimed === undefined) throw new Error("Expected a claimed job.");
+      await expect(
+        store.cancelPending({
+          jobId: envelope.jobId,
+          expectedDescription: job,
+          now: "2026-07-18T00:00:02.000Z",
+        }),
+      ).resolves.toMatchObject({
+        kind: "running",
+        job: { leaseToken: claimed.leaseToken },
+      });
+      await expect(
+        store.cancelClaimed({
+          jobId: claimed.jobId,
+          workerId: claimed.claimedBy,
+          leaseToken: `${claimed.leaseToken}_wrong`,
+          now: "2026-07-18T00:00:03.000Z",
+        }),
+      ).resolves.toBe(false);
+      await expect(
+        store.cancelClaimed({
+          jobId: claimed.jobId,
+          workerId: claimed.claimedBy,
+          leaseToken: claimed.leaseToken,
+          now: "2026-07-18T00:00:03.000Z",
+        }),
+      ).resolves.toBe(true);
+      await expect(store.get(claimed.jobId)).resolves.toMatchObject({
+        state: "cancelled",
+        completedAt: "2026-07-18T00:00:03.000Z",
+      });
+    });
+
+    it("lets a cancelled group predecessor unblock the next member", async () => {
+      const scope = identity(implementation.name);
+      const store = await implementation.jobStore();
+      const first = executionJob(`${scope}_group_first`);
+      const second = executionJob(`${scope}_group_second`);
+      const runAfter = "2026-07-18T00:00:00.000Z";
+      const now = new Date(runAfter);
+      await store.ensure(
+        createJobEnvelope(
+          first,
+          { runAfter, groupKey: `group_${scope}`, groupOrder: 1 },
+          now,
+        ),
+      );
+      await store.ensure(
+        createJobEnvelope(
+          second,
+          { runAfter, groupKey: `group_${scope}`, groupOrder: 2 },
+          now,
+        ),
+      );
+      await store.cancelPending({
+        jobId: executorJobId(first),
+        expectedDescription: first,
+        now: "2026-07-18T00:00:01.000Z",
+      });
+      const claimed = await store.claim({
+        queueName: "execution",
+        workerId: `worker_${scope}`,
+        now: "2026-07-18T00:00:02.000Z",
+        leaseExpiresAt: "2026-07-18T00:00:32.000Z",
+        limit: 1,
+      });
+      expect(claimed).toHaveLength(1);
+      expect(claimed[0]?.jobId).toBe(executorJobId(second));
+    });
+
+    it("persists a cancelled handler result and resolves the submission", async () => {
+      const scope = identity(implementation.name);
+      const taskSystem = await queue(implementation, {
+        ...completingHandlers,
+        "execution.run.v1": async () => ({ type: "cancelled" }),
+      });
+      const job = executionJob(`${scope}_handler_cancel`);
+      const submission = taskSystem.submit(job);
+      await submission.accepted;
+      await taskSystem.runOnce();
+      await taskSystem.drainOwned();
+      await expect(submission.completed).resolves.toBeUndefined();
+      await expect(
+        taskSystem.jobStore.get(executorJobId(job)),
+      ).resolves.toMatchObject({ state: "cancelled" });
     });
 
     it("validates every configured lane concurrency", async () => {

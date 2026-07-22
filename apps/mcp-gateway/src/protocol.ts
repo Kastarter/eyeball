@@ -40,6 +40,8 @@ import {
 export const MCP_PROTOCOL_VERSION = "2025-11-25" as const;
 export const MCP_SERVER_NAME = "eyeball-mcp-gateway" as const;
 export const MCP_SERVER_VERSION = "0.1.0" as const;
+export const MCP_TASKS_CAPABILITY = "tasks" as const;
+/** @deprecated Use the top-level MCP_TASKS_CAPABILITY path. */
 export const MCP_TASKS_EXPERIMENTAL_CAPABILITY = "tasks" as const;
 
 const EXECUTION_META_KEY = "dev.eyeball/execution";
@@ -494,12 +496,15 @@ function initializeParams(
   );
 }
 
-function experimentalTasksRequested(
+function tasksRequested(
   capabilities: Readonly<Record<string, unknown>>,
 ): boolean {
+  const tasks = capabilities[MCP_TASKS_CAPABILITY];
+  if (tasks === true || isRecord(tasks)) return true;
   if (!isRecord(capabilities.experimental)) return false;
-  const tasks = capabilities.experimental[MCP_TASKS_EXPERIMENTAL_CAPABILITY];
-  return tasks === true || isRecord(tasks);
+  const legacyTasks =
+    capabilities.experimental[MCP_TASKS_EXPERIMENTAL_CAPABILITY];
+  return legacyTasks === true || isRecord(legacyTasks);
 }
 
 function listParamsValid(value: unknown): boolean {
@@ -552,6 +557,8 @@ function taskStatus(
       return "completed";
     case "failed":
       return "failed";
+    case "cancelled":
+      return "cancelled";
   }
 }
 
@@ -567,6 +574,10 @@ function taskStatusMessage(
       return "Execution completed.";
     case "failed":
       return execution.error.message;
+    case "cancelled":
+      return execution.cancellation.dispatchMayHaveBegun
+        ? "Execution cancelled after provider dispatch may have begun; cancellation is best effort and upstream work may still complete."
+        : "Execution cancelled before provider dispatch.";
   }
 }
 
@@ -586,6 +597,7 @@ function executionProgress(status: ExecutionStatus): number {
       return 1;
     case "succeeded":
     case "failed":
+    case "cancelled":
       return 2;
   }
 }
@@ -828,7 +840,7 @@ export class McpProtocol {
       };
     }
     const tasksEnabled =
-      experimentalTasksRequested(
+      tasksRequested(
         message.params.capabilities as Readonly<Record<string, unknown>>,
       ) &&
       this.#executor.start !== undefined &&
@@ -1246,21 +1258,6 @@ export class McpProtocol {
       }
       task = stored;
     }
-    if (task.status === "cancelled") {
-      return {
-        response: rpcResult(
-          message.id,
-          withRelatedTask(
-            failedToolResult({
-              code: TOOL_ERROR_CODES.NOT_SUPPORTED,
-              message: `Task ${task.taskId} was cancelled before completion.`,
-              retryable: false,
-            }),
-            task.taskId,
-          ),
-        ),
-      };
-    }
     if (this.#executor.get === undefined) {
       return {
         response: rpcError(
@@ -1275,7 +1272,11 @@ export class McpProtocol {
         apiKey: context.apiKey,
         executionId: task.taskId,
       });
-      if (execution.status !== "succeeded" && execution.status !== "failed") {
+      if (
+        execution.status !== "succeeded" &&
+        execution.status !== "failed" &&
+        execution.status !== "cancelled"
+      ) {
         return {
           response: rpcError(
             message.id,
@@ -1327,33 +1328,45 @@ export class McpProtocol {
       };
     }
     try {
-      await cancel.call(this.#executor, {
+      const outcome = await cancel.call(this.#executor, {
         apiKey: context.apiKey,
         executionId: found.task.taskId,
       });
-      const cancelled: StoredMcpTask = {
+      const execution = outcome.execution;
+      const terminal: StoredMcpTask = {
         ...found.task,
-        status: "cancelled",
-        statusMessage: "The task was cancelled by request.",
+        executionStatus: execution.status,
+        status: taskStatus(execution),
+        statusMessage: taskStatusMessage(execution),
         lastUpdatedAt: new Date(this.#clock.now()).toISOString(),
+        progress: 2,
       };
       const saved = await this.#saveTask(
         found.session.sessionId,
         found.session.authBinding,
-        cancelled,
+        terminal,
       );
-      if (!saved.changed) {
+      this.#clearTaskPoll(found.session.sessionId, saved.task.taskId);
+      this.#publishProgress(
+        found.session.sessionId,
+        saved.task,
+        2,
+        saved.task.statusMessage ?? "Execution reached a terminal state.",
+      );
+      this.#publishTaskStatus(found.session.sessionId, saved.task);
+      this.#resolveTerminalWaiters(found.session.sessionId, saved.task.taskId);
+      if (
+        outcome.kind === "already_terminal" ||
+        saved.task.status !== "cancelled"
+      ) {
         return {
           response: rpcError(
             message.id,
             -32602,
-            `Cannot cancel task: already in terminal status '${saved.task.status}'.`,
+            `Cannot cancel task: execution reached terminal status '${saved.task.status}' before cancellation won.`,
           ),
         };
       }
-      this.#clearTaskPoll(found.session.sessionId, saved.task.taskId);
-      this.#publishTaskStatus(found.session.sessionId, saved.task);
-      this.#resolveTerminalWaiters(found.session.sessionId, saved.task.taskId);
       return { response: rpcResult(message.id, taskView(saved.task)) };
     } catch {
       return {
@@ -1451,14 +1464,20 @@ export class McpProtocol {
         "Execution running.",
       );
     }
-    if (updated.status === "completed" || updated.status === "failed") {
+    if (
+      updated.status === "completed" ||
+      updated.status === "failed" ||
+      updated.status === "cancelled"
+    ) {
       this.#publishProgress(
         session.sessionId,
         updated,
         2,
         updated.status === "completed"
           ? "Execution completed."
-          : "Execution failed.",
+          : updated.status === "failed"
+            ? "Execution failed."
+            : (updated.statusMessage ?? "Execution cancelled."),
       );
       this.#publishTaskStatus(session.sessionId, updated);
       this.#clearTaskPoll(session.sessionId, updated.taskId);

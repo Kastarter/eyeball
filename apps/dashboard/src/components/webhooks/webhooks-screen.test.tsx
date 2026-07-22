@@ -220,6 +220,10 @@ describe("WebhookEndpointDrawer", () => {
     expect(markup).toContain("Destination URL");
     expect(markup).toContain("Active");
     expect(markup).toContain("Execution");
+    expect(markup).toContain("execution.cancelled");
+    expect(markup).toContain(
+      "Convenience selector for succeeded, failed, and cancelled executions.",
+    );
     expect(markup).toContain("Voice");
     expect(markup).toContain("Triggers");
     expect(markup).toContain("shown once after creation");

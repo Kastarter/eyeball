@@ -13,6 +13,7 @@ export const TOOL_ERROR_CODES = {
   TIMEOUT: "timeout",
   NOT_SUPPORTED: "not_supported",
   EXECUTION_INTERRUPTED: "execution_interrupted",
+  EXECUTION_CANCELLED: "execution_cancelled",
 } as const;
 
 export type ToolErrorCode =
@@ -32,6 +33,7 @@ export const DEFAULT_ERROR_RETRYABILITY: Readonly<
   timeout: false,
   not_supported: false,
   execution_interrupted: false,
+  execution_cancelled: false,
 };
 
 export interface ProviderErrorDetail {

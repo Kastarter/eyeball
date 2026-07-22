@@ -26,11 +26,13 @@ import {
   AdapterRegistry,
   createExecutorApp,
   createExecutorJobHandlerRegistry,
+  createJobEnvelope,
   createProviderHttpClient,
   type EnsureJobResult,
   ExecutionEngine,
   type ExecutionResumeContext,
   ExecutorTaskSystem,
+  executorJobId,
   InMemoryExecutionStore,
   InMemoryJobStore,
   InMemoryTaskQueue,
@@ -57,7 +59,7 @@ interface VendorCall {
 
 interface HarnessOptions {
   asyncAnnotation?: boolean;
-  beforeAdapterExecute?: () => Promise<void>;
+  beforeAdapterExecute?: (context: AdapterContext) => Promise<void>;
   credential?: ResolvedCredential;
   credentialFailure?: Error;
   emptyOutput?: boolean;
@@ -172,7 +174,9 @@ function echoManifest(options: HarnessOptions = {}): ProviderManifest {
 
 class EchoAdapter implements ToolkitAdapter {
   readonly toolkitSlug = "echo";
-  readonly #beforeExecute: (() => Promise<void>) | undefined;
+  readonly #beforeExecute:
+    | ((context: AdapterContext) => Promise<void>)
+    | undefined;
   readonly #emptyOutput: boolean;
   readonly #invalidOutput: boolean;
 
@@ -194,7 +198,7 @@ class EchoAdapter implements ToolkitAdapter {
         message: `Echo does not implement ${context.tool.name}.`,
       });
     }
-    await this.#beforeExecute?.();
+    await this.#beforeExecute?.(context);
     const client = createProviderHttpClient(context);
     const response = await client("/echo", {
       method: "POST",
@@ -450,6 +454,25 @@ function authenticatedGet(
   return app.request(path, {
     headers: { Authorization: `Bearer ${apiKey}` },
   });
+}
+
+function cancelExecution(
+  app: ReturnType<typeof createExecutorApp>,
+  executionId: string,
+  options: { apiKey?: string; userIdHeader?: string } = {},
+): Promise<Response> {
+  return app.request(
+    `/v1/executions/${encodeURIComponent(executionId)}/cancel`,
+    {
+      method: "POST",
+      headers: {
+        Authorization: `Bearer ${options.apiKey ?? API_KEY_A}`,
+        ...(options.userIdHeader === undefined
+          ? {}
+          : { "X-Eyeball-User-Id": options.userIdHeader }),
+      },
+    },
+  );
 }
 
 describe("RFC 001 execution API", () => {
@@ -953,6 +976,182 @@ describe("RFC 001 execution API", () => {
     }
   });
 
+  it("cancels queued work before dispatch and keeps the response idempotent", async () => {
+    let releaseFirst!: () => void;
+    let markFirstStarted!: () => void;
+    const firstStarted = new Promise<void>((resolve) => {
+      markFirstStarted = resolve;
+    });
+    const firstRelease = new Promise<void>((resolve) => {
+      releaseFirst = resolve;
+    });
+    let invocation = 0;
+    const harness = createHarness({
+      maxConcurrentExecutionsPerProject: 1,
+      queueConcurrency: 2,
+      beforeAdapterExecute: async () => {
+        invocation += 1;
+        if (invocation === 1) {
+          markFirstStarted();
+          await firstRelease;
+        }
+      },
+    });
+    const first = await postExecute(
+      harness.app,
+      executeRequest("cancel-blocker", { mode: "async" }),
+    );
+    expect(first.status).toBe(202);
+    await firstStarted;
+    const second = await postExecute(
+      harness.app,
+      executeRequest("cancel-before-dispatch", { mode: "async" }),
+    );
+    const pending = (await second.json()) as { executionId: string };
+
+    const response = await cancelExecution(harness.app, pending.executionId);
+    expect(response.status).toBe(200);
+    const cancelled = await response.json();
+    expect(cancelled).toMatchObject({
+      executionId: pending.executionId,
+      status: "cancelled",
+      cancellation: { dispatchMayHaveBegun: false },
+      error: {
+        code: "execution_cancelled",
+        message: "Execution was cancelled before provider dispatch.",
+        retryable: false,
+      },
+    });
+    const repeated = await cancelExecution(harness.app, pending.executionId);
+    expect(repeated.status).toBe(200);
+    expect(await repeated.json()).toEqual(cancelled);
+
+    releaseFirst();
+    await harness.queue.onIdle();
+    expect(invocation).toBe(1);
+    await expect(
+      harness.queue.jobStore.get(
+        executorJobId({
+          kind: "execution.run.v1",
+          payload: { projectId: PROJECT_A, executionId: pending.executionId },
+        }),
+      ),
+    ).resolves.toMatchObject({ state: "cancelled" });
+  });
+
+  it("aborts running work after the dispatch marker and discards its late result", async () => {
+    let releaseAdapter!: () => void;
+    let markAdapterStarted!: () => void;
+    const adapterStarted = new Promise<void>((resolve) => {
+      markAdapterStarted = resolve;
+    });
+    const adapterRelease = new Promise<void>((resolve) => {
+      releaseAdapter = resolve;
+    });
+    let adapterSignal: AbortSignal | undefined;
+    const harness = createHarness({
+      beforeAdapterExecute: async (context) => {
+        adapterSignal = context.signal;
+        markAdapterStarted();
+        await adapterRelease;
+      },
+    });
+    const accepted = await postExecute(
+      harness.app,
+      executeRequest("cancel-after-dispatch", { mode: "async" }),
+    );
+    const pending = (await accepted.json()) as { executionId: string };
+    await adapterStarted;
+
+    const response = await cancelExecution(harness.app, pending.executionId);
+    expect(response.status).toBe(200);
+    const cancelled = await response.json();
+    expect(cancelled).toMatchObject({
+      status: "cancelled",
+      cancellation: { dispatchMayHaveBegun: true },
+    });
+    expect(adapterSignal?.aborted).toBe(true);
+    releaseAdapter();
+    await harness.queue.onIdle();
+    const authoritative = await authenticatedGet(
+      harness.app,
+      `/v1/executions/${pending.executionId}`,
+    );
+    expect(await authoritative.json()).toEqual(cancelled);
+    await expect(
+      harness.queue.jobStore.get(
+        executorJobId({
+          kind: "execution.run.v1",
+          payload: { projectId: PROJECT_A, executionId: pending.executionId },
+        }),
+      ),
+    ).resolves.toMatchObject({ state: "cancelled" });
+  });
+
+  it("enforces cancel authority and reports terminal conflicts honestly", async () => {
+    const completed = createHarness();
+    const succeededResponse = await postExecute(
+      completed.app,
+      executeRequest("already-complete"),
+    );
+    const succeededBody = (await succeededResponse.json()) as {
+      executionId: string;
+    };
+    const conflict = await cancelExecution(
+      completed.app,
+      succeededBody.executionId,
+    );
+    expect(conflict.status).toBe(409);
+    await expect(conflict.json()).resolves.toMatchObject({
+      error: {
+        code: "invalid_input",
+        message: "Execution is already in terminal status 'succeeded'.",
+      },
+    });
+    const crossProject = await cancelExecution(
+      completed.app,
+      succeededBody.executionId,
+      { apiKey: API_KEY_B },
+    );
+    expect(crossProject.status).toBe(404);
+
+    let release!: () => void;
+    let markStarted!: () => void;
+    const started = new Promise<void>((resolve) => {
+      markStarted = resolve;
+    });
+    const held = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    const pinned = createHarness({
+      pinnedUserId: USER_1,
+      beforeAdapterExecute: async () => {
+        markStarted();
+        await held;
+      },
+    });
+    const running = await postExecute(
+      pinned.app,
+      executeRequest("pinned-cancel", { mode: "async", userId: USER_1 }),
+    );
+    const runningBody = (await running.json()) as { executionId: string };
+    await started;
+    const wrongHeader = await cancelExecution(
+      pinned.app,
+      runningBody.executionId,
+      {
+        userIdHeader: USER_2,
+      },
+    );
+    expect(wrongHeader.status).toBe(403);
+    const allowed = await cancelExecution(pinned.app, runningBody.executionId, {
+      userIdHeader: USER_1,
+    });
+    expect(allowed.status).toBe(200);
+    release();
+    await pinned.queue.onIdle();
+  });
+
   it("preserves a trusted reserved ID across idempotent worker retries", async () => {
     const harness = createHarness();
     const request = executeRequest("reserved");
@@ -1412,6 +1611,74 @@ describe("RFC 001 execution API", () => {
     ).resolves.toMatchObject({ status: "succeeded" });
     expect(harness.calls).toHaveLength(1);
     await harness.queue.onIdle();
+  });
+
+  it("reconciles cancelled recovery candidates and cancels their run jobs without dispatch", async () => {
+    const harness = createHarness();
+    const seed = recoverySeed("recovery_cancelled");
+    await harness.store.allocate({
+      projectId: PROJECT_A,
+      record: seed.record,
+      request: seed.request,
+      recovery: {
+        resumeContext: seed.resumeContext,
+        webhookEventId: seed.webhookEventId,
+      },
+    });
+    const cancellation = await harness.store.cancelExecution(
+      PROJECT_A,
+      seed.executionId,
+      "2026-07-18T04:00:02.000Z",
+    );
+    expect(cancellation).toMatchObject({
+      kind: "cancelled",
+      record: {
+        status: "cancelled",
+        cancellation: { dispatchMayHaveBegun: false },
+      },
+    });
+    const jobStore = new InMemoryJobStore();
+    const job = {
+      kind: "execution.run.v1",
+      payload: { projectId: PROJECT_A, executionId: seed.executionId },
+    } as const;
+    await jobStore.ensure(
+      createJobEnvelope(
+        job,
+        { runAfter: "2026-07-18T04:00:03.000Z" },
+        new Date("2026-07-18T04:00:03.000Z"),
+      ),
+    );
+    const reconcileCancelledExecution = vi.fn(
+      (input: Parameters<ExecutionEngine["reconcileTerminalExecution"]>[0]) =>
+        harness.engine.reconcileTerminalExecution(input),
+    );
+    const recovery = {
+      jobStore,
+      executionStore: harness.store,
+      webhookWorkStore: harness.engine.webhookDeliverer.workStore,
+      webhookDeliveryStore: harness.engine.webhookDeliverer.deliveryStore,
+      clock: { now: () => new Date("2026-07-18T04:00:05.000Z") },
+      logger: noopLogger,
+      reconcileCancelledExecution,
+    };
+
+    await recoverExecutorJobs(recovery);
+    await recoverExecutorJobs(recovery);
+
+    expect(reconcileCancelledExecution).toHaveBeenCalledTimes(1);
+    expect(harness.calls).toHaveLength(0);
+    await expect(jobStore.get(executorJobId(job))).resolves.toMatchObject({
+      state: "cancelled",
+      completedAt: "2026-07-18T04:00:05.000Z",
+    });
+    await expect(
+      harness.store.getRecoverable(PROJECT_A, seed.executionId),
+    ).resolves.toMatchObject({
+      record: { status: "cancelled" },
+      usageFinalizedAt: expect.any(String),
+      webhookPublishedAt: expect.any(String),
+    });
   });
 
   it("resumes a running execution only when provider dispatch never began", async () => {

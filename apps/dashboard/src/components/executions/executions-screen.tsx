@@ -131,7 +131,10 @@ function statusMessage(state: RequestState): { title: string; body: string } {
 }
 
 function ExecutionTimeline({ detail }: { detail: ExecutionRecord }) {
-  const terminal = detail.status === "succeeded" || detail.status === "failed";
+  const terminal =
+    detail.status === "succeeded" ||
+    detail.status === "failed" ||
+    detail.status === "cancelled";
   const steps = [
     { label: "Created", timestamp: detail.createdAt, reached: true },
     {
@@ -143,7 +146,9 @@ function ExecutionTimeline({ detail }: { detail: ExecutionRecord }) {
       label: terminal
         ? detail.status === "succeeded"
           ? "Succeeded"
-          : "Failed"
+          : detail.status === "failed"
+            ? "Failed"
+            : "Cancelled"
         : "Terminal",
       timestamp: detail.completedAt,
       reached: terminal,
@@ -261,17 +266,30 @@ function ExecutionDrawer({
               <div className="execution-detail__heading">
                 <div>
                   <p className="eyebrow">Terminal envelope</p>
-                  <h3>{detail.status === "failed" ? "Error" : "Response"}</h3>
+                  <h3>
+                    {detail.status === "failed"
+                      ? "Error"
+                      : detail.status === "cancelled"
+                        ? "Cancellation"
+                        : "Response"}
+                  </h3>
                 </div>
-                {detail.status === "failed" ? (
+                {detail.status === "failed" || detail.status === "cancelled" ? (
                   <span className="taxonomy-badge taxonomy-badge--error">
                     {detail.error.code}
                   </span>
                 ) : null}
               </div>
-              {detail.status === "failed" ? (
+              {detail.status === "failed" || detail.status === "cancelled" ? (
                 <div className="execution-error-envelope">
                   <p>{detail.error.message}</p>
+                  {detail.status === "cancelled" &&
+                  detail.cancellation.dispatchMayHaveBegun ? (
+                    <p>
+                      Provider dispatch may have begun. Upstream work or
+                      external side effects may still complete.
+                    </p>
+                  ) : null}
                   <dl>
                     <div>
                       <dt>Retryable</dt>
@@ -451,7 +469,8 @@ export function ExecutionsScreen({
         ...(status === "pending" ||
         status === "running" ||
         status === "succeeded" ||
-        status === "failed"
+        status === "failed" ||
+        status === "cancelled"
           ? { status }
           : {}),
         ...(tool === null ? {} : { tool }),
@@ -597,6 +616,7 @@ export function ExecutionsScreen({
               { label: "Running", value: "running" },
               { label: "Succeeded", value: "succeeded" },
               { label: "Failed", value: "failed" },
+              { label: "Cancelled", value: "cancelled" },
             ]}
           />
           <Input

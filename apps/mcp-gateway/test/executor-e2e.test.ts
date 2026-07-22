@@ -18,6 +18,131 @@ const USER_ID = "user_mcp_e2e";
 const GMAIL_SCOPE = "https://www.googleapis.com/auth/gmail.modify";
 
 describe("MCP gateway to executor", () => {
+  it("advertises stock task cancellation and forwards it to the executor cancel route", async () => {
+    const executionId = createExecutionId("mcp_stock_cancel");
+    const requests: Request[] = [];
+    const fetchImpl = (async (
+      input: Parameters<typeof fetch>[0],
+      init?: Parameters<typeof fetch>[1],
+    ) => {
+      const request = new Request(input, init);
+      requests.push(request.clone());
+      const path = new URL(request.url).pathname;
+      if (path === "/v1/execute") {
+        return Response.json(
+          {
+            executionId,
+            tool: "twilio.start_call",
+            toolVersion: "1.0.0",
+            catalogVersion: "1.1",
+            status: "pending",
+          },
+          { status: 202 },
+        );
+      }
+      if (path === `/v1/executions/${executionId}/cancel`) {
+        return Response.json({
+          executionId,
+          tool: "twilio.start_call",
+          toolVersion: "1.0.0",
+          catalogVersion: "1.1",
+          userId: USER_ID,
+          createdAt: "2026-07-21T12:00:00.000Z",
+          completedAt: "2026-07-21T12:00:00.010Z",
+          latencyMs: 10,
+          status: "cancelled",
+          error: {
+            code: "execution_cancelled",
+            message: "Execution was cancelled before provider dispatch.",
+            retryable: false,
+          },
+          cancellation: { dispatchMayHaveBegun: false },
+        });
+      }
+      throw new Error(
+        `Unexpected stock executor request: ${request.method} ${path}`,
+      );
+    }) as typeof fetch;
+    const gateway = createMcpGatewayApp({
+      executorBaseUrl: "https://executor.mcp.test",
+      fetchImpl,
+      apiKey: API_KEY,
+      userId: USER_ID,
+      sessionIdFactory: () => "mcp_stock_cancel_session",
+      taskPollMs: 60_000,
+    });
+    const initialized = await gateway.request("/mcp", {
+      method: "POST",
+      headers: {
+        Authorization: `Bearer ${API_KEY}`,
+        "Content-Type": "application/json",
+      },
+      body: JSON.stringify({
+        jsonrpc: "2.0",
+        id: "initialize-cancel",
+        method: "initialize",
+        params: {
+          protocolVersion: MCP_PROTOCOL_VERSION,
+          capabilities: { tasks: {} },
+          clientInfo: { name: "cancel-e2e", version: "1.0.0" },
+        },
+      }),
+    });
+    await expect(initialized.json()).resolves.toMatchObject({
+      result: { capabilities: { tasks: { cancel: {} } } },
+    });
+    const headers = {
+      Authorization: `Bearer ${API_KEY}`,
+      "Content-Type": "application/json",
+      "Mcp-Session-Id": "mcp_stock_cancel_session",
+    };
+    await gateway.request("/mcp", {
+      method: "POST",
+      headers,
+      body: JSON.stringify({
+        jsonrpc: "2.0",
+        id: "call-cancel",
+        method: "tools/call",
+        params: {
+          name: "twilio.start_call",
+          arguments: {
+            to: "+966500000000",
+            from: "+12025550173",
+            voiceAgentId: "vag_mcp_cancel",
+          },
+          task: { ttl: 120_000 },
+        },
+      }),
+    });
+    const cancelled = await gateway.request("/mcp", {
+      method: "POST",
+      headers,
+      body: JSON.stringify({
+        jsonrpc: "2.0",
+        id: "cancel-task",
+        method: "tasks/cancel",
+        params: { taskId: executionId },
+      }),
+    });
+    const cancelledBody = (await cancelled.json()) as {
+      result: Record<string, unknown>;
+    };
+    expect(cancelledBody).toMatchObject({
+      result: { taskId: executionId, status: "cancelled" },
+    });
+    expect(cancelledBody.result).not.toHaveProperty("_meta");
+    expect(
+      requests.map((request) => [
+        request.method,
+        new URL(request.url).pathname,
+      ]),
+    ).toEqual([
+      ["POST", "/v1/execute"],
+      ["POST", `/v1/executions/${executionId}/cancel`],
+    ]);
+    await expect(requests[1]?.text()).resolves.toBe("");
+  });
+
   it("replays one mutating MCP call as one executor allocation", async () => {
     const execute = vi.fn(async ({ canonicalInput }) => ({
       messageId: "msg_mcp_e2e",

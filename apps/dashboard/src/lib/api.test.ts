@@ -115,6 +115,38 @@ describe("ExecutorClient", () => {
     });
   });
 
+  it("preserves structured cancellation disposition on execution detail", async () => {
+    const fetch: typeof globalThis.fetch = async () =>
+      Response.json({
+        executionId: "exe_cancelled",
+        tool: "gmail.send_email",
+        toolVersion: "1.0.0",
+        catalogVersion: "2026.07.21",
+        userId: "user_safe",
+        status: "cancelled",
+        createdAt: "2026-07-21T12:00:00.000Z",
+        completedAt: "2026-07-21T12:00:00.010Z",
+        latencyMs: 10,
+        error: {
+          code: "execution_cancelled",
+          message:
+            "Execution was cancelled after provider dispatch may have begun; upstream work may still complete.",
+          retryable: false,
+        },
+        cancellation: { dispatchMayHaveBegun: true },
+      });
+    const client = new ExecutorClient({
+      baseUrl: "https://executor.example",
+      fetch,
+    });
+
+    await expect(client.getExecution("exe_cancelled")).resolves.toMatchObject({
+      status: "cancelled",
+      error: { code: "execution_cancelled", retryable: false },
+      cancellation: { dispatchMayHaveBegun: true },
+    });
+  });
+
   it("rejects malformed health envelopes without treating them as online", async () => {
     const fetch: typeof globalThis.fetch = async () =>
       Response.json({ service: "unknown", status: "ok" });

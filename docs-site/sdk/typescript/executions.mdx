@@ -1,6 +1,6 @@
 ---
 title: "Inspect and wait for executions"
-description: "Retrieve an execution, filter project history, or poll async work to terminal state."
+description: "Retrieve, cancel, filter, or wait for executions through their terminal state."
 ---
 
 ## Get
@@ -56,6 +56,26 @@ console.log(page.executions, page.nextCursor);
 
 Filters are `status`, `tool`, `userId`, `cursor`, and `limit`.
 
+## Cancel
+
+```ts
+import { Eyeball } from "@eyeball/sdk";
+
+const eyeball = new Eyeball({
+  apiKey: process.env.EYEBALL_API_KEY!,
+  baseUrl: process.env.EYEBALL_EXECUTOR_URL!,
+});
+const cancelled = await eyeball.executions.cancel(
+  "exe_01JZ6WA0Q73ZQ5B51SRYB6M4Z8",
+);
+
+if (cancelled.cancellation.dispatchMayHaveBegun) {
+  console.warn("Upstream work or external side effects may still complete.");
+}
+```
+
+`cancel` sends a bodyless `POST` and returns the full immutable cancelled record. A repeated call returns the same record and resumes any incomplete usage, webhook, or queue reconciliation. It throws normalized `404`, `403`, `409`, and server errors; `409 invalid_input` means a succeeded or failed record won before cancellation.
+
 ## Wait
 
 ```ts
@@ -72,7 +92,7 @@ const terminal = await eyeball.executions.wait(
 console.log(terminal.status);
 ```
 
-`wait` polls until `succeeded` or `failed` and throws a normalized `timeout` error when its local deadline expires.
+`wait` polls until `succeeded`, `failed`, or `cancelled` and throws a normalized `timeout` error when its local deadline expires.
 
 The optional provenance fields are bounded public metadata: `replayed` records an accepted replay of the same execution, `source` identifies a verified voice session, and `attachments` contains only distinct staged-file IDs and their count. No execution SDK method reveals canonical input, raw or derived idempotency identity, connection selection, or file bytes.
 

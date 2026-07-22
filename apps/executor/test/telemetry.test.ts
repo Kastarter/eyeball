@@ -20,7 +20,7 @@ import {
   InMemorySpanExporter,
   SimpleSpanProcessor,
 } from "@opentelemetry/sdk-trace-base";
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import {
   type AdapterContext,
   createProviderHttpClient,
@@ -127,6 +127,7 @@ const clock = { now: () => new Date(STARTED_AT) };
 function createEngine(
   telemetry: ExecutorTelemetryRuntime,
   webhookDeliverer?: WebhookDeliverer,
+  fetchOverride?: typeof globalThis.fetch,
 ): ExecutionEngine {
   const catalog = new CatalogRegistry({
     catalogVersion: "2.0",
@@ -159,7 +160,7 @@ function createEngine(
     catalog,
     adapters: new AdapterRegistry([new EchoAdapter()]),
     credentialProvider,
-    fetchImpl,
+    fetchImpl: fetchOverride ?? fetchImpl,
     clock,
     telemetryRuntime: telemetry,
     ...(webhookDeliverer === undefined ? {} : { webhookDeliverer }),
@@ -222,6 +223,75 @@ function findMetric(resourceMetrics: ResourceMetrics, name: string) {
 }
 
 describe("executor observability", () => {
+  it("records cancellation only for the first durable winner and traces the cancelled status", async () => {
+    const reader = new InMemoryMetricReader();
+    const meterProvider = new MeterProvider({ readers: [reader] });
+    const exporter = new InMemorySpanExporter();
+    const tracerProvider = new BasicTracerProvider({
+      spanProcessors: [new SimpleSpanProcessor(exporter)],
+    });
+    const telemetry = createExecutorTelemetryRuntime(
+      {
+        meter: meterProvider.getMeter("eyeball-cancellation-test"),
+        tracer: tracerProvider.getTracer("eyeball-cancellation-test"),
+        logger: noopLogger,
+      },
+      { NODE_ENV: "test" },
+    );
+    let dispatched!: () => void;
+    const providerStarted = new Promise<void>((resolve) => {
+      dispatched = resolve;
+    });
+    const blockingFetch = vi.fn(
+      async (_input: RequestInfo | URL, init?: RequestInit) =>
+        new Promise<Response>((_resolve, reject) => {
+          dispatched();
+          const signal = init?.signal;
+          signal?.addEventListener(
+            "abort",
+            () => reject(signal.reason ?? new Error("aborted")),
+            { once: true },
+          );
+        }),
+    ) as typeof globalThis.fetch;
+    const engine = createEngine(telemetry, undefined, blockingFetch);
+    const executing = execute(engine);
+    await providerStarted;
+
+    const first = await engine.cancelExecution(
+      PROJECT_ID,
+      createExecutionId("telemetry1"),
+    );
+    const repeated = await engine.cancelExecution(
+      PROJECT_ID,
+      createExecutionId("telemetry1"),
+    );
+    expect(repeated).toEqual(first);
+    await expect(executing).resolves.toMatchObject({
+      response: { status: "cancelled" },
+    });
+    await tracerProvider.forceFlush();
+
+    const { resourceMetrics, errors } = await reader.snapshot();
+    expect(errors).toEqual([]);
+    expect(
+      findMetric(resourceMetrics, "executions_total").dataPoints,
+    ).toContainEqual(
+      expect.objectContaining({
+        attributes: { tool: TOOL, status: "cancelled" },
+        value: 1,
+      }),
+    );
+    const root = exporter
+      .getFinishedSpans()
+      .find((span) => span.name === "eyeball.execute");
+    expect(root?.attributes).toMatchObject({
+      "eyeball.execution.status": "cancelled",
+    });
+    await meterProvider.shutdown();
+    await tracerProvider.shutdown();
+  });
+
   it("centrally redacts credentials, authorization, bodies, binary files, and nested secrets", () => {
     const longBody = "x".repeat(2_000);
     const uploadBase64 = "ZmlsZS10ZWxlbWV0cnktc2VudGluZWw=";

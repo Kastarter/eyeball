@@ -5,6 +5,7 @@ import {
 } from "@eyeball/catalog";
 import {
   buildNameMap,
+  type CancelledExecutionRecord,
   type ConnectionId,
   type CreatedTriggerSubscription,
   type CreatedWebhookEndpoint,
@@ -24,6 +25,7 @@ import {
   type StagedFileMetadata,
   type StagedFilePage,
   type StagedFileReference,
+  type TerminalExecutionRecord,
   TOOL_ERROR_CODES,
   type ToolDefinition,
   type TriggerDefinition,
@@ -343,6 +345,33 @@ export class ExecutionsClient {
   }
 
   /**
+   * Cancels a pending or running execution.
+   *
+   * Cancellation is deterministic before provider dispatch. After dispatch may
+   * have begun, Eyeball aborts process-local work where possible, but upstream
+   * work or external side effects can still complete.
+   *
+   * @param executionId Execution identifier returned by `tools.execute`.
+   * @returns The immutable cancelled record and its dispatch disposition.
+   * @throws EyeballError when the execution is unavailable, unauthorized, already succeeded or failed, or reconciliation fails.
+   * @example
+   * const cancelled = await eyeball.executions.cancel(
+   *   "exe_01JZ6WA0Q73ZQ5B51SRYB6M4Z8",
+   * );
+   * if (cancelled.cancellation.dispatchMayHaveBegun) {
+   *   console.warn("Cancellation is best effort; upstream work may complete.");
+   * } else {
+   *   console.log("Provider dispatch was fenced.");
+   * }
+   */
+  cancel(executionId: string): Promise<CancelledExecutionRecord> {
+    return this.#context.http.request(
+      `/v1/executions/${encodeURIComponent(executionId)}/cancel`,
+      { method: "POST" },
+    );
+  }
+
+  /**
    * Lists execution history with optional status, tool, user, and cursor filters.
    * Items preserve the same optional bounded provenance as {@link get}; canonical
    * input, idempotency identity, and file bytes remain private.
@@ -382,13 +411,13 @@ export class ExecutionsClient {
   }
 
   /**
-   * Polls an execution until it succeeds or fails, bounded by a local deadline.
+   * Polls an execution until it succeeds, fails, or is cancelled, bounded by a local deadline.
    * The terminal record preserves optional replay, verified source, and staged-file
    * summary fields without exposing canonical input, idempotency identity, or bytes.
    *
    * @param executionId Execution identifier returned by `tools.execute`.
    * @param options Poll interval and total timeout in milliseconds.
-   * @returns The terminal succeeded or failed execution record.
+   * @returns The terminal succeeded, failed, or cancelled execution record.
    * @throws EyeballError with `timeout` when the deadline expires, or the executor's normalized error for a failed request.
    * @throws Error When an injected polling clock returns a non-finite timestamp.
    * @example
@@ -400,7 +429,7 @@ export class ExecutionsClient {
   async wait(
     executionId: string,
     options: WaitForExecutionOptions = {},
-  ): Promise<ExecutionRecord & { status: "succeeded" | "failed" }> {
+  ): Promise<TerminalExecutionRecord> {
     const pollMs = positiveMilliseconds(
       options.pollMs ?? DEFAULT_POLL_MS,
       "pollMs",
@@ -413,7 +442,11 @@ export class ExecutionsClient {
 
     while (true) {
       const execution = await this.get(executionId);
-      if (execution.status === "succeeded" || execution.status === "failed") {
+      if (
+        execution.status === "succeeded" ||
+        execution.status === "failed" ||
+        execution.status === "cancelled"
+      ) {
         return execution;
       }
 
@@ -669,7 +702,7 @@ export class ToolsClient {
     if (result.status === "succeeded") {
       return result.output;
     }
-    if (result.status === "failed") {
+    if (result.status === "failed" || result.status === "cancelled") {
       throw errorFromNormalized(result.error);
     }
 
@@ -679,7 +712,7 @@ export class ToolsClient {
         ? {}
         : { timeoutMs: options.timeoutMs }),
     });
-    if (terminal.status === "failed") {
+    if (terminal.status === "failed" || terminal.status === "cancelled") {
       throw errorFromNormalized(terminal.error);
     }
     return terminal.output;

@@ -1,5 +1,6 @@
 import { randomUUID } from "node:crypto";
 import type {
+  CancelPendingJobResult,
   ClaimedJob,
   EnsureJobResult,
   JobStore,
@@ -60,6 +61,40 @@ export class InMemoryJobStore implements JobStore {
   async get(jobId: string): Promise<StoredJob | undefined> {
     const job = this.#jobs.get(jobId);
     return job === undefined ? undefined : copy(job);
+  }
+
+  async cancelPending(input: {
+    readonly jobId: string;
+    readonly expectedDescription: ExecutorJob;
+    readonly now: string;
+  }): Promise<CancelPendingJobResult> {
+    timestamp(input.now, "Job cancellation time");
+    const current = this.#jobs.get(input.jobId);
+    if (current === undefined) return { kind: "missing" };
+    if (!sameExecutorJob(current.description, input.expectedDescription)) {
+      return { kind: "conflict" };
+    }
+    if (current.state === "cancelled") {
+      return { kind: "already_cancelled", job: copy(current) };
+    }
+    if (current.state === "running") {
+      return { kind: "running", job: copy(current) as ClaimedJob };
+    }
+    if (current.state === "succeeded" || current.state === "failed") {
+      return { kind: "already_terminal", job: copy(current) };
+    }
+    const cancelled: StoredJob = {
+      ...current,
+      state: "cancelled",
+      claimedBy: undefined,
+      leaseToken: undefined,
+      leaseExpiresAt: undefined,
+      lastErrorCode: undefined,
+      completedAt: input.now,
+      updatedAt: input.now,
+    };
+    this.#jobs.set(current.jobId, cancelled);
+    return { kind: "cancelled", job: copy(cancelled) };
   }
 
   async expireLeases(input: {
@@ -169,6 +204,10 @@ export class InMemoryJobStore implements JobStore {
     return this.#finish(input, "succeeded");
   }
 
+  async cancelClaimed(input: LeaseMutation): Promise<boolean> {
+    return this.#finish(input, "cancelled");
+  }
+
   async reschedule(
     input: LeaseMutation & { readonly runAfter: string },
   ): Promise<boolean> {
@@ -214,7 +253,9 @@ export class InMemoryJobStore implements JobStore {
     return jobIds.flatMap((jobId) => {
       const job = this.#jobs.get(jobId);
       return job !== undefined &&
-        (job.state === "succeeded" || job.state === "failed")
+        (job.state === "succeeded" ||
+          job.state === "failed" ||
+          job.state === "cancelled")
         ? [copy(job)]
         : [];
     });
@@ -281,7 +322,7 @@ export class InMemoryJobStore implements JobStore {
 
   #finish(
     input: LeaseMutation,
-    state: "succeeded" | "failed",
+    state: "succeeded" | "failed" | "cancelled",
     errorCode?: SafeJobErrorCode,
   ): boolean {
     const current = this.#leased(input);

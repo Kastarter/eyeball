@@ -30,7 +30,8 @@ export default async function Page({
         ...(status === "pending" ||
         status === "running" ||
         status === "succeeded" ||
-        status === "failed"
+        status === "failed" ||
+        status === "cancelled"
           ? { status }
           : {}),
         ...(tool === undefined ? {} : { tool }),

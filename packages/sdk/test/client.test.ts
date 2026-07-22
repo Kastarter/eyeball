@@ -608,6 +608,125 @@ describe("Eyeball SDK", () => {
     });
   });
 
+  it("cancels an execution with an empty body and returns its durable disposition", async () => {
+    const requests: Request[] = [];
+    const cancelled = {
+      executionId: "exe_sdk_cancel/path",
+      tool: "gmail.send_email",
+      toolVersion: "1.0.0",
+      catalogVersion: "1.1",
+      userId: "user_sdk",
+      createdAt: "2026-07-21T12:00:00.000Z",
+      completedAt: "2026-07-21T12:00:00.010Z",
+      latencyMs: 10,
+      status: "cancelled",
+      error: {
+        code: "execution_cancelled",
+        message: "Execution was cancelled before provider dispatch.",
+        retryable: false,
+      },
+      cancellation: { dispatchMayHaveBegun: false },
+    } as const;
+    const eb = client(
+      testFetch(() => jsonResponse(cancelled), requests),
+      { userId: "user_sdk" },
+    );
+
+    await expect(eb.executions.cancel(cancelled.executionId)).resolves.toEqual(
+      cancelled,
+    );
+    expect(requests).toHaveLength(1);
+    expect(requests[0]?.method).toBe("POST");
+    expect(new URL(requests[0]?.url ?? "").pathname).toBe(
+      "/v1/executions/exe_sdk_cancel%2Fpath/cancel",
+    );
+    expect(requests[0]?.headers.get("Content-Type")).toBeNull();
+    await expect(requests[0]?.text()).resolves.toBe("");
+  });
+
+  it("stops wait on cancellation and run throws its normalized error", async () => {
+    const cancelled = {
+      executionId: "exe_sdk_cancelled",
+      tool: "twilio.start_call",
+      toolVersion: "1.0.0",
+      catalogVersion: "1.1",
+      userId: "user_sdk",
+      createdAt: "2026-07-21T12:00:00.000Z",
+      completedAt: "2026-07-21T12:00:00.010Z",
+      latencyMs: 10,
+      status: "cancelled",
+      error: {
+        code: "execution_cancelled",
+        message:
+          "Execution was cancelled after provider dispatch may have begun; upstream work may still complete.",
+        retryable: false,
+      },
+      cancellation: { dispatchMayHaveBegun: true },
+    } as const;
+    const waitClient = client(testFetch(() => jsonResponse(cancelled)));
+    await expect(
+      waitClient.executions.wait(cancelled.executionId),
+    ).resolves.toEqual(cancelled);
+
+    const runClient = client(
+      testFetch(() =>
+        jsonResponse({
+          executionId: cancelled.executionId,
+          tool: cancelled.tool,
+          toolVersion: cancelled.toolVersion,
+          catalogVersion: cancelled.catalogVersion,
+          status: cancelled.status,
+          error: cancelled.error,
+          cancellation: cancelled.cancellation,
+          completedAt: cancelled.completedAt,
+          latencyMs: cancelled.latencyMs,
+        }),
+      ),
+      { userId: "user_sdk" },
+    );
+    await expect(
+      runClient.tools.run(
+        "twilio.start_call",
+        {
+          to: "+966500000000",
+          from: "+12025550173",
+          voiceAgentId: "vag_sdk",
+        },
+        { mode: "sync" },
+      ),
+    ).rejects.toMatchObject({
+      code: TOOL_ERROR_CODES.EXECUTION_CANCELLED,
+      message: cancelled.error.message,
+      retryable: false,
+    });
+  });
+
+  it("preserves a normalized already-terminal cancellation conflict", async () => {
+    const eb = client(
+      testFetch(() =>
+        jsonResponse(
+          {
+            requestId: "req_sdk_cancel_conflict",
+            error: {
+              code: "invalid_input",
+              message:
+                "Execution exe_sdk_done is already terminal with status succeeded.",
+              retryable: false,
+            },
+          },
+          409,
+        ),
+      ),
+    );
+
+    await expect(eb.executions.cancel("exe_sdk_done")).rejects.toMatchObject({
+      code: TOOL_ERROR_CODES.INVALID_INPUT,
+      message:
+        "Execution exe_sdk_done is already terminal with status succeeded.",
+      requestId: "req_sdk_cancel_conflict",
+    });
+  });
+
   it("bounds polling with a timeout and maps normalized API errors", async () => {
     const sleeps: number[] = [];
     let now = 0;

@@ -1,6 +1,6 @@
 # eyeball — Planned work
 
-State as of 2026-07-21. The 0.2.0 source cut and M5 are complete, M6 is next,
+State as of 2026-07-21. The 0.2.0 source cut, M5, and M6.1 are complete; M6.2 is next,
 and two audit sweeps
 (cross-feature wiring; dashboard/SDK/docs parity) produced a milestone-ordered
 gap ledger. Milestones **M1 (hosted execution slice)**, **M2 (billing as a
@@ -95,12 +95,14 @@ change. Never bind ports in tests; use in-process apps (`app.request`, PGlite).
   this history. A-03 closed. This does not close provider signatures,
   distributed polling leases, replay/backfill, source-body durability, or the
   non-atomic claim/admission/history boundary.
+- M6.1 Execution cancellation: first-class durable `cancelled` execution and
+  task-job states; bodyless `POST /v1/executions/:id/cancel`; deterministic
+  pre-dispatch fencing and usage release; honest post-dispatch best-effort abort
+  and reporting; recovery-safe terminal reconciliation; `execution.cancelled`
+  webhooks; MCP `tasks/cancel`; SDK, dashboard, worker, and docs parity.
 
 ## M6 — Quality of life
 
-13. **M6.1 Execution cancellation.** `POST /v1/executions/:id/cancel`
-    (pending/queued; running is best-effort), MCP `tasks/cancel` wiring, SDK
-    method. Unblocks the documented MCP limitation.
 14. **M6.2 Readiness endpoint.** `/health` is liveness-only; add `/ready`
     failing closed on DB/migrations/credential-provider/queue admission.
     Audit finding 14.

@@ -148,7 +148,7 @@ const pageSpecs: readonly PageSpec[] = [
     slug: "executions",
     title: "Executions API",
     description:
-      "Read execution records, filter project history, and wait for terminal state.",
+      "Read and cancel execution records, filter project history, and wait for terminal state.",
     exports: [
       "ExecutionsClient",
       "ListExecutionsOptions",
@@ -157,11 +157,14 @@ const pageSpecs: readonly PageSpec[] = [
       "AsyncExecuteResponse",
       "ExecutionId",
       "ExecutionAttachmentSummary",
+      "ExecutionCancellation",
+      "CancelledExecutionRecord",
       "ExecutionMode",
       "ExecutionRecord",
       "ExecutionResult",
       "ExecutionSource",
       "ExecutionStatus",
+      "TerminalExecutionRecord",
     ],
   },
   {
@@ -827,6 +830,7 @@ function validateDocumentation(model: SdkApiModel): void {
     "ToolsClient.execute",
     "ToolsClient.run",
     "ExecutionsClient.wait",
+    "ExecutionsClient.cancel",
     "FilesClient.upload",
     "FilesClient.list",
     "TriggerEventsClient.list",

@@ -20,7 +20,7 @@ const executionChoices: readonly EventChoice[] = [
     value: "execution.completed",
     label: "Any completed execution",
     description:
-      "Convenience selector for both succeeded and failed executions.",
+      "Convenience selector for succeeded, failed, and cancelled executions.",
   },
   {
     value: "execution.succeeded",
@@ -31,6 +31,12 @@ const executionChoices: readonly EventChoice[] = [
     value: "execution.failed",
     label: "Failed execution",
     description: "Only terminal executions that completed with an error.",
+  },
+  {
+    value: "execution.cancelled",
+    label: "Cancelled execution",
+    description:
+      "Only executions cancelled before or after dispatch may have begun.",
   },
 ];
 

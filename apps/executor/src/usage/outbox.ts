@@ -1,3 +1,4 @@
+import { isDeepStrictEqual } from "node:util";
 import type { ExecutionId } from "@eyeball/core";
 
 export type UsageOutboxState = "pending" | "sent" | "failed";
@@ -12,9 +13,28 @@ export interface UsageReportPayload {
   readonly occurredAt: string;
 }
 
+/** Durable pre-dispatch reservation release work. */
+export interface UsageReleasePayload {
+  readonly operation: "release";
+  readonly projectId: string;
+  readonly executionId: ExecutionId;
+  readonly reservationId: string;
+  readonly idempotencyKey: string;
+  readonly cloudExecutionId?: ExecutionId;
+  readonly reservedAt?: string;
+}
+
+export type UsageOutboxPayload = UsageReportPayload | UsageReleasePayload;
+
+export function isUsageReleasePayload(
+  payload: UsageOutboxPayload,
+): payload is UsageReleasePayload {
+  return "operation" in payload && payload.operation === "release";
+}
+
 export interface UsageOutboxRecord {
   readonly executionId: ExecutionId;
-  readonly payload: UsageReportPayload;
+  readonly payload: UsageOutboxPayload;
   readonly state: UsageOutboxState;
   readonly attempts: number;
   readonly nextRetryAt: string;
@@ -29,7 +49,7 @@ export interface UsageOutboxFailure {
 }
 
 export interface UsageOutboxStore {
-  enqueue(payload: UsageReportPayload, enqueuedAt: string): Promise<void>;
+  enqueue(payload: UsageOutboxPayload, enqueuedAt: string): Promise<void>;
   get(executionId: ExecutionId): Promise<UsageOutboxRecord | undefined>;
   listReady(
     now: string,
@@ -60,32 +80,24 @@ function assertLimit(limit: number): void {
   }
 }
 
-function samePayload(
-  left: UsageReportPayload,
-  right: UsageReportPayload,
+export function sameUsageOutboxPayload(
+  left: UsageOutboxPayload,
+  right: UsageOutboxPayload,
 ): boolean {
-  return (
-    left.projectId === right.projectId &&
-    left.executionId === right.executionId &&
-    left.cloudExecutionId === right.cloudExecutionId &&
-    left.idempotencyKey === right.idempotencyKey &&
-    left.dimension === right.dimension &&
-    left.quantity === right.quantity &&
-    left.occurredAt === right.occurredAt
-  );
+  return isDeepStrictEqual(left, right);
 }
 
 export class InMemoryUsageOutboxStore implements UsageOutboxStore {
   readonly #records = new Map<ExecutionId, UsageOutboxRecord>();
 
   async enqueue(
-    payload: UsageReportPayload,
+    payload: UsageOutboxPayload,
     enqueuedAt: string,
   ): Promise<void> {
     assertTimestamp(enqueuedAt, "Usage outbox enqueue time");
     const existing = this.#records.get(payload.executionId);
     if (existing !== undefined) {
-      if (!samePayload(existing.payload, payload)) {
+      if (!sameUsageOutboxPayload(existing.payload, payload)) {
         throw new Error(
           `Usage outbox execution ${payload.executionId} has conflicting payloads.`,
         );

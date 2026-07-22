@@ -3,15 +3,17 @@ title: "Executions"
 description: "Follow synchronous and asynchronous tool work through immutable execution records."
 ---
 
-Every call creates or replays an execution with one of four states:
+Every call creates or replays an execution with one of five states:
 
 ```text
 pending → running → succeeded
                   ↘ failed
+                  ↘ cancelled
 pending ──────────→ failed
+        └──────────→ cancelled
 ```
 
-Terminal lifecycle state, output, error, latency, and timestamps are immutable. A separate monotonic store projection may later add `replayed: true` after an accepted replay without rewriting the terminal record.
+`succeeded`, `failed`, and `cancelled` are immutable terminal states. Terminal lifecycle state, output or error, latency, and timestamps cannot be overwritten. A separate monotonic store projection may later add `replayed: true` after an accepted replay without rewriting the terminal record.
 
 ## Synchronous tools
 
@@ -59,6 +61,15 @@ console.log(terminal.status);
 ```
 
 Use [`GET /v1/executions/:id`](/api/executions/get-execution) to poll outside the SDK.
+
+## Cancellation
+
+Cancel pending or running work with [`POST /v1/executions/:id/cancel`](/api/executions/cancel-execution) or `eyeball.executions.cancel(executionId)`. The returned record includes `cancellation.dispatchMayHaveBegun`:
+
+- `false` means cancellation won before the durable provider-dispatch marker. Provider invocation is fenced, and any reserved usage is released.
+- `true` means provider dispatch may already have begun. The executor aborts same-process stock HTTP work where possible, but the provider may still complete or apply an external side effect. The execution remains durably `cancelled`, and dispatched usage is reported once.
+
+Repeated cancellation returns the same terminal record, including its original `completedAt`, error, latency, and disposition. A late adapter result cannot replace it.
 
 ## Bounded execution provenance
 

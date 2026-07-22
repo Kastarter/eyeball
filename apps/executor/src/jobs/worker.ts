@@ -383,15 +383,17 @@ export class ExecutorTaskSystem implements ManagedTaskQueue {
     const persisted =
       result.type === "complete"
         ? await this.jobStore.complete(mutation)
-        : result.type === "reschedule"
-          ? await this.jobStore.reschedule({
-              ...mutation,
-              runAfter: result.runAfter,
-            })
-          : await this.jobStore.fail({
-              ...mutation,
-              errorCode: result.errorCode,
-            });
+        : result.type === "cancelled"
+          ? await this.jobStore.cancelClaimed(mutation)
+          : result.type === "reschedule"
+            ? await this.jobStore.reschedule({
+                ...mutation,
+                runAfter: result.runAfter,
+              })
+            : await this.jobStore.fail({
+                ...mutation,
+                errorCode: result.errorCode,
+              });
     if (!persisted) {
       controller.abort(new Error("Queue result was fenced by a lost lease."));
       return;
@@ -409,6 +411,13 @@ export class ExecutorTaskSystem implements ManagedTaskQueue {
       this.#settleTerminal({
         ...job,
         state: "succeeded",
+        completedAt: now,
+        updatedAt: now,
+      });
+    } else if (result.type === "cancelled") {
+      this.#settleTerminal({
+        ...job,
+        state: "cancelled",
         completedAt: now,
         updatedAt: now,
       });
@@ -431,11 +440,17 @@ export class ExecutorTaskSystem implements ManagedTaskQueue {
   }
 
   #settleTerminal(job: StoredJob): void {
-    if (job.state !== "succeeded" && job.state !== "failed") return;
+    if (
+      job.state !== "succeeded" &&
+      job.state !== "failed" &&
+      job.state !== "cancelled"
+    )
+      return;
     const completion = this.#attached.get(job.jobId);
     if (completion === undefined) return;
     this.#attached.delete(job.jobId);
-    if (job.state === "succeeded") completion.resolve();
+    if (job.state === "succeeded" || job.state === "cancelled")
+      completion.resolve();
     else
       completion.reject(
         new QueueJobFailedError(job.lastErrorCode ?? "handler_rejected"),

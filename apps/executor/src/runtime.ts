@@ -339,7 +339,7 @@ function configuredVoiceWorker(
       });
       const response = outcome.response;
       if (response.status === "succeeded") return response.output;
-      if (response.status === "failed") {
+      if (response.status === "failed" || response.status === "cancelled") {
         throw new EyeballError({
           code: response.error.code,
           message: response.error.message,
@@ -594,6 +594,9 @@ export async function createExecutorRuntime(
         webhookDeliveryStore: initializedPersistence.webhookDeliveryStore,
         clock,
         logger: telemetry.logger,
+        reconcileCancelledExecution: async ({ projectId, record }) => {
+          await engine.reconcileTerminalExecution({ projectId, record });
+        },
       });
     }
     triggerEventExpirySweeper = startTriggerEventExpirySweeper({

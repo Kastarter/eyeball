@@ -685,6 +685,11 @@ function asyncExecuteScenario(): ScenarioDefinition {
                 `Async execution failed: ${JSON.stringify(terminal)}`,
               );
             }
+            if (terminal.status === "cancelled") {
+              throw new Error(
+                `Async execution was cancelled: ${JSON.stringify(terminal)}`,
+              );
+            }
             await Promise.resolve();
           }
           throw new Error(

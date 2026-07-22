@@ -284,6 +284,7 @@ class FakeUsageCloud {
       return context.json({ accepted, duplicates }, 202);
     });
     this.app.post("/internal/usage/release", async (context) => {
+      if (!this.available) return context.json({ error: "down" }, 503);
       this.releaseCalls += 1;
       const body = await context.req.json<{ idempotencyKey: string }>();
       const reservation = this.reservations.get(body.idempotencyKey);
@@ -368,11 +369,13 @@ async function createCloudTenant(app: CloudControlApp): Promise<CloudTenant> {
 
 function harness(
   options: {
+    adapter?: ToolkitAdapter;
     cloud?: FakeUsageCloud;
     credentialProvider?: CredentialProvider;
     projectId?: string;
     strict?: boolean;
     store?: InMemoryExecutionStore;
+    startQueue?: boolean;
     usageFetch?: typeof fetch;
     withUsage?: boolean;
   } = {},
@@ -400,7 +403,7 @@ function harness(
   const queue = new InMemoryTaskQueue({ executionConcurrency: 1 });
   const engine = new ExecutionEngine({
     catalog,
-    adapters: new AdapterRegistry([adapter]),
+    adapters: new AdapterRegistry([options.adapter ?? adapter]),
     credentialProvider:
       options.credentialProvider ??
       new MockCredentialProvider([
@@ -431,7 +434,7 @@ function harness(
       webhookDeliverer: engine.webhookDeliverer,
     }),
   );
-  queue.start();
+  if (options.startQueue !== false) queue.start();
   const flusher = new UsageOutboxFlusher({
     client,
     store: outbox,
@@ -487,6 +490,160 @@ describe("cloud usage admission and reporting", () => {
     });
     expect(test.cloud.committed.size).toBe(1);
     expect(await test.outbox.depth()).toBe(0);
+  });
+
+  it("durably releases cancellation reservations before dispatch without a usage report", async () => {
+    const test = harness({ startQueue: false });
+    const executionId = createExecutionId("usage_cancel_before_dispatch");
+    await expect(
+      test.engine.execute({
+        projectId: PROJECT_ID,
+        request: request("async"),
+        executionId,
+      }),
+    ).resolves.toMatchObject({ response: { status: "pending" } });
+
+    await expect(
+      test.engine.cancelExecution(PROJECT_ID, executionId),
+    ).resolves.toMatchObject({
+      status: "cancelled",
+      cancellation: { dispatchMayHaveBegun: false },
+    });
+    await test.gate.onIdle();
+    expect(test.cloud.reserveCalls).toBe(1);
+    expect(test.cloud.releaseCalls).toBe(0);
+    expect(test.cloud.reportCalls).toBe(0);
+    await expect(
+      test.outbox.listReady(new Date().toISOString(), 50, true),
+    ).resolves.toMatchObject([
+      { payload: { operation: "release", executionId }, state: "pending" },
+    ]);
+    await expect(test.flusher.flushOnce()).resolves.toEqual({
+      selected: 1,
+      sent: 1,
+      failed: 0,
+    });
+    expect(test.cloud.releaseCalls).toBe(1);
+    expect(await test.outbox.depth()).toBe(0);
+  });
+
+  it("single-flights concurrent cancellation reconciliation before durable release", async () => {
+    const test = harness({ startQueue: false });
+    const executionId = createExecutionId("usage_cancel_concurrent_release");
+    await test.engine.execute({
+      projectId: PROJECT_ID,
+      request: request("async"),
+      executionId,
+    });
+
+    let releaseEntered!: () => void;
+    let allowRelease!: () => void;
+    const entered = new Promise<void>((resolve) => {
+      releaseEntered = resolve;
+    });
+    const blocked = new Promise<void>((resolve) => {
+      allowRelease = resolve;
+    });
+    const durableRelease = test.gate.release.bind(test.gate);
+    const releaseSpy = vi
+      .spyOn(test.gate, "release")
+      .mockImplementation(async (reservation) => {
+        releaseEntered();
+        await blocked;
+        return durableRelease(reservation);
+      });
+
+    const first = test.engine.cancelExecution(PROJECT_ID, executionId);
+    await entered;
+    const second = test.engine.cancelExecution(PROJECT_ID, executionId);
+    await vi.waitFor(() => expect(releaseSpy).toHaveBeenCalledTimes(1));
+    allowRelease();
+    await expect(Promise.all([first, second])).resolves.toMatchObject([
+      { status: "cancelled" },
+      { status: "cancelled" },
+    ]);
+    expect(releaseSpy).toHaveBeenCalledTimes(1);
+    expect(await test.outbox.depth()).toBe(1);
+    await expect(test.flusher.flushOnce()).resolves.toMatchObject({ sent: 1 });
+    expect(test.cloud.releaseCalls).toBe(1);
+  });
+
+  it("retains failed cancellation releases for retry", async () => {
+    const test = harness({ startQueue: false });
+    const executionId = createExecutionId("usage_cancel_release_retry");
+    await test.engine.execute({
+      projectId: PROJECT_ID,
+      request: request("async"),
+      executionId,
+    });
+    await test.engine.cancelExecution(PROJECT_ID, executionId);
+
+    test.cloud.available = false;
+    await expect(test.flusher.flushOnce()).resolves.toEqual({
+      selected: 1,
+      sent: 0,
+      failed: 1,
+    });
+    await expect(
+      test.outbox.listReady(new Date().toISOString(), 50, true),
+    ).resolves.toMatchObject([
+      { payload: { operation: "release" }, state: "failed", attempts: 1 },
+    ]);
+    test.cloud.available = true;
+    await expect(test.flusher.flushOnce(true)).resolves.toMatchObject({
+      sent: 1,
+    });
+    expect(test.cloud.releaseCalls).toBe(1);
+    expect(await test.outbox.depth()).toBe(0);
+  });
+
+  it("reports cancellation exactly once when provider dispatch may have begun", async () => {
+    let entered!: () => void;
+    let release!: () => void;
+    const dispatched = new Promise<void>((resolve) => {
+      entered = resolve;
+    });
+    const providerRelease = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    let providerSignal: AbortSignal | undefined;
+    const blockingAdapter: ToolkitAdapter = {
+      toolkitSlug: "usage-echo",
+      execute: vi.fn(async ({ canonicalInput, signal }) => {
+        providerSignal = signal;
+        entered();
+        await providerRelease;
+        return { echo: canonicalInput.message };
+      }),
+    };
+    const test = harness({ adapter: blockingAdapter });
+    const executionId = createExecutionId("usage_cancel_after_dispatch");
+    const executing = test.engine.execute({
+      projectId: PROJECT_ID,
+      request: request(),
+      executionId,
+    });
+    await dispatched;
+
+    const first = await test.engine.cancelExecution(PROJECT_ID, executionId);
+    const repeated = await test.engine.cancelExecution(PROJECT_ID, executionId);
+    expect(first).toEqual(repeated);
+    expect(first).toMatchObject({
+      status: "cancelled",
+      cancellation: { dispatchMayHaveBegun: true },
+    });
+    expect(providerSignal?.aborted).toBe(true);
+    await test.gate.onIdle();
+    expect(test.cloud.releaseCalls).toBe(0);
+    expect(await test.outbox.depth()).toBe(1);
+
+    release();
+    await expect(executing).resolves.toMatchObject({
+      response: { status: "cancelled" },
+    });
+    expect(await test.outbox.depth()).toBe(1);
+    await expect(test.flusher.flushOnce()).resolves.toMatchObject({ sent: 1 });
+    expect(test.cloud.committed.size).toBe(1);
   });
 
   it("rejects quota denial without allocating or reporting an execution", async () => {
@@ -620,6 +777,9 @@ describe("cloud usage admission and reporting", () => {
     await expect(
       test.engine.execute({ projectId: PROJECT_ID, request: request() }),
     ).rejects.toThrow("allocation unavailable");
+    expect(test.cloud.releaseCalls).toBe(0);
+    expect(await test.outbox.depth()).toBe(1);
+    await test.flusher.flushOnce();
     expect(test.cloud.releaseCalls).toBe(1);
   });
 
@@ -631,8 +791,11 @@ describe("cloud usage admission and reporting", () => {
       test.engine.execute({ projectId: PROJECT_ID, request: request() }),
     ).resolves.toMatchObject({ response: { status: "failed" } });
     await test.gate.onIdle();
-    expect(test.cloud.releaseCalls).toBe(1);
+    expect(test.cloud.releaseCalls).toBe(0);
     expect(test.cloud.reportCalls).toBe(0);
+    expect(await test.outbox.depth()).toBe(1);
+    await test.flusher.flushOnce();
+    expect(test.cloud.releaseCalls).toBe(1);
     expect(await test.outbox.depth()).toBe(0);
   });
 
@@ -788,7 +951,7 @@ describe("cloud usage admission and reporting", () => {
     );
   });
 
-  it("survives a PGlite restart and flushes the pending report", async () => {
+  it("survives a PGlite restart and flushes pending report and release work", async () => {
     const directory = await mkdtemp(join(tmpdir(), "eyeball-usage-outbox-"));
     try {
       const executionId = createExecutionId("usage_restart");
@@ -800,14 +963,30 @@ describe("cloud usage admission and reporting", () => {
         quantity: 1 as const,
         occurredAt: "2026-07-18T00:00:00.000Z",
       };
+      const releaseExecutionId = createExecutionId("usage_release_restart");
+      const releasePayload = {
+        operation: "release" as const,
+        projectId: PROJECT_ID,
+        executionId: releaseExecutionId,
+        reservationId: "usr_restart_release",
+        idempotencyKey: "usage_restart_release_key",
+        reservedAt: payload.occurredAt,
+      };
       const first = await createPgliteStoreBundle({ dataDir: directory });
       await first.usageOutboxStore.enqueue(payload, payload.occurredAt);
+      await first.usageOutboxStore.enqueue(releasePayload, payload.occurredAt);
       await first.close();
 
       const restored = await createPgliteStoreBundle({ dataDir: directory });
       try {
-        expect(await restored.usageOutboxStore.depth()).toBe(1);
+        expect(await restored.usageOutboxStore.depth()).toBe(2);
         const cloud = new FakeUsageCloud();
+        cloud.reservations.set(releasePayload.idempotencyKey, {
+          id: releasePayload.reservationId,
+          projectId: PROJECT_ID,
+          executionId: null,
+          createdAt: payload.occurredAt,
+        });
         const telemetry = createExecutorTelemetryRuntime({
           logger: captureLogger([]),
         });
@@ -821,8 +1000,9 @@ describe("cloud usage admission and reporting", () => {
           store: restored.usageOutboxStore,
           telemetry,
         });
-        await expect(flusher.flushOnce()).resolves.toMatchObject({ sent: 1 });
+        await expect(flusher.flushOnce()).resolves.toMatchObject({ sent: 2 });
         expect(cloud.committed).toEqual(new Set([payload.idempotencyKey]));
+        expect(cloud.releaseCalls).toBe(1);
         expect(await restored.usageOutboxStore.depth()).toBe(0);
       } finally {
         await restored.close();

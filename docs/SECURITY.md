@@ -367,7 +367,9 @@ The following are explicit limitations, not implied guarantees:
   plaintext authority.
   After restart, the next correctly authenticated request supplies the downstream
   credential and rearms polling. Timer handles and SSE subscribers remain
-  process-local; stock SSE replay and executor cancellation are not implemented.
+  process-local, and stock SSE replay is not implemented. Executor cancellation is
+  supported; once provider dispatch may have begun, cancellation remains best effort
+  and external side effects may still complete even though late results are discarded.
 - Staged files are project-scoped bearer capabilities, not user-owned records,
   until SEC-017 is remediated.
 - Provider-level idempotency propagation is separate from executor replay

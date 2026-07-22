@@ -68,6 +68,7 @@ const EXECUTION_STATUSES = new Set<ExecutionStatus>([
   "running",
   "succeeded",
   "failed",
+  "cancelled",
 ]);
 
 const MAX_TRIGGER_INGEST_BODY_BYTES = 1024 * 1024;
@@ -438,7 +439,7 @@ function parseListQuery(
   ) {
     return invalidQuery(
       context,
-      "status must be pending, running, succeeded, or failed.",
+      "status must be pending, running, succeeded, failed, or cancelled.",
     );
   }
   const toolValue = context.req.query("tool");
@@ -1830,6 +1831,29 @@ export function createExecutorApp(options: ExecutorAppOptions = {}): Hono<{
     try {
       const page = await engine.listExecutions(context.get("projectId"), query);
       return context.json(page);
+    } catch (error) {
+      return handleRouteError(context, error);
+    }
+  });
+
+  app.post("/v1/executions/:id/cancel", async (context) => {
+    try {
+      const projectId = context.get("projectId");
+      const executionId = context.req.param("id");
+      const execution = await engine.getExecution(projectId, executionId);
+      if (
+        rejectsPinnedUser(
+          context,
+          execution.userId,
+          context.req.header(USER_ID_HEADER),
+        )
+      ) {
+        return pinnedUserFailure(context);
+      }
+      return context.json(
+        await engine.cancelExecution(projectId, executionId),
+        200,
+      );
     } catch (error) {
       return handleRouteError(context, error);
     }

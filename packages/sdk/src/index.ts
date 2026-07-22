@@ -3,12 +3,14 @@ export const VERSION = "0.2.0";
 
 export {
   type AsyncExecuteResponse,
+  type CancelledExecutionRecord,
   type ConnectionId,
   type CreatedTriggerSubscription,
   type CreatedWebhookEndpoint,
   createTriggerEventArrivalId,
   createWebhookSignature,
   type ExecutionAttachmentSummary,
+  type ExecutionCancellation,
   type ExecutionId,
   type ExecutionMode,
   type ExecutionRecord,
@@ -26,6 +28,7 @@ export {
   type StagedFileMetadata,
   type StagedFilePage,
   type StagedFileReference,
+  type TerminalExecutionRecord,
   TOOL_ERROR_CODES,
   type ToolDefinition,
   type ToolNameMap,

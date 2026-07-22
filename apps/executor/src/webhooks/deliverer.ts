@@ -4,6 +4,7 @@ import {
   createWebhookSignature,
   type ExecutionRecord,
   type QualifiedTriggerName,
+  type TerminalExecutionRecord,
   type TranscriptArtifact,
   type TriggerEventData,
   type TriggerWebhookEvent,
@@ -136,7 +137,9 @@ function subscribed(
   eventType: WebhookEventType,
 ): boolean {
   if (
-    (eventType === "execution.succeeded" || eventType === "execution.failed") &&
+    (eventType === "execution.succeeded" ||
+      eventType === "execution.failed" ||
+      eventType === "execution.cancelled") &&
     events.includes("execution.completed")
   ) {
     return true;
@@ -149,8 +152,12 @@ function subscribed(
 
 function terminalExecution(
   record: ExecutionRecord,
-): record is ExecutionRecord & { status: "succeeded" | "failed" } {
-  return record.status === "succeeded" || record.status === "failed";
+): record is TerminalExecutionRecord {
+  return (
+    record.status === "succeeded" ||
+    record.status === "failed" ||
+    record.status === "cancelled"
+  );
 }
 
 function validRetryDelays(delays: readonly number[]): readonly number[] {
@@ -278,7 +285,9 @@ export class WebhookDeliverer {
       type:
         snapshot.status === "succeeded"
           ? "execution.succeeded"
-          : "execution.failed",
+          : snapshot.status === "failed"
+            ? "execution.failed"
+            : "execution.cancelled",
       createdAt: snapshot.completedAt ?? this.#now().toISOString(),
       projectId,
       data: snapshot,
@@ -768,7 +777,9 @@ export class WebhookDeliverer {
       const type =
         record.status === "succeeded"
           ? "execution.succeeded"
-          : "execution.failed";
+          : record.status === "failed"
+            ? "execution.failed"
+            : "execution.cancelled";
       if (type !== eventWork.eventType) return undefined;
       return {
         id: eventWork.eventId,

@@ -1,4 +1,4 @@
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import type { ExecuteToolRequest, ExecuteToolResponse, JsonValue } from "./api";
 import {
   hydrateVoiceSessionLink,
@@ -157,5 +157,44 @@ describe("voice session deep links", () => {
       "voice-agents.get_agent_session",
       "voice-agents.get_session_transcript",
     ]);
+  });
+
+  it("stops immediately and surfaces a structured cancelled execution", async () => {
+    const getExecution = vi.fn(async () => {
+      throw new Error("cancelled sync work must not be polled");
+    });
+    const client = {
+      async execute(request: ExecuteToolRequest): Promise<ExecuteToolResponse> {
+        return {
+          catalogVersion: "2026.07.21",
+          executionId: `exe_cancelled_${request.tool}`,
+          latencyMs: 1,
+          status: "cancelled",
+          tool: request.tool,
+          toolVersion: "1.0.0",
+          error: {
+            code: "execution_cancelled",
+            message: "Execution was cancelled before provider dispatch.",
+            retryable: false,
+          },
+          cancellation: { dispatchMayHaveBegun: false },
+        };
+      },
+      getExecution,
+    };
+
+    await expect(
+      hydrateVoiceSessionLink(
+        {
+          project: "project_cancelled",
+          sessionId: "session_cancelled",
+          userId: "user_cancelled",
+        },
+        () => client,
+      ),
+    ).rejects.toThrow(
+      "execution_cancelled: Execution was cancelled before provider dispatch.",
+    );
+    expect(getExecution).not.toHaveBeenCalled();
   });
 });

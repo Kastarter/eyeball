@@ -281,4 +281,48 @@ describe("voice session tool dispatch", () => {
       isVoiceSessionExecutionIdForSession(eventExecutionId, "session_dispatch"),
     ).toBe(true);
   });
+
+  it("preserves a cancelled child execution as its structured failed tool result", async () => {
+    const executionId = voiceSessionExecutionId("session_cancelled", "event:4");
+    const error = {
+      code: "execution_cancelled" as const,
+      message: "Execution was cancelled before provider dispatch.",
+      retryable: false as const,
+    };
+    const execute = vi.fn(async () => ({
+      response: {
+        executionId,
+        tool: "gmail.send_email" as QualifiedToolName,
+        status: "cancelled" as const,
+        error,
+        cancellation: { dispatchMayHaveBegun: false },
+        completedAt: "2026-07-21T12:00:00.010Z",
+        latencyMs: 10,
+      },
+    }));
+
+    await expect(
+      dispatchVoiceSessionToolCall({
+        agentRevision: {
+          id: AGENT_ID,
+          revision: 3,
+          projectId: PROJECT_ID,
+          userId: USER_ID,
+          tools: ["gmail.send_email"],
+        },
+        toolCall: {
+          sessionId: "session_cancelled",
+          sequence: 4,
+          eventExecutionId: executionId,
+          tool: "gmail.send_email",
+          input: {
+            to: ["guest@example.com"],
+            subject: "Cancelled",
+            body: "Do not send.",
+          },
+        },
+        executionEngine: { execute },
+      }),
+    ).resolves.toEqual({ status: "failed", executionId, error });
+  });
 });

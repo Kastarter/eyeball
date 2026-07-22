@@ -1,0 +1,4 @@
+ALTER TABLE "task_jobs" DROP CONSTRAINT "task_jobs_state_check";--> statement-breakpoint
+ALTER TABLE "task_jobs" DROP CONSTRAINT "task_jobs_completion_state_check";--> statement-breakpoint
+ALTER TABLE "task_jobs" ADD CONSTRAINT "task_jobs_state_check" CHECK ("task_jobs"."state" IN ('pending', 'running', 'succeeded', 'failed', 'cancelled'));--> statement-breakpoint
+ALTER TABLE "task_jobs" ADD CONSTRAINT "task_jobs_completion_state_check" CHECK (("task_jobs"."state" IN ('succeeded', 'failed', 'cancelled') AND "task_jobs"."completed_at" IS NOT NULL) OR ("task_jobs"."state" IN ('pending', 'running') AND "task_jobs"."completed_at" IS NULL));

@@ -32,9 +32,10 @@ You can perform the same endpoint creation and event selection from the selected
 
 | Subscription | Delivered envelope type | Availability |
 | --- | --- | --- |
-| `execution.completed` | `execution.succeeded` or `execution.failed` | Convenience selector for both terminal outcomes. |
+| `execution.completed` | `execution.succeeded`, `execution.failed`, or `execution.cancelled` | Convenience selector for every terminal outcome. |
 | `execution.succeeded` | `execution.succeeded` | Emitted after a successful execution record is durable. |
 | `execution.failed` | `execution.failed` | Emitted after a failed execution record is durable. |
+| `execution.cancelled` | `execution.cancelled` | Emitted after a cancelled execution record is durable, with its immutable dispatch disposition. |
 | `voice.session.event` | `voice.session.event` | Carries a selected durable `VoiceAgentSessionEvent`. Both the scripted development driver and configured remote worker feed this delivery seam. |
 | `voice.transcript.ready` | `voice.transcript.ready` | Emitted after a configured remote worker observes a terminal session and materializes its normalized transcript. |
 | `voice.observer.failed` | `voice.observer.failed` | Executor-owned terminal signal that durable observation exhausted its retry budget or rejected a non-retryable worker response. It reports the pinned agent, last handled sequence, attempts, safe operation/reason, and normalized error without changing worker session state. |
@@ -53,6 +54,7 @@ type WebhookEvent = {
   type:
     | "execution.succeeded"
     | "execution.failed"
+    | "execution.cancelled"
     | "voice.session.event"
     | "voice.transcript.ready"
     | "voice.observer.failed"

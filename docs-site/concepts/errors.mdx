@@ -75,6 +75,11 @@ The selected adapter, deployment, or protocol cannot perform the operation. Exam
 
 A durable worker restarted after provider dispatch may have begun, so the external side effect is ambiguous. Eyeball deliberately does not replay the adapter call. Inspect the provider and reconcile the operation using its business identity or the original idempotency key before starting another execution.
 
+<a id="execution_cancelled"></a>
+## `execution_cancelled`
+
+The execution was explicitly cancelled. This code is not retryable. Read `cancellation.dispatchMayHaveBegun` on the execution record: `false` means provider invocation was durably fenced and reserved usage was released; `true` means local work was interrupted where possible, but upstream work or external side effects may still complete. Start another execution only when your application has reconciled that ambiguity and intends a new operation.
+
 ## Default retry policy
 
 Only `rate_limited` and `provider_unavailable` default to `retryable: true`. Every other code defaults to false. Treat the envelope—not HTTP status guesses—as authoritative.

@@ -64,6 +64,13 @@
       "when": 1784665634998,
       "tag": "0008_trigger_events",
       "breakpoints": true
+    },
+    {
+      "idx": 9,
+      "version": "7",
+      "when": 1784674696261,
+      "tag": "0009_execution_cancellation",
+      "breakpoints": true
     }
   ]
 }

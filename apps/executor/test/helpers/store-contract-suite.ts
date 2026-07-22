@@ -719,6 +719,113 @@ export function registerStoreContractSuite(
         await expect(terminalPromise).resolves.toEqual(terminal);
       });
 
+      it("atomically cancels before or after the durable dispatch marker", async () => {
+        const scope = namespace(implementation.name);
+        const projectId = `project_${scope}`;
+        const clock = new MutableClock("2026-07-18T00:30:00.000Z");
+
+        const pendingId = createExecutionId(`${scope}_cancel_pending`);
+        const pendingAllocation = allocation(projectId, pendingId, clock);
+        await stores.executionStore.allocate(pendingAllocation);
+        const pendingWait = stores.executionStore.waitForTerminal(
+          projectId,
+          pendingId,
+        );
+        const cancelledAt = "2026-07-18T00:30:00.010Z";
+        const first = await stores.executionStore.cancelExecution(
+          projectId,
+          pendingId,
+          cancelledAt,
+        );
+        expect(first).toMatchObject({
+          kind: "cancelled",
+          record: {
+            status: "cancelled",
+            completedAt: cancelledAt,
+            latencyMs: 10,
+            cancellation: { dispatchMayHaveBegun: false },
+            error: {
+              code: "execution_cancelled",
+              message: "Execution was cancelled before provider dispatch.",
+              retryable: false,
+            },
+          },
+        });
+        if (first.kind !== "cancelled") {
+          throw new Error("Expected first cancellation to win.");
+        }
+        await expect(pendingWait).resolves.toEqual(first.record);
+        await expect(
+          stores.executionStore.cancelExecution(
+            projectId,
+            pendingId,
+            "2026-07-18T00:30:00.999Z",
+          ),
+        ).resolves.toEqual({ kind: "already_cancelled", record: first.record });
+        await expect(
+          stores.executionStore.markDispatchStarted(
+            projectId,
+            pendingId,
+            "2026-07-18T00:30:01.000Z",
+          ),
+        ).resolves.toBe(false);
+
+        const runningId = createExecutionId(`${scope}_cancel_running`);
+        const runningAllocation = allocation(projectId, runningId, clock);
+        await stores.executionStore.allocate(runningAllocation);
+        const runningRecord = running(runningAllocation.record);
+        await stores.executionStore.update(projectId, runningRecord);
+        await expect(
+          stores.executionStore.markDispatchStarted(
+            projectId,
+            runningId,
+            "2026-07-18T00:30:00.005Z",
+          ),
+        ).resolves.toBe(true);
+        const afterDispatch = await stores.executionStore.cancelExecution(
+          projectId,
+          runningId,
+          "2026-07-18T00:30:00.020Z",
+        );
+        expect(afterDispatch).toMatchObject({
+          kind: "cancelled",
+          record: {
+            status: "cancelled",
+            startedAt: runningRecord.startedAt,
+            completedAt: "2026-07-18T00:30:00.020Z",
+            latencyMs: 19,
+            cancellation: { dispatchMayHaveBegun: true },
+            error: {
+              code: "execution_cancelled",
+              message:
+                "Execution was cancelled after provider dispatch may have begun; upstream work may still complete.",
+              retryable: false,
+            },
+          },
+        });
+        await expect(
+          stores.executionStore.update(projectId, succeeded(runningRecord)),
+        ).rejects.toThrow(/running -> succeeded|cancelled -> succeeded/iu);
+        await expect(
+          stores.executionStore.list(projectId, {
+            status: "cancelled",
+            limit: 10,
+          }),
+        ).resolves.toMatchObject({
+          executions: expect.arrayContaining([
+            expect.objectContaining({ executionId: pendingId }),
+            expect.objectContaining({ executionId: runningId }),
+          ]),
+        });
+        await expect(
+          stores.executionStore.cancelExecution(
+            `other_${projectId}`,
+            runningId,
+            cancelledAt,
+          ),
+        ).resolves.toEqual({ kind: "not_found" });
+      });
+
       it("replays, conflicts, and expires idempotency using the supplied clock", async () => {
         const scope = namespace(implementation.name);
         const projectId = `project_${scope}`;
@@ -2065,6 +2172,54 @@ export function registerStoreContractSuite(
         await expect(
           stores.usageOutboxStore.listReady(retryAt, 50),
         ).resolves.toEqual([]);
+      });
+
+      it("deduplicates durable reservation releases with retry state", async () => {
+        const scope = namespace(`${implementation.name}_usage_release`);
+        const executionId = createExecutionId(`${scope}_usage_release`);
+        const enqueuedAt = "2026-07-18T03:45:00.000Z";
+        const payload = {
+          operation: "release" as const,
+          projectId: `project_${scope}`,
+          executionId,
+          reservationId: `reservation_${scope}`,
+          idempotencyKey: `usage_release_${scope}`,
+          reservedAt: enqueuedAt,
+        };
+        await Promise.all([
+          stores.usageOutboxStore.enqueue(payload, enqueuedAt),
+          stores.usageOutboxStore.enqueue(payload, enqueuedAt),
+        ]);
+        expect(await stores.usageOutboxStore.depth()).toBe(1);
+        await expect(
+          stores.usageOutboxStore.enqueue(
+            { ...payload, reservationId: `different_${scope}` },
+            enqueuedAt,
+          ),
+        ).rejects.toThrow(/conflict/iu);
+
+        const retryAt = "2026-07-18T03:45:01.000Z";
+        await stores.usageOutboxStore.markFailed(
+          [{ executionId, nextRetryAt: retryAt }],
+          enqueuedAt,
+        );
+        await expect(
+          stores.usageOutboxStore.listReady(enqueuedAt, 50),
+        ).resolves.toEqual([]);
+        await expect(
+          stores.usageOutboxStore.listReady(retryAt, 50),
+        ).resolves.toMatchObject([
+          {
+            payload: {
+              operation: "release",
+              reservationId: payload.reservationId,
+            },
+            state: "failed",
+            attempts: 1,
+          },
+        ]);
+        await stores.usageOutboxStore.markSent([executionId], retryAt);
+        expect(await stores.usageOutboxStore.depth()).toBe(0);
       });
     });
 

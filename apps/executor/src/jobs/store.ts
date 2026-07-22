@@ -6,7 +6,12 @@ import type {
 } from "./types.js";
 import { sameExecutorJob } from "./types.js";
 
-export type JobState = "pending" | "running" | "succeeded" | "failed";
+export type JobState =
+  | "pending"
+  | "running"
+  | "succeeded"
+  | "failed"
+  | "cancelled";
 
 export interface StoredJob extends JobEnvelope {
   readonly sequence: number;
@@ -33,6 +38,14 @@ export type EnsureJobResult =
   | { readonly kind: "existing"; readonly job: StoredJob }
   | { readonly kind: "conflict" };
 
+export type CancelPendingJobResult =
+  | { readonly kind: "cancelled"; readonly job: StoredJob }
+  | { readonly kind: "already_cancelled"; readonly job: StoredJob }
+  | { readonly kind: "running"; readonly job: ClaimedJob }
+  | { readonly kind: "already_terminal"; readonly job: StoredJob }
+  | { readonly kind: "missing" }
+  | { readonly kind: "conflict" };
+
 export interface LeaseMutation {
   readonly jobId: string;
   readonly workerId: string;
@@ -44,6 +57,11 @@ export interface LeaseMutation {
 export interface JobStore {
   ensure(job: JobEnvelope): Promise<EnsureJobResult>;
   get(jobId: string): Promise<StoredJob | undefined>;
+  cancelPending(input: {
+    readonly jobId: string;
+    readonly expectedDescription: ExecutorJob;
+    readonly now: string;
+  }): Promise<CancelPendingJobResult>;
   expireLeases(input: {
     queueNames: readonly JobQueueName[];
     now: string;
@@ -60,6 +78,7 @@ export interface JobStore {
     input: LeaseMutation & { readonly leaseExpiresAt: string },
   ): Promise<boolean>;
   complete(input: LeaseMutation): Promise<boolean>;
+  cancelClaimed(input: LeaseMutation): Promise<boolean>;
   reschedule(
     input: LeaseMutation & { readonly runAfter: string },
   ): Promise<boolean>;

@@ -1,4 +1,4 @@
-import type { ExecutionId, ExecutionRecord } from "@eyeball/core";
+import type { ExecutionId, TerminalExecutionRecord } from "@eyeball/core";
 
 export interface UsageReservationContext {
   readonly projectId: string;
@@ -40,7 +40,7 @@ export type UsageAdmission =
 
 export interface TerminalUsageReport {
   readonly context: UsageReportContext;
-  readonly record: ExecutionRecord & { status: "succeeded" | "failed" };
+  readonly record: TerminalExecutionRecord;
 }
 
 export interface UsageGate {
@@ -48,7 +48,7 @@ export interface UsageGate {
   reserve(context: UsageReservationContext): Promise<UsageAdmission>;
   /** Resolves only after the terminal usage outbox row is durably ensured. */
   reportTerminal(report: TerminalUsageReport): Promise<void>;
-  /** Releases a persisted pre-dispatch reservation handle. */
+  /** Durably ensures retryable, idempotent release work for a reservation. */
   release(reservation: UsageReservationHandle): Promise<void>;
   /** Waits only for local enqueue/release work, never for scheduled report retries. */
   onIdle(): Promise<void>;

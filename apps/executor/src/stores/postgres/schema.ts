@@ -33,8 +33,8 @@ import type { ExecutorJob } from "../../jobs/types.js";
 import type { ExecutionResumeContext } from "../../store.js";
 import type { TriggerEventDeliveryAdmissionStatus } from "../../triggers/event-store.js";
 import type {
+  UsageOutboxPayload,
   UsageOutboxState,
-  UsageReportPayload,
 } from "../../usage/outbox.js";
 import type {
   VoiceObserverFailureKind,
@@ -483,7 +483,7 @@ export const taskJobs = pgTable(
     ),
     check(
       "task_jobs_state_check",
-      sql`${table.state} IN ('pending', 'running', 'succeeded', 'failed')`,
+      sql`${table.state} IN ('pending', 'running', 'succeeded', 'failed', 'cancelled')`,
     ),
     check(
       "task_jobs_lease_state_check",
@@ -491,7 +491,7 @@ export const taskJobs = pgTable(
     ),
     check(
       "task_jobs_completion_state_check",
-      sql`(${table.state} IN ('succeeded', 'failed') AND ${table.completedAt} IS NOT NULL) OR (${table.state} IN ('pending', 'running') AND ${table.completedAt} IS NULL)`,
+      sql`(${table.state} IN ('succeeded', 'failed', 'cancelled') AND ${table.completedAt} IS NOT NULL) OR (${table.state} IN ('pending', 'running') AND ${table.completedAt} IS NULL)`,
     ),
   ],
 );
@@ -534,7 +534,7 @@ export const usageOutbox = pgTable(
   "usage_outbox",
   {
     executionId: text("execution_id").primaryKey(),
-    payload: jsonb("payload").$type<UsageReportPayload>().notNull(),
+    payload: jsonb("payload").$type<UsageOutboxPayload>().notNull(),
     state: text("state").$type<UsageOutboxState>().notNull(),
     attempts: integer("attempts").notNull(),
     nextRetryAt: timestampColumn("next_retry_at").notNull(),

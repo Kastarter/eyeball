@@ -202,7 +202,7 @@ function asRecord(
 function outputRecord(
   execution: ExecuteToolResponse,
 ): Readonly<Record<string, unknown>> {
-  if (execution.status === "failed") {
+  if (execution.status === "failed" || execution.status === "cancelled") {
     throw new Error(`${execution.error.code}: ${execution.error.message}`);
   }
   if (execution.status !== "succeeded") {
@@ -219,13 +219,21 @@ async function terminalExecution(
   execution: ExecuteToolResponse,
   project?: string,
 ): Promise<ExecuteToolResponse> {
-  if (execution.status === "succeeded" || execution.status === "failed")
+  if (
+    execution.status === "succeeded" ||
+    execution.status === "failed" ||
+    execution.status === "cancelled"
+  )
     return execution;
   const client = dashboardExecutorClient(project);
   for (let attempt = 0; attempt < 30; attempt += 1) {
     await delay(200);
     const detail = await client.getExecution(execution.executionId);
-    if (detail.status === "succeeded" || detail.status === "failed")
+    if (
+      detail.status === "succeeded" ||
+      detail.status === "failed" ||
+      detail.status === "cancelled"
+    )
       return detail;
   }
   throw new Error(`Execution ${execution.executionId} did not finish in time.`);

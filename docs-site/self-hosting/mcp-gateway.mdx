@@ -48,6 +48,6 @@ Only the SHA-256/base64url `authBinding` is persisted. Its v2 input commits to t
 
 SSE subscribers and timer handles remain process-local, and no replay log is provided.
 
-The stock `HttpMcpExecutor` allocates async work and reads execution status through the SDK. It does not advertise `tasks/cancel` because the executor has no cancellation route; a custom `McpExecutor` may implement the optional cancellation seam.
+The stock `HttpMcpExecutor` allocates async work, reads execution status, and forwards session-bound `tasks/cancel` through the SDK. Pre-dispatch cancellation fences provider invocation. After the durable dispatch marker, cancellation is best effort: same-process HTTP work is aborted where possible, but upstream work or external side effects may still complete. The executor record remains authoritatively cancelled, and a lost gateway response is reconstructed on retry through a same-credential status read.
 
 Put the gateway behind TLS for remote clients. The inbound bearer key is always required and is distinct from the executor key. If you accept per-request user headers, use a user-pinned inbound key or otherwise authenticate the caller before trusting that identity.

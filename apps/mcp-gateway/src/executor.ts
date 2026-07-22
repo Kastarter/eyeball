@@ -1,16 +1,30 @@
 import type {
+  CancelledExecutionRecord,
   ConnectionId,
   ExecutionId,
   ExecutionRecord,
   ExecutionResult,
+  FailedExecutionRecord,
   JsonValue,
   QualifiedToolName,
+  SucceededExecutionRecord,
+  TerminalExecutionRecord,
 } from "@eyeball/core";
 import { Eyeball } from "@eyeball/sdk";
 
 export type TerminalExecution =
-  | Extract<ExecutionResult, { status: "succeeded" | "failed" }>
-  | (ExecutionRecord & { status: "succeeded" | "failed" });
+  | Extract<ExecutionResult, { status: "succeeded" | "failed" | "cancelled" }>
+  | TerminalExecutionRecord;
+
+export type McpCancellationOutcome =
+  | {
+      readonly kind: "cancelled";
+      readonly execution: CancelledExecutionRecord;
+    }
+  | {
+      readonly kind: "already_terminal";
+      readonly execution: SucceededExecutionRecord | FailedExecutionRecord;
+    };
 
 export interface McpExecuteRequest {
   apiKey: string;
@@ -32,8 +46,8 @@ export interface McpExecutor {
   start?(request: McpExecuteRequest): Promise<ExecutionResult>;
   /** Read task-backed work from the executor's project-scoped execution store. */
   get?(request: McpExecutionRequest): Promise<ExecutionRecord>;
-  /** Optional cancellation seam; the stock executor intentionally does not implement it. */
-  cancel?(request: McpExecutionRequest): Promise<void>;
+  /** Cancel task-backed work and return the authoritative terminal disposition. */
+  cancel?(request: McpExecutionRequest): Promise<McpCancellationOutcome>;
 }
 
 export interface HttpMcpExecutorOptions {
@@ -96,6 +110,29 @@ export class HttpMcpExecutor implements McpExecutor {
 
   get(request: McpExecutionRequest): Promise<ExecutionRecord> {
     return this.#client(request.apiKey).executions.get(request.executionId);
+  }
+
+  async cancel(request: McpExecutionRequest): Promise<McpCancellationOutcome> {
+    const client = this.#client(request.apiKey);
+    try {
+      return {
+        kind: "cancelled",
+        execution: await client.executions.cancel(request.executionId),
+      };
+    } catch (error) {
+      try {
+        const execution = await client.executions.get(request.executionId);
+        if (execution.status === "cancelled") {
+          return { kind: "cancelled", execution };
+        }
+        if (execution.status === "succeeded" || execution.status === "failed") {
+          return { kind: "already_terminal", execution };
+        }
+      } catch {
+        throw error;
+      }
+      throw error;
+    }
   }
 
   #client(apiKey: string, userId?: string): Eyeball {

@@ -17,6 +17,24 @@ describe("error taxonomy", () => {
     expect(error.retryable).toBe(false);
   });
 
+  it("classifies cancelled execution outcomes as canonical and non-retryable", () => {
+    const error = new EyeballError({
+      code: TOOL_ERROR_CODES.EXECUTION_CANCELLED,
+      message: "Execution was cancelled before provider dispatch.",
+    });
+
+    expect(error.code).toBe("execution_cancelled");
+    expect(error.retryable).toBe(false);
+    expect(createErrorEnvelope(error, "request-cancelled")).toEqual({
+      requestId: "request-cancelled",
+      error: {
+        code: "execution_cancelled",
+        message: "Execution was cancelled before provider dispatch.",
+        retryable: false,
+      },
+    });
+  });
+
   it("keeps timeout non-retryable by default while allowing a seam override", () => {
     expect(
       new EyeballError({ code: "timeout", message: "default" }).retryable,

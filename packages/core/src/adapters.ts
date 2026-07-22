@@ -59,6 +59,8 @@ export interface AdapterContext {
   fetchImpl: FetchImplementation;
   clock: Clock;
   logger: ExecutorLogger;
+  /** Aborts process-local work when execution cancellation or lease loss wins. */
+  signal?: AbortSignal;
   telemetry?: AdapterTelemetry;
   files: FileResolver;
 }

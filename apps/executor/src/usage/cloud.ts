@@ -13,7 +13,11 @@ import {
   type UsageReservationContext,
   type UsageReservationHandle,
 } from "./gate.js";
-import type { UsageOutboxStore, UsageReportPayload } from "./outbox.js";
+import type {
+  UsageOutboxStore,
+  UsageReleasePayload,
+  UsageReportPayload,
+} from "./outbox.js";
 
 const DEFAULT_TIMEOUT_MS = 10_000;
 const DEFAULT_FLUSH_INTERVAL_MS = 5_000;
@@ -546,20 +550,34 @@ export class CloudUsageGate implements UsageGate {
   }
 
   async release(reservation: UsageReservationHandle): Promise<void> {
-    try {
-      await this.client.release(reservation);
-      this.#logger.info("usage.reservation_released", {
-        projectId: reservation.projectId,
-        executionId: reservation.localExecutionId,
+    const payload: UsageReleasePayload = {
+      operation: "release",
+      projectId: reservation.projectId,
+      executionId: reservation.localExecutionId,
+      reservationId: reservation.reservationId,
+      idempotencyKey: reservation.idempotencyKey,
+      ...(reservation.cloudExecutionId === undefined
+        ? {}
+        : { cloudExecutionId: reservation.cloudExecutionId }),
+      ...(reservation.reservedAt === undefined
+        ? {}
+        : { reservedAt: reservation.reservedAt }),
+    };
+    const pending = this.outboxStore
+      .enqueue(payload, this.#now().toISOString())
+      .then(async () => {
+        this.#telemetry.setUsageOutboxDepth(await this.outboxStore.depth());
+      })
+      .catch((error: unknown) => {
+        this.#logger.error("usage.release_outbox_enqueue_failed", {
+          projectId: reservation.projectId,
+          executionId: reservation.localExecutionId,
+          errorName: error instanceof Error ? error.name : "unknown",
+        });
+        throw error;
       });
-    } catch (error) {
-      this.#logger.error("usage.reservation_release_failed", {
-        projectId: reservation.projectId,
-        executionId: reservation.localExecutionId,
-        errorName: error instanceof Error ? error.name : "unknown",
-      });
-      throw error;
-    }
+    this.#track(pending);
+    await pending;
   }
 
   async onIdle(): Promise<void> {

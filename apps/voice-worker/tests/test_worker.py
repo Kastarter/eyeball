@@ -26,7 +26,11 @@ from eyeball_voice_worker.contracts import (
     StartSessionRequest,
     TwilioTransport,
 )
-from eyeball_voice_worker.executor import ExecutorClient, ExecutorResult
+from eyeball_voice_worker.executor import (
+    ExecutorClient,
+    ExecutorResult,
+    SessionExecutorCredential,
+)
 from eyeball_voice_worker.manager import SessionManager
 from eyeball_voice_worker.media import (
     PipecatPipelineFactory,
@@ -497,6 +501,54 @@ async def test_session_grant_replaces_static_worker_key_and_is_erased_at_termina
     assert auth_row["grant_token"] is None
     assert auth_row["grant_expires_at"] == "2099-01-01T00:00:00Z"
     assert auth_row["grant_revoked_at"] is not None
+    await executor_http.aclose()
+
+
+@pytest.mark.asyncio
+async def test_executor_client_preserves_cancelled_child_error() -> None:
+    execution_id = "exe_voice_cancelled"
+    tool = "gmail.send_email"
+    error = {
+        "code": "execution_cancelled",
+        "message": "Execution was cancelled before provider dispatch.",
+        "retryable": False,
+    }
+
+    def execute(_request: httpx.Request) -> httpx.Response:
+        return httpx.Response(
+            200,
+            json={
+                "executionId": execution_id,
+                "tool": tool,
+                "status": "cancelled",
+                "error": error,
+                "cancellation": {"dispatchMayHaveBegun": False},
+                "completedAt": "2026-07-21T12:00:00.010Z",
+                "latencyMs": 10,
+            },
+        )
+
+    executor_http = httpx.AsyncClient(transport=httpx.MockTransport(execute))
+    client = ExecutorClient(
+        base_url="https://executor.test",
+        api_key=WORKER_KEY,
+        client=executor_http,
+    )
+    result = await client.execute(
+        session_id="session_cancelled",
+        event_sequence=4,
+        execution_id=execution_id,
+        user_id="user_cancelled",
+        tool=tool,
+        input={"to": ["sam@example.com"]},
+        credential=SessionExecutorCredential(mode="static-pinned"),
+    )
+
+    assert result == ExecutorResult(
+        execution_id=execution_id,
+        tool=tool,
+        error=error,
+    )
     await executor_http.aclose()
 
 

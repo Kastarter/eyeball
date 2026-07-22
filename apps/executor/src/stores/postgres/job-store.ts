@@ -14,6 +14,7 @@ import {
 } from "drizzle-orm";
 import { alias, type PgQueryResultHKT } from "drizzle-orm/pg-core";
 import type {
+  CancelPendingJobResult,
   ClaimedJob,
   EnsureJobResult,
   JobStore,
@@ -123,6 +124,58 @@ export class PostgresJobStore<
       .where(eq(taskJobs.jobId, jobId))
       .limit(1);
     return row === undefined ? undefined : toStored(row);
+  }
+
+  async cancelPending(input: {
+    readonly jobId: string;
+    readonly expectedDescription: ExecutorJob;
+    readonly now: string;
+  }): Promise<CancelPendingJobResult> {
+    return this.#database.transaction(async (transaction) => {
+      const [row] = await transaction
+        .select()
+        .from(taskJobs)
+        .where(eq(taskJobs.jobId, input.jobId))
+        .for("update")
+        .limit(1);
+      if (row === undefined) return { kind: "missing" };
+      if (
+        !sameExecutorJob(
+          { kind: row.kind, payload: row.payload } as ExecutorJob,
+          input.expectedDescription,
+        )
+      ) {
+        return { kind: "conflict" };
+      }
+      if (row.state === "cancelled") {
+        return { kind: "already_cancelled", job: toStored(row) };
+      }
+      if (row.state === "running") {
+        return { kind: "running", job: toStored(row) as ClaimedJob };
+      }
+      if (row.state === "succeeded" || row.state === "failed") {
+        return { kind: "already_terminal", job: toStored(row) };
+      }
+      const [changed] = await transaction
+        .update(taskJobs)
+        .set({
+          state: "cancelled",
+          claimedBy: null,
+          leaseToken: null,
+          leaseExpiresAt: null,
+          lastErrorCode: null,
+          completedAt: input.now,
+          updatedAt: input.now,
+        })
+        .where(
+          and(eq(taskJobs.jobId, input.jobId), eq(taskJobs.state, "pending")),
+        )
+        .returning();
+      if (changed === undefined) {
+        throw new Error("Pending job changed while its row lock was held.");
+      }
+      return { kind: "cancelled", job: toStored(changed) };
+    });
   }
 
   async expireLeases(input: {
@@ -259,6 +312,10 @@ export class PostgresJobStore<
     return this.#terminal(input, "succeeded");
   }
 
+  async cancelClaimed(input: LeaseMutation): Promise<boolean> {
+    return this.#terminal(input, "cancelled");
+  }
+
   async reschedule(
     input: LeaseMutation & { readonly runAfter: string },
   ): Promise<boolean> {
@@ -309,7 +366,7 @@ export class PostgresJobStore<
       .where(
         and(
           inArray(taskJobs.jobId, [...jobIds]),
-          inArray(taskJobs.state, ["succeeded", "failed"]),
+          inArray(taskJobs.state, ["succeeded", "failed", "cancelled"]),
         ),
       );
     return rows.map(toStored);
@@ -359,7 +416,7 @@ export class PostgresJobStore<
 
   async #terminal(
     input: LeaseMutation,
-    state: "succeeded" | "failed",
+    state: "succeeded" | "failed" | "cancelled",
     errorCode?: SafeJobErrorCode,
   ): Promise<boolean> {
     const rows = await this.#database

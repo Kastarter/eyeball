@@ -1,4 +1,5 @@
 import {
+  type CancelledExecutionRecord,
   createExecutionId,
   type ExecutionRecord,
   type ExecutionResult,
@@ -131,6 +132,27 @@ function failed(): ExecutionRecord {
   };
 }
 
+function cancelledExecution(
+  dispatchMayHaveBegun = false,
+): CancelledExecutionRecord {
+  return {
+    ...pending(),
+    status: "cancelled",
+    userId: USER_ID,
+    createdAt: "2026-07-19T00:00:00.000Z",
+    completedAt: "2026-07-19T00:00:02.000Z",
+    error: {
+      code: TOOL_ERROR_CODES.EXECUTION_CANCELLED,
+      message: dispatchMayHaveBegun
+        ? "Execution was cancelled after provider dispatch may have begun; upstream work may still complete."
+        : "Execution was cancelled before provider dispatch.",
+      retryable: false,
+    },
+    latencyMs: 2_000,
+    cancellation: { dispatchMayHaveBegun },
+  };
+}
+
 function taskExecutor(
   getImplementation: () => Promise<ExecutionRecord> = async () => running(),
 ): McpExecutor & {
@@ -180,7 +202,7 @@ async function initialize(
     app,
     rpc("initialize", {
       protocolVersion: MCP_PROTOCOL_VERSION,
-      capabilities: { experimental: { tasks: {} } },
+      capabilities: { tasks: {} },
       clientInfo: { name: "tasks-test", version: "1.0.0" },
     }),
   );
@@ -253,6 +275,28 @@ describe("negotiated MCP Tasks", () => {
       result: { structuredContent: expect.anything() },
     });
     expect(execution.execute).toHaveBeenCalledTimes(1);
+  });
+
+  it("retains the legacy experimental Tasks opt-in as a compatibility alias", async () => {
+    const app = createMcpGatewayApp({
+      executor: taskExecutor(),
+      apiKey: API_KEY,
+      userId: USER_ID,
+      sessionIdFactory: () => SESSION_ID,
+    });
+    const initialized = await post(
+      app,
+      rpc("initialize", {
+        protocolVersion: MCP_PROTOCOL_VERSION,
+        capabilities: { experimental: { tasks: {} } },
+        clientInfo: { name: "legacy-tasks-test", version: "1.0.0" },
+      }),
+    );
+    await expect(initialized.json()).resolves.toMatchObject({
+      result: {
+        capabilities: { tasks: { requests: { tools: { call: {} } } } },
+      },
+    });
   });
 
   it("allocates async work once and exposes task status plus terminal result", async () => {
@@ -399,6 +443,69 @@ describe("negotiated MCP Tasks", () => {
     });
   });
 
+  it.each(
+    sessionStores,
+  )("reconstructs cancelled tasks and returns the underlying cancellation result with $name", async ({
+    create,
+  }) => {
+    const sessions = await create();
+    try {
+      const execution = taskExecutor(async () => cancelledExecution(true));
+      const app = createMcpGatewayApp({
+        executor: execution,
+        apiKey: API_KEY,
+        userId: USER_ID,
+        sessionIdFactory: () => SESSION_ID,
+        taskPollMs: 60_000,
+        sessionStore: sessions.store,
+      });
+      await initialize(app);
+      await post(app, taskCall, SESSION_ID);
+
+      const status = await post(
+        app,
+        rpc("tasks/get", { taskId: TASK_ID }, "cancelled-status"),
+        SESSION_ID,
+      );
+      await expect(status.json()).resolves.toMatchObject({
+        result: {
+          taskId: TASK_ID,
+          status: "cancelled",
+          statusMessage: expect.stringContaining("best effort"),
+        },
+      });
+
+      const result = await post(
+        app,
+        rpc("tasks/result", { taskId: TASK_ID }, "cancelled-result"),
+        SESSION_ID,
+      );
+      await expect(result.json()).resolves.toMatchObject({
+        result: {
+          isError: true,
+          content: [{ text: expect.stringContaining("execution_cancelled") }],
+          _meta: {
+            "dev.eyeball/execution": {
+              executionId: TASK_ID,
+              status: "cancelled",
+            },
+            "io.modelcontextprotocol/related-task": { taskId: TASK_ID },
+          },
+        },
+      });
+      await expect(sessions.store.get(SESSION_ID)).resolves.toMatchObject({
+        tasks: {
+          [TASK_ID]: {
+            status: "cancelled",
+            executionStatus: "cancelled",
+          },
+        },
+      });
+    } finally {
+      await sessions.close();
+    }
+  });
+
   it("requires task augmentation for required tools and scopes task IDs to sessions", async () => {
     const execution = taskExecutor();
     let sessionIndex = 0;
@@ -436,7 +543,10 @@ describe("negotiated MCP Tasks", () => {
   });
 
   it("advertises and dispatches cancellation only when the executor supports it", async () => {
-    const cancel = vi.fn(async () => undefined);
+    const cancel = vi.fn(async () => ({
+      kind: "cancelled" as const,
+      execution: cancelledExecution(),
+    }));
     const execution = { ...taskExecutor(), cancel };
     const app = createMcpGatewayApp({
       executor: execution,
@@ -456,9 +566,17 @@ describe("negotiated MCP Tasks", () => {
       rpc("tasks/cancel", { taskId: TASK_ID }),
       SESSION_ID,
     );
-    await expect(cancelled.json()).resolves.toMatchObject({
-      result: { taskId: TASK_ID, status: "cancelled" },
+    const cancelledBody = (await cancelled.json()) as {
+      result: Record<string, unknown>;
+    };
+    expect(cancelledBody).toMatchObject({
+      result: {
+        taskId: TASK_ID,
+        status: "cancelled",
+        statusMessage: expect.stringContaining("before provider dispatch"),
+      },
     });
+    expect(cancelledBody.result).not.toHaveProperty("_meta");
     expect(cancel).toHaveBeenCalledWith({
       apiKey: API_KEY,
       executionId: TASK_ID,
@@ -483,6 +601,45 @@ describe("negotiated MCP Tasks", () => {
     });
   });
 
+  it("persists a downstream terminal race and rejects cancellation as invalid params", async () => {
+    const execution = {
+      ...taskExecutor(),
+      cancel: vi.fn(async () => ({
+        kind: "already_terminal" as const,
+        execution: succeeded(),
+      })),
+    };
+    const app = createMcpGatewayApp({
+      executor: execution,
+      apiKey: API_KEY,
+      userId: USER_ID,
+      sessionIdFactory: () => SESSION_ID,
+      taskPollMs: 60_000,
+    });
+    await initialize(app);
+    await post(app, taskCall, SESSION_ID);
+
+    const response = await post(
+      app,
+      rpc("tasks/cancel", { taskId: TASK_ID }, "terminal-race"),
+      SESSION_ID,
+    );
+    await expect(response.json()).resolves.toMatchObject({
+      error: {
+        code: -32602,
+        message: expect.stringContaining("completed"),
+      },
+    });
+    const refreshed = await post(
+      app,
+      rpc("tasks/get", { taskId: TASK_ID }, "terminal-after-race"),
+      SESSION_ID,
+    );
+    await expect(refreshed.json()).resolves.toMatchObject({
+      result: { taskId: TASK_ID, status: "completed" },
+    });
+  });
+
   it.each(
     sessionStores,
   )("does not let an in-flight status refresh overwrite cancellation with $name", async ({
@@ -500,7 +657,10 @@ describe("negotiated MCP Tasks", () => {
       const execution = {
         ...taskExecutor(),
         get,
-        cancel: vi.fn(async () => undefined),
+        cancel: vi.fn(async () => ({
+          kind: "cancelled" as const,
+          execution: cancelledExecution(),
+        })),
       };
       const app = createMcpGatewayApp({
         executor: execution,

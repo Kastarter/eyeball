@@ -1,3 +1,4 @@
+import type { CancelledExecutionRecord } from "@eyeball/core";
 import type { Clock, ExecutorLogger } from "../adapters/index.js";
 import type { ExecutionStore } from "../store.js";
 import type { WebhookDeliveryStore } from "../webhooks/delivery-store.js";
@@ -20,6 +21,10 @@ export interface RecoverExecutorJobsInput {
   readonly clock: Clock;
   readonly logger: ExecutorLogger;
   readonly batchSize?: number;
+  readonly reconcileCancelledExecution?: (input: {
+    readonly projectId: string;
+    readonly record: CancelledExecutionRecord;
+  }) => Promise<void>;
 }
 
 async function ensureRecoveryJob(
@@ -76,17 +81,43 @@ export async function recoverExecutorJobs(
       limit: batchSize,
     });
     for (const candidate of page.candidates) {
-      await ensureRecoveryJob(
-        input.jobStore,
-        {
-          kind: "execution.run.v1",
-          payload: {
-            projectId: candidate.projectId,
-            executionId: candidate.record.executionId,
-          },
+      const executionJob: ExecutorJob = {
+        kind: "execution.run.v1",
+        payload: {
+          projectId: candidate.projectId,
+          executionId: candidate.record.executionId,
         },
-        { runAfter: nowIso },
-      );
+      };
+      if (candidate.record.status === "cancelled") {
+        if (input.reconcileCancelledExecution === undefined) {
+          throw new Error(
+            "Cancelled execution recovery requires a terminal reconciliation target.",
+          );
+        }
+        await input.reconcileCancelledExecution({
+          projectId: candidate.projectId,
+          record: candidate.record,
+        });
+        const envelope = createJobEnvelope(
+          executionJob,
+          { runAfter: nowIso },
+          now,
+        );
+        const cancelled = await input.jobStore.cancelPending({
+          jobId: envelope.jobId,
+          expectedDescription: executionJob,
+          now: nowIso,
+        });
+        if (cancelled.kind === "conflict") {
+          throw new Error(
+            "Recovery found a conflicting deterministic job identity.",
+          );
+        }
+        continue;
+      }
+      await ensureRecoveryJob(input.jobStore, executionJob, {
+        runAfter: nowIso,
+      });
     }
     executionCursor = page.nextCursor;
   } while (executionCursor !== undefined);

@@ -121,7 +121,9 @@ class ExecutorClient:
                 tool=tool,
                 output=payload["output"],
             )
-        if status == "failed" and isinstance(payload.get("error"), dict):
+        if status in {"failed", "cancelled"} and isinstance(
+            payload.get("error"), dict
+        ):
             return ExecutorResult(
                 execution_id=execution_id,
                 tool=tool,

@@ -112,7 +112,7 @@ function initialize(
     app,
     rpc("initialize", {
       protocolVersion: MCP_PROTOCOL_VERSION,
-      capabilities: tasks ? { experimental: { tasks: {} } } : {},
+      capabilities: tasks ? { tasks: {} } : {},
       clientInfo: { name: "stream-test", version: "1.0.0" },
     }),
     headers,

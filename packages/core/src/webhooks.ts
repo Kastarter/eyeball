@@ -29,6 +29,7 @@ export const WEBHOOK_SUBSCRIPTION_EVENT_TYPES = [
   "execution.completed",
   "execution.succeeded",
   "execution.failed",
+  "execution.cancelled",
   "voice.session.event",
   "voice.transcript.ready",
   "voice.observer.failed",

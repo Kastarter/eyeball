@@ -8,7 +8,12 @@ import type {
 } from "./tool.js";
 
 export type ExecutionMode = "sync" | "async";
-export type ExecutionStatus = "pending" | "running" | "succeeded" | "failed";
+export type ExecutionStatus =
+  | "pending"
+  | "running"
+  | "succeeded"
+  | "failed"
+  | "cancelled";
 export type PollingExecutionStatus = ExecutionStatus;
 
 export type ExecutionId = `exe_${string}`;
@@ -113,6 +118,15 @@ export interface ExecutionBase {
   status: ExecutionStatus;
 }
 
+export interface ExecutionCancellation {
+  readonly dispatchMayHaveBegun: boolean;
+}
+
+export type ExecutionCancelledError = NormalizedToolError & {
+  readonly code: "execution_cancelled";
+  readonly retryable: false;
+};
+
 export type SyncExecuteResponse =
   | (ExecutionBase & {
       status: "succeeded";
@@ -125,6 +139,13 @@ export type SyncExecuteResponse =
       output?: never;
       error: NormalizedToolError;
       latencyMs: number;
+    })
+  | (ExecutionBase & {
+      status: "cancelled";
+      output?: never;
+      error: ExecutionCancelledError;
+      latencyMs: number;
+      cancellation: ExecutionCancellation;
     });
 
 export type AsyncExecuteResponse = ExecutionBase & { status: "pending" };
@@ -198,9 +219,39 @@ export type ExecutionRecord = ExecutionBase & {
         error: NormalizedToolError;
         latencyMs: number;
       }
+    | {
+        status: "cancelled";
+        output?: never;
+        error: ExecutionCancelledError;
+        latencyMs: number;
+        cancellation: ExecutionCancellation;
+      }
   );
 
-export type TerminalEventType = "execution.succeeded" | "execution.failed";
+export type SucceededExecutionRecord = Extract<
+  ExecutionRecord,
+  { status: "succeeded" }
+>;
+
+export type FailedExecutionRecord = Extract<
+  ExecutionRecord,
+  { status: "failed" }
+>;
+
+export type CancelledExecutionRecord = Extract<
+  ExecutionRecord,
+  { status: "cancelled" }
+>;
+
+export type TerminalExecutionRecord =
+  | SucceededExecutionRecord
+  | FailedExecutionRecord
+  | CancelledExecutionRecord;
+
+export type TerminalEventType =
+  | "execution.succeeded"
+  | "execution.failed"
+  | "execution.cancelled";
 
 export interface WebhookEndpointConfig {
   id: string;
@@ -215,5 +266,5 @@ export interface ExecutionWebhookEvent {
   type: TerminalEventType;
   createdAt: string;
   projectId: string;
-  data: ExecutionRecord & { status: "succeeded" | "failed" };
+  data: TerminalExecutionRecord;
 }

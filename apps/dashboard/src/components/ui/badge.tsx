@@ -8,6 +8,7 @@ export type BadgeStatus =
   | "revoked"
   | "succeeded"
   | "failed"
+  | "cancelled"
   | "pending"
   | "needs_reauth"
   | "running"
@@ -29,6 +30,7 @@ const statusPresentation: Record<
   revoked: { label: "Revoked", tone: "error" },
   succeeded: { label: "Succeeded", tone: "success" },
   failed: { label: "Failed", tone: "error" },
+  cancelled: { label: "Cancelled", tone: "neutral" },
   pending: { label: "Pending", tone: "warning" },
   needs_reauth: { label: "Needs reauth", tone: "warning" },
   running: { label: "Running", pulse: true, tone: "accent" },

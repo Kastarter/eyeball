@@ -151,6 +151,7 @@ class ManualWebhookClock implements Clock {
 }
 
 interface HarnessOptions {
+  adapter?: ToolkitAdapter;
   receiver?: Hono;
   clock?: ManualWebhookClock;
   retryDelaysMs?: readonly number[];
@@ -185,7 +186,7 @@ function createHarness(options: HarnessOptions = {}) {
       contracts: [contract],
       manifests: [manifest],
     }),
-    adapters: new AdapterRegistry([new FixtureAdapter()]),
+    adapters: new AdapterRegistry([options.adapter ?? new FixtureAdapter()]),
     credentialProvider,
     clock,
     webhookDeliverer,
@@ -234,7 +235,9 @@ async function createEndpoint(
   harness: ReturnType<typeof createHarness>,
   events: readonly (
     | "execution.completed"
+    | "execution.cancelled"
     | "execution.failed"
+    | "execution.succeeded"
     | "voice.session.event"
     | "voice.transcript.ready"
     | "voice.observer.failed"
@@ -398,6 +401,95 @@ describe("webhook endpoint API", () => {
 });
 
 describe("signed webhook delivery", () => {
+  it("selects cancellation exactly and includes it in execution.completed", async () => {
+    let entered!: () => void;
+    let release!: () => void;
+    const dispatched = new Promise<void>((resolve) => {
+      entered = resolve;
+    });
+    const providerRelease = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    const blockingAdapter: ToolkitAdapter = {
+      toolkitSlug: "webhook-fixture",
+      execute: vi.fn(async ({ canonicalInput }) => {
+        entered();
+        await providerRelease;
+        return { echo: canonicalInput.message };
+      }),
+    };
+    const received: string[] = [];
+    const receiver = new Hono();
+    receiver.post("/hook", async (context) => {
+      received.push(await context.req.text());
+      return context.body(null, 204);
+    });
+    const harness = createHarness({ receiver, adapter: blockingAdapter });
+    const exact = await createEndpoint(harness, ["execution.cancelled"]);
+    const completed = await createEndpoint(harness, ["execution.completed"]);
+    const otherTerminal = await createEndpoint(harness, [
+      "execution.succeeded",
+      "execution.failed",
+    ]);
+    const executionId = createExecutionId("webhook_cancelled");
+    const executing = harness.engine.execute({
+      projectId: PROJECT_ID,
+      executionId,
+      request: {
+        tool: "webhook-fixture.send_email",
+        userId: USER_ID,
+        input: { message: "cancel me" },
+        mode: "sync",
+      },
+    });
+    await dispatched;
+
+    const cancelled = await harness.engine.cancelExecution(
+      PROJECT_ID,
+      executionId,
+    );
+    await harness.webhookDeliverer.onIdle();
+    expect(cancelled).toMatchObject({
+      status: "cancelled",
+      cancellation: { dispatchMayHaveBegun: true },
+    });
+    expect(received).toHaveLength(2);
+    expect(JSON.parse(received[0] ?? "{}")).toMatchObject({
+      type: "execution.cancelled",
+      projectId: PROJECT_ID,
+      data: {
+        status: "cancelled",
+        error: { code: "execution_cancelled", retryable: false },
+        cancellation: { dispatchMayHaveBegun: true },
+      },
+    });
+    await expect(
+      harness.deliveryStore.list(PROJECT_ID, exact.endpointId, { limit: 10 }),
+    ).resolves.toMatchObject({
+      deliveries: [{ eventType: "execution.cancelled" }],
+    });
+    await expect(
+      harness.deliveryStore.list(PROJECT_ID, completed.endpointId, {
+        limit: 10,
+      }),
+    ).resolves.toMatchObject({
+      deliveries: [{ eventType: "execution.cancelled" }],
+    });
+    await expect(
+      harness.deliveryStore.list(PROJECT_ID, otherTerminal.endpointId, {
+        limit: 10,
+      }),
+    ).resolves.toEqual({ deliveries: [] });
+
+    await harness.engine.cancelExecution(PROJECT_ID, executionId);
+    release();
+    await expect(executing).resolves.toMatchObject({
+      response: { status: "cancelled" },
+    });
+    await harness.webhookDeliverer.onIdle();
+    expect(received).toHaveLength(2);
+  });
+
   it("delivers a valid RFC envelope and exposes its successful delivery log", async () => {
     let secret = "";
     const received: Array<{

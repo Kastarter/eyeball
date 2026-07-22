@@ -91,6 +91,13 @@ describe("generated SDK reference", () => {
     expect(executions).toContain("voice_session");
     expect(executions).toContain("Accepted replay observed");
     expect(executions).toContain("never includes canonical input");
+    expect(executions).toContain("### `cancel`");
+    expect(executions).toContain("CancelledExecutionRecord");
+    expect(executions).toContain("ExecutionCancellation");
+    expect(executions).toContain("TerminalExecutionRecord");
+    expect(executions).toContain(
+      "Cancellation is best effort; upstream work may complete.",
+    );
   });
 
   it("assigns redacted trigger history and renders its runnable example", () => {

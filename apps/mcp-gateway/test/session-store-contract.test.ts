@@ -102,7 +102,7 @@ it("keeps executor and gateway migration histories independent", async () => {
   }
 });
 
-it("reopens every negotiated field and non-terminal task from disk", async () => {
+it("reopens negotiated fields plus working and cancelled tasks from disk", async () => {
   const directory = await mkdtemp(
     join(tmpdir(), "eyeball-mcp-session-restart-"),
   );
@@ -111,6 +111,7 @@ it("reopens every negotiated field and non-terminal task from disk", async () =>
   try {
     first = await createPgliteMcpGatewayStoreBundle({ dataDir: directory });
     const taskId = createExecutionId("gateway_restart_task");
+    const cancelledTaskId = createExecutionId("gateway_cancelled_task");
     const session = {
       sessionId: "gateway_restart_session",
       protocolVersion: "2025-06-18",
@@ -130,6 +131,18 @@ it("reopens every negotiated field and non-terminal task from disk", async () =>
           ttl: 120_000,
           pollInterval: 1_000,
           progress: 0.5,
+        },
+        [cancelledTaskId]: {
+          taskId: cancelledTaskId,
+          tool: "twilio.start_call" as const,
+          executionStatus: "cancelled" as const,
+          status: "cancelled" as const,
+          statusMessage: "Execution cancelled before provider dispatch.",
+          createdAt: "2026-07-20T06:00:03.000Z",
+          lastUpdatedAt: "2026-07-20T06:00:04.000Z",
+          ttl: 120_000,
+          pollInterval: 1_000,
+          progress: 2,
         },
       },
     };

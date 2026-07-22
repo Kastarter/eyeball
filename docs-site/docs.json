@@ -205,7 +205,8 @@
           "pages": [
             "api/executions/execute",
             "api/executions/list-executions",
-            "api/executions/get-execution"
+            "api/executions/get-execution",
+            "api/executions/cancel-execution"
           ]
         },
         "api/files",

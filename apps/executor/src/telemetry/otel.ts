@@ -44,7 +44,7 @@ interface ExecutorInstruments {
   usageOutboxDepth: ObservableGauge;
 }
 
-export type ExecutionTelemetryStatus = "succeeded" | "failed";
+export type ExecutionTelemetryStatus = "succeeded" | "failed" | "cancelled";
 export type WebhookTelemetryStatus =
   | "succeeded"
   | "http_error"

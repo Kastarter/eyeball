@@ -63,13 +63,21 @@ async function terminal(
   client: VoiceSessionLinkClient,
   execution: ExecuteToolResponse,
 ): Promise<ExecuteToolResponse> {
-  if (execution.status === "succeeded" || execution.status === "failed") {
+  if (
+    execution.status === "succeeded" ||
+    execution.status === "failed" ||
+    execution.status === "cancelled"
+  ) {
     return execution;
   }
   for (let attempt = 0; attempt < 30; attempt += 1) {
     await delay(200);
     const detail = await client.getExecution(execution.executionId);
-    if (detail.status === "succeeded" || detail.status === "failed") {
+    if (
+      detail.status === "succeeded" ||
+      detail.status === "failed" ||
+      detail.status === "cancelled"
+    ) {
       return detail;
     }
   }
@@ -86,7 +94,7 @@ async function runRead(
     client,
     await client.execute({ input, mode: "sync", tool, userId }),
   );
-  if (execution.status === "failed") {
+  if (execution.status === "failed" || execution.status === "cancelled") {
     throw new Error(`${execution.error.code}: ${execution.error.message}`);
   }
   if (execution.status !== "succeeded") {

@@ -422,7 +422,7 @@ function TryItPanel({
               idempotencyKey: `dashboard-tryit:${selectedTool.name}:${crypto.randomUUID()}`,
             },
       );
-      if (execution.status === "failed") {
+      if (execution.status === "failed" || execution.status === "cancelled") {
         setState({
           code: execution.error.code,
           kind: "error",

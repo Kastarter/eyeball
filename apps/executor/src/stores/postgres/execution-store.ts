@@ -1,5 +1,13 @@
 import { isDeepStrictEqual } from "node:util";
-import type { ConnectionId, ExecutionId, ExecutionRecord } from "@eyeball/core";
+import type {
+  CancelledExecutionRecord,
+  ConnectionId,
+  ExecutionId,
+  ExecutionRecord,
+  FailedExecutionRecord,
+  SucceededExecutionRecord,
+  TerminalExecutionRecord,
+} from "@eyeball/core";
 import {
   and,
   asc,
@@ -17,9 +25,11 @@ import {
 import type { PgQueryResultHKT } from "drizzle-orm/pg-core";
 import {
   assertExecutionTransition,
+  cancelledExecutionRecord,
   type ExecutionAllocation,
   type ExecutionAllocationInspection,
   type ExecutionAllocationResult,
+  type ExecutionCancellationResult,
   type ExecutionDetailRecord,
   type ExecutionListFilters,
   type ExecutionPage,
@@ -445,16 +455,72 @@ export class PostgresExecutionStore<
     });
   }
 
+  async cancelExecution(
+    projectId: string,
+    executionId: ExecutionId,
+    cancelledAt: string,
+  ): Promise<ExecutionCancellationResult> {
+    return this.#database.transaction(async (transaction) => {
+      const [row] = await transaction
+        .select({
+          record: executions.record,
+          dispatchStartedAt: executions.dispatchStartedAt,
+          replayObservedAt: executions.replayObservedAt,
+        })
+        .from(executions)
+        .where(executionWhere(projectId, executionId))
+        .for("update")
+        .limit(1);
+      if (row === undefined) return { kind: "not_found" };
+      if (row.record.status === "cancelled") {
+        return {
+          kind: "already_cancelled",
+          record: copy(
+            projectExecutionRecord(row.record, row.replayObservedAt),
+          ) as CancelledExecutionRecord,
+        };
+      }
+      if (row.record.status === "succeeded" || row.record.status === "failed") {
+        return {
+          kind: "already_terminal",
+          record: copy(
+            projectExecutionRecord(row.record, row.replayObservedAt),
+          ) as SucceededExecutionRecord | FailedExecutionRecord,
+        };
+      }
+      const cancelled = cancelledExecutionRecord(
+        row.record,
+        cancelledAt,
+        row.dispatchStartedAt ?? undefined,
+      );
+      assertExecutionTransition(row.record, cancelled);
+      await transaction
+        .update(executions)
+        .set({ status: "cancelled", record: copy(cancelled) })
+        .where(executionWhere(projectId, executionId));
+      return {
+        kind: "cancelled",
+        record: copy(
+          projectExecutionRecord(cancelled, row.replayObservedAt),
+        ) as CancelledExecutionRecord,
+      };
+    });
+  }
+
   async waitForTerminal(
     projectId: string,
     executionId: ExecutionId,
-  ): Promise<ExecutionRecord & { status: "succeeded" | "failed" }> {
+  ): Promise<TerminalExecutionRecord> {
     for (;;) {
       const record = await this.get(projectId, executionId);
       if (record === undefined) {
         throw new Error(`Unknown execution ID: ${executionId}`);
       }
-      if (record.status === "succeeded" || record.status === "failed") {
+      if (
+        record.status === "succeeded" ||
+        record.status === "failed" ||
+        record.status === "cancelled"
+      ) {
         return record;
       }
       await wait(this.#terminalPollIntervalMs);
@@ -566,12 +632,12 @@ export class PostgresExecutionStore<
           or(
             inArray(executions.status, ["pending", "running"]),
             and(
-              inArray(executions.status, ["succeeded", "failed"]),
+              inArray(executions.status, ["succeeded", "failed", "cancelled"]),
               isNotNull(executions.webhookEventId),
               isNull(executions.webhookPublishedAt),
             ),
             and(
-              inArray(executions.status, ["succeeded", "failed"]),
+              inArray(executions.status, ["succeeded", "failed", "cancelled"]),
               isNotNull(executions.resumeContext),
               isNull(executions.usageFinalizedAt),
             ),

@@ -1,11 +1,14 @@
 import { describe, expect, it } from "vitest";
 import {
+  type CancelledExecutionRecord,
   createConnectionId,
   createExecutionId,
   createFileId,
+  type ExecutionResult,
   isConnectionId,
   isExecutionId,
   isFileId,
+  type TerminalExecutionRecord,
 } from "../src/index.js";
 
 describe("prefixed IDs", () => {
@@ -39,5 +42,40 @@ describe("prefixed IDs", () => {
     expect(() => createExecutionId("")).toThrow("ID seed");
     expect(() => createConnectionId("contains spaces")).toThrow("ID seed");
     expect(() => createFileId("contains spaces")).toThrow("ID seed");
+  });
+});
+
+describe("cancelled execution contracts", () => {
+  const cancelled = {
+    executionId: createExecutionId("cancelled_contract"),
+    tool: "gmail.send_email",
+    toolVersion: "1.0.0",
+    catalogVersion: "1.1",
+    userId: "user_contract",
+    createdAt: "2026-07-21T12:00:00.000Z",
+    completedAt: "2026-07-21T12:00:00.010Z",
+    latencyMs: 10,
+    status: "cancelled",
+    error: {
+      code: "execution_cancelled",
+      message: "Execution was cancelled before provider dispatch.",
+      retryable: false,
+    },
+    cancellation: { dispatchMayHaveBegun: false },
+  } as const satisfies CancelledExecutionRecord;
+
+  it("discriminates cancelled immediate and terminal results with disposition metadata", () => {
+    const immediate: ExecutionResult = cancelled;
+    const terminal: TerminalExecutionRecord = cancelled;
+
+    expect(immediate.status).toBe("cancelled");
+    expect(terminal.status).toBe("cancelled");
+    if (terminal.status === "cancelled") {
+      expect(terminal.error).toMatchObject({
+        code: "execution_cancelled",
+        retryable: false,
+      });
+      expect(terminal.cancellation.dispatchMayHaveBegun).toBe(false);
+    }
   });
 });

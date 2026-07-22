@@ -1,0 +1,58 @@
+---
+title: "Cancel an execution"
+description: "POST /v1/executions/:id/cancel with durable pre-dispatch fencing and honest post-dispatch disposition."
+---
+
+`POST /v1/executions/:id/cancel` accepts no request body and returns the full terminal cancelled execution record:
+
+```bash
+curl --request POST \
+  "$EYEBALL_EXECUTOR_URL/v1/executions/exe_01JZ6WA0Q73ZQ5B51SRYB6M4Z8/cancel" \
+  --header "Authorization: Bearer $EYEBALL_API_KEY"
+```
+
+```json
+{
+  "executionId": "exe_01JZ6WA0Q73ZQ5B51SRYB6M4Z8",
+  "tool": "gmail.send_email",
+  "toolVersion": "1.0.0",
+  "catalogVersion": "1.1",
+  "status": "cancelled",
+  "userId": "demo_user",
+  "createdAt": "2026-07-21T12:00:00.000Z",
+  "completedAt": "2026-07-21T12:00:00.019Z",
+  "latencyMs": 19,
+  "error": {
+    "code": "execution_cancelled",
+    "message": "Execution was cancelled before provider dispatch.",
+    "retryable": false
+  },
+  "cancellation": {
+    "dispatchMayHaveBegun": false
+  }
+}
+```
+
+## Disposition
+
+| State when cancellation wins | HTTP | Result |
+| --- | ---: | --- |
+| Pending, including queued and unclaimed | 200 | `cancelled`; `dispatchMayHaveBegun: false`; provider invocation is durably fenced. |
+| Running before the dispatch marker | 200 | `cancelled`; `dispatchMayHaveBegun: false`; local preparation is aborted and the adapter is not invoked. |
+| Running after the dispatch marker | 200 | `cancelled`; `dispatchMayHaveBegun: true`; local interruption is best effort and upstream work may still complete. |
+| Already cancelled | 200 | The same immutable terminal record and timestamps; incomplete terminal reconciliation is retried. |
+| Already succeeded or failed | 409 | `invalid_input` with the current terminal status. |
+| Missing or cross-project execution | 404 | `not_found`. |
+| User-pinned key does not own the execution | 403 | `auth_insufficient_scope`. |
+
+An unpinned project key may cancel any execution in its project. A user-pinned key may cancel only records with the same immutable `userId`. Voice-session grants are restricted to their exact execute route and cannot call cancellation.
+
+## Idempotency and accounting
+
+Cancellation is server-idempotent even though generic SDK HTTP retry policy does not automatically retry `POST`. A manual retry after a lost response returns the persisted record and resumes usage, webhook, and queue reconciliation without regenerating the cancellation timestamp, error, latency, or disposition.
+
+When cancellation wins before the dispatch marker, the executor releases the usage reservation and emits no terminal usage report. When dispatch may have begun, it retains the reservation and enqueues one terminal usage report. `execution.cancelled` subscribers receive the cancelled record; `execution.completed` subscribers receive cancellations as one of the three terminal outcomes.
+
+<Warning>
+  `dispatchMayHaveBegun: true` is an explicit side-effect boundary, not a guarantee that the provider stopped. Same-process stock HTTP requests receive an abort signal, but another executor replica, a non-HTTP adapter, or a provider that already accepted the request may still finish or apply the operation.
+</Warning>

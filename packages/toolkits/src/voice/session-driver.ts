@@ -87,7 +87,7 @@ export type VoiceSessionExecutionResponse =
   | {
       executionId: ExecutionId;
       tool: QualifiedToolName;
-      status: "failed";
+      status: "failed" | "cancelled";
       error: NormalizedToolError;
     }
   | {
@@ -838,7 +838,7 @@ export async function dispatchVoiceSessionToolCall(
       output: execution.output,
     };
   }
-  if (execution.status === "failed") {
+  if (execution.status === "failed" || execution.status === "cancelled") {
     return {
       status: "failed",
       executionId: execution.executionId,

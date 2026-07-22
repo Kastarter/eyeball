@@ -404,7 +404,16 @@ endpoint does not reveal whether another tenant's connection exists.
 
 ```ts
 export type ExecutionMode = "sync" | "async";
-export type ExecutionStatus = "pending" | "running" | "succeeded" | "failed";
+export type ExecutionStatus =
+  | "pending"
+  | "running"
+  | "succeeded"
+  | "failed"
+  | "cancelled";
+
+export interface ExecutionCancellation {
+  readonly dispatchMayHaveBegun: boolean;
+}
 
 export interface ExecuteRequest {
   tool: QualifiedToolName;
@@ -445,6 +454,16 @@ export type SyncExecuteResponse =
       output?: never;
       error: NormalizedToolError;
       latencyMs: number;
+    }
+  | ExecutionBase & {
+      status: "cancelled";
+      output?: never;
+      error: NormalizedToolError & {
+        code: "execution_cancelled";
+        retryable: false;
+      };
+      latencyMs: number;
+      cancellation: ExecutionCancellation;
     };
 
 export type AsyncExecuteResponse = ExecutionBase & { status: "pending" };
@@ -461,6 +480,16 @@ export type ExecutionRecord = ExecutionBase & {
   | { status: "pending" | "running"; output?: never; error?: never; latencyMs?: never }
   | { status: "succeeded"; output: JsonValue; error?: never; latencyMs: number }
   | { status: "failed"; output?: never; error: NormalizedToolError; latencyMs: number }
+  | {
+      status: "cancelled";
+      output?: never;
+      error: NormalizedToolError & {
+        code: "execution_cancelled";
+        retryable: false;
+      };
+      latencyMs: number;
+      cancellation: ExecutionCancellation;
+    }
 );
 ```
 
@@ -468,12 +497,22 @@ export type ExecutionRecord = ExecutionBase & {
 `async` for an async-by-nature definition and `sync` otherwise. Sync mode waits and returns
 `SyncExecuteResponse` with HTTP 200. Async mode allocates once and immediately returns
 `AsyncExecuteResponse` with HTTP 202. `GET /v1/executions/:id` returns the current
-`ExecutionRecord`. Valid transitions are `pending -> running -> succeeded|failed` and
-`pending -> failed`. Terminal lifecycle state, output, error, latency, timestamps, verified
+`ExecutionRecord`. Valid transitions are `pending -> running -> succeeded|failed|cancelled`
+and `pending -> failed|cancelled`. Terminal lifecycle state, output, error, cancellation
+disposition, latency, timestamps, verified
 source, and attachment summary are immutable. `replayed: true` is a separate monotonic
 operational projection: it records that at least one accepted replay reused this same execution
 ID, not a reference to another execution. Canonical requests, connection selection, raw or
 derived idempotency identity, and file bytes MUST NOT appear in public execution records.
+
+`POST /v1/executions/:id/cancel` accepts no body. It atomically changes only `pending` or
+`running` to `cancelled` and returns the complete record. A repeated request returns that same
+record; an already-succeeded or failed execution returns HTTP 409. The record's
+`cancellation.dispatchMayHaveBegun` is derived from the durable dispatch marker: `false`
+guarantees provider invocation was fenced, while `true` means interruption is best effort and
+upstream work or external side effects may still complete. Pre-dispatch cancellation releases
+the usage reservation without a terminal usage report; post-dispatch cancellation reports
+terminal usage exactly once. Project and pinned-user authority match execution reads.
 
 After API-key authentication, execution order is fixed: resolve the pinned catalog
 definition and provider implementation; default and validate canonical input; apply
@@ -612,7 +651,10 @@ per invocation and remains subject to the deferred correlation decision in Secti
 Webhook endpoints are project configuration, not fields in `ExecuteRequest`.
 
 ```ts
-export type TerminalEventType = "execution.succeeded" | "execution.failed";
+export type TerminalEventType =
+  | "execution.succeeded"
+  | "execution.failed"
+  | "execution.cancelled";
 
 export interface WebhookEndpointConfig {
   id: string;
@@ -627,7 +669,9 @@ export interface ExecutionWebhookEvent {
   type: TerminalEventType;
   createdAt: string;
   projectId: string;
-  data: ExecutionRecord & { status: "succeeded" | "failed" };
+  data: ExecutionRecord & {
+    status: "succeeded" | "failed" | "cancelled";
+  };
 }
 ```
 
@@ -657,7 +701,7 @@ exact raw body is persisted before an ID-only selection job is admitted, each se
 URL/secret snapshot is persisted before its delivery job is admitted, delivery attempts use
 leased jobs with durable `runAfter` deadlines, and startup recovery restores unfinished work
 before claims begin. `execution.completed` is a
-subscription-only convenience selector that matches both terminal event types without changing
+subscription-only convenience selector that matches all three terminal event types without changing
 envelope types.
 
 ## 4. Error taxonomy
@@ -669,7 +713,7 @@ export type ToolErrorCode =
   | "invalid_input" | "auth_missing" | "auth_expired"
   | "auth_insufficient_scope" | "not_found" | "rate_limited"
   | "provider_unavailable" | "provider_error" | "timeout"
-  | "not_supported" | "execution_interrupted";
+  | "not_supported" | "execution_interrupted" | "execution_cancelled";
 
 export interface NormalizedToolError {
   code: ToolErrorCode;
@@ -714,11 +758,12 @@ export interface ErrorEnvelope {
 | Executor/provider deadline exceeded | `timeout` | only when no side effect occurred or idempotency protects retry |
 | Manifest omits the canonical tool | `not_supported` | false |
 | Restart leaves provider dispatch outcome ambiguous | `execution_interrupted` | false |
+| Caller cancels an allocated execution | `execution_cancelled` | false |
 
 Clients branch on `code`, not HTTP status or provider text. Adapters redact credentials,
 cookies, authorization headers, and unrelated user data before setting `provider.detail`.
 `ErrorEnvelope` is used only for an error after project authentication but before execution
-allocation. Accepted execution failures use `SyncExecuteResponse` or `ExecutionRecord`.
+allocation. Accepted execution non-success outcomes use `SyncExecuteResponse` or `ExecutionRecord`.
 
 ## 5. CredentialProvider: the open-core seam
 
@@ -972,7 +1017,7 @@ namespaced metadata outside `structuredContent`:
 
 ```ts
 export interface McpExecutionMeta extends ExecutionBase {
-  status: "succeeded" | "failed";
+  status: "succeeded" | "failed" | "cancelled";
   latencyMs: number;
 }
 
@@ -1016,8 +1061,9 @@ After restart, polling resumes on the next correctly authenticated request. Even
 emitted for Streamable HTTP framing, but this source profile does not persist an event replay
 log and therefore does not promise `Last-Event-ID` redelivery.
 
-Because Tasks remain experimental, Eyeball requires an explicit per-session opt-in at
-`InitializeRequest.params.capabilities.experimental.tasks`. If the executor implements both
+Eyeball requires an explicit per-session Tasks opt-in at
+`InitializeRequest.params.capabilities.tasks` for MCP `2025-11-25`. The legacy
+`capabilities.experimental.tasks` path remains a compatibility alias. If the executor implements both
 async allocation and execution lookup, the server then declares
 `capabilities.tasks.requests.tools.call`, includes async tools in discovery, and emits the
 tool-level `execution.taskSupport` values described above. Without that opt-in, the legacy
@@ -1027,10 +1073,11 @@ task augmentation.
 
 A task-augmented call allocates the canonical execution in async mode and uses its `exe_*`
 identifier as the MCP `taskId`. The requested TTL is validated as a positive integer and
-defaults to one hour. Executor `pending|running|succeeded|failed` map to MCP
-`working|working|completed|failed`. `tasks/get` refreshes the project-scoped execution,
+defaults to one hour. Executor `pending|running|succeeded|failed|cancelled` map to MCP
+`working|working|completed|failed|cancelled`. `tasks/get` refreshes the project-scoped execution,
 and `tasks/result` waits for terminal state and returns the same `CallToolResult` used by a
-non-task call with `io.modelcontextprotocol/related-task` metadata. Task state is scoped to
+non-task call with `io.modelcontextprotocol/related-task` metadata. For cancellation this is the
+underlying non-success result with `execution_cancelled`, not a fabricated protocol error. Task state is scoped to
 the authenticated session. Expired or cross-session IDs return JSON-RPC `-32602` without
 revealing another task.
 
@@ -1038,9 +1085,12 @@ The gateway polls active executions at a configurable interval (one second by de
 When the originating `_meta` includes `progressToken`, queued, running, and terminal
 transitions MAY publish `notifications/progress`; terminal transitions MAY also publish
 `notifications/tasks/status`. Clients MUST continue using `tasks/get` as the source of truth.
-The server advertises `tasks.cancel` only when an injected `McpExecutor` implements the
-optional cancellation seam. The stock executor has no cancellation route and does not
-advertise it. `tasks/list` is not advertised.
+The stock HTTP executor advertises `tasks.cancel`. The gateway first resolves the task within
+the authenticated session, forwards cancellation to the project- and pinned-user-authorized
+execution route, stores and returns the complete updated Task, and reconstructs a lost response
+from the authoritative execution record. An already-terminal task or a downstream race lost to
+success/failure returns JSON-RPC `-32602`. Post-dispatch cancellation remains best effort as
+described in Section 3.1. `tasks/list` is not advertised.
 
 ## 7. Versioning and stability
 

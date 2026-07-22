@@ -652,7 +652,7 @@ describe("HTTP executor bridge", () => {
       app,
       rpc("initialize", {
         protocolVersion: MCP_PROTOCOL_VERSION,
-        capabilities: { experimental: { tasks: {} } },
+        capabilities: { tasks: {} },
         clientInfo: { name: "scripted-test", version: "1.0.0" },
       }),
     );
