@@ -8,6 +8,7 @@ out
 .DS_Store
 .env*
 !.env.example
+/.eyeball/
 apps/executor/contract-report.json
 
 # Python voice worker
