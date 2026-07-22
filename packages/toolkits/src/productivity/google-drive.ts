@@ -31,8 +31,16 @@ import {
 
 const FOLDER_MIME_TYPE = "application/vnd.google-apps.folder";
 const MULTIPART_UPLOAD_MAX_BYTES = 5 * 1_024 * 1_024;
-const UPLOAD_FIELDS =
+// The Drive v3 API returns only a minimal field set (id, name, mimeType, kind)
+// unless the request names the fields it needs. The response mapper below
+// requires createdTime/modifiedTime and reads parents/size/webViewLink, so every
+// request whose body flows through file() must ask for these explicitly. For
+// files.list the selector is nested under files(...); single-resource reads use
+// the flat list.
+const FILE_FIELDS =
   "id,name,mimeType,parents,size,webViewLink,createdTime,modifiedTime";
+const LIST_FIELDS = `nextPageToken,files(${FILE_FIELDS})`;
+const UPLOAD_FIELDS = FILE_FIELDS;
 
 function file(
   context: AdapterContext,
@@ -205,7 +213,7 @@ export class GoogleDriveAdapter implements ToolkitAdapter {
   ): Promise<Readonly<Record<string, unknown>>[]> {
     const body = await jsonObject(
       context,
-      queryPath("drive/v3/files", { q: query }),
+      queryPath("drive/v3/files", { q: query, fields: LIST_FIELDS }),
     );
     return records(body.files);
   }
@@ -245,7 +253,10 @@ export class GoogleDriveAdapter implements ToolkitAdapter {
   private async getFile(context: AdapterContext): Promise<JsonValue> {
     const result = await jsonObject(
       context,
-      `drive/v3/files/${encodeURIComponent(inputString(context, "fileId"))}`,
+      queryPath(
+        `drive/v3/files/${encodeURIComponent(inputString(context, "fileId"))}`,
+        { fields: FILE_FIELDS },
+      ),
     );
     return asJson({ file: file(context, result) });
   }
@@ -367,7 +378,9 @@ export class GoogleDriveAdapter implements ToolkitAdapter {
     const fileId = inputString(context, "fileId");
     const current = await jsonObject(
       context,
-      `drive/v3/files/${encodeURIComponent(fileId)}`,
+      queryPath(`drive/v3/files/${encodeURIComponent(fileId)}`, {
+        fields: FILE_FIELDS,
+      }),
     );
     const parentId = stringValue(input, "parentId");
     const currentParents = stringArray(current.parents);
@@ -379,6 +392,7 @@ export class GoogleDriveAdapter implements ToolkitAdapter {
           parentId === undefined || currentParents.length === 0
             ? undefined
             : currentParents.join(","),
+        fields: FILE_FIELDS,
       }),
       jsonRequest(
         stringValue(input, "name") === undefined ? {} : { name: input.name },

@@ -837,8 +837,29 @@ if (
   import.meta.url === pathToFileURL(resolve(entryPoint)).href
 ) {
   runAuthCli(process.argv.slice(2)).catch((error: unknown) => {
-    const message = error instanceof Error ? error.message : String(error);
-    process.stderr.write(`eyeball-auth: ${message}\n`);
+    // Walk the cause chain so a wrapped typed error (e.g. the executor's
+    // "Credential provider failed unexpectedly." wrapping a
+    // CredentialProviderError code=auth_missing) still reveals its real,
+    // actionable message instead of only the opaque outer one.
+    const lines: string[] = [];
+    const seen = new Set<unknown>();
+    let current: unknown = error;
+    while (current !== undefined && current !== null && !seen.has(current)) {
+      seen.add(current);
+      if (current instanceof Error) {
+        const code = (current as { code?: unknown }).code;
+        lines.push(
+          typeof code === "string" && code.length > 0
+            ? `${current.message} (code: ${code})`
+            : current.message,
+        );
+        current = (current as { cause?: unknown }).cause;
+      } else {
+        lines.push(String(current));
+        current = undefined;
+      }
+    }
+    process.stderr.write(`eyeball-auth: ${lines.join("\n  cause: ")}\n`);
     process.exitCode = 1;
   });
 }

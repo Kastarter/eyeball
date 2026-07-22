@@ -16,6 +16,23 @@ import {
   unsupported,
 } from "./common.js";
 
+// Notion rejects every request that omits Notion-Version (HTTP 400
+// missing_version). This is pinned rather than left to the latest default
+// because the adapter's request/response shapes below — POST
+// /v1/databases/{id}/query, results[].properties, title[].plain_text — match
+// the 2022-06-28 contract. The 2025-09-03 API moves database queries to
+// /v1/data_sources/{id}/query and would break these paths.
+const NOTION_VERSION = "2022-06-28";
+
+// Merge the required Notion-Version header into a request without disturbing
+// the Content-Type/body set by jsonRequest or the Authorization header the
+// shared HTTP client injects from the resolved credential.
+function versioned(init: RequestInit = {}): RequestInit {
+  const headers = new Headers(init.headers);
+  headers.set("Notion-Version", NOTION_VERSION);
+  return { ...init, headers };
+}
+
 function row(
   context: AdapterContext,
   value: Readonly<Record<string, unknown>>,
@@ -88,7 +105,7 @@ export class NotionAdapter implements ToolkitAdapter {
     const result = await jsonObject(
       context,
       `v1/databases/${encodeURIComponent(documentId)}/query`,
-      jsonRequest(filter === undefined ? {} : { filter }),
+      versioned(jsonRequest(filter === undefined ? {} : { filter })),
     );
     const query = search ? stringValue(input, "query") : undefined;
     const matching = records(result.results)
@@ -113,6 +130,7 @@ export class NotionAdapter implements ToolkitAdapter {
     const result = await jsonObject(
       context,
       `v1/pages/${encodeURIComponent(inputString(context, "rowId"))}`,
+      versioned(),
     );
     return asJson({ row: row(context, result) });
   }
@@ -121,13 +139,15 @@ export class NotionAdapter implements ToolkitAdapter {
     const result = await jsonObject(
       context,
       "v1/pages",
-      jsonRequest({
-        parent: {
-          type: "database_id",
-          database_id: inputString(context, "documentId"),
-        },
-        properties: inputRecord(context, "values"),
-      }),
+      versioned(
+        jsonRequest({
+          parent: {
+            type: "database_id",
+            database_id: inputString(context, "documentId"),
+          },
+          properties: inputRecord(context, "values"),
+        }),
+      ),
     );
     return asJson({ row: row(context, result) });
   }
@@ -136,7 +156,9 @@ export class NotionAdapter implements ToolkitAdapter {
     const result = await jsonObject(
       context,
       `v1/pages/${encodeURIComponent(inputString(context, "rowId"))}`,
-      jsonRequest({ properties: inputRecord(context, "values") }, "PATCH"),
+      versioned(
+        jsonRequest({ properties: inputRecord(context, "values") }, "PATCH"),
+      ),
     );
     return asJson({ row: row(context, result) });
   }
@@ -146,7 +168,7 @@ export class NotionAdapter implements ToolkitAdapter {
     await jsonObject(
       context,
       `v1/pages/${encodeURIComponent(rowId)}`,
-      jsonRequest({ archived: true }, "PATCH"),
+      versioned(jsonRequest({ archived: true }, "PATCH")),
     );
     return asJson({ rowId, deleted: true });
   }
@@ -156,7 +178,9 @@ export class NotionAdapter implements ToolkitAdapter {
     const result = await jsonObject(
       context,
       "v1/search",
-      jsonRequest({ filter: { property: "object", value: "database" } }),
+      versioned(
+        jsonRequest({ filter: { property: "object", value: "database" } }),
+      ),
     );
     const selected = page(
       records(result.results),
