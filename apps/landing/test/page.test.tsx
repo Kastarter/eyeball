@@ -2,6 +2,7 @@ import { renderToStaticMarkup } from "react-dom/server";
 import { describe, expect, it } from "vitest";
 import RootLayout from "@/app/layout";
 import HomePage from "@/app/page";
+import PrivacyPage from "@/app/privacy/page";
 import {
   DX_CODE,
   RESTAURANT_TRANSCRIPT,
@@ -50,5 +51,13 @@ describe("landing page rendering", () => {
     expect(markup).toContain("<header");
     expect(markup).toContain("<main");
     expect(markup).toContain("<footer");
+  });
+
+  it("qualifies shared section links for legal and other non-root routes", () => {
+    const markup = renderToStaticMarkup(<PrivacyPage />);
+
+    expect(markup).toContain('href="/#providers"');
+    expect(markup).toContain('href="/#open-core"');
+    expect(markup).not.toMatch(/href="#(?:providers|open-core)"/);
   });
 });

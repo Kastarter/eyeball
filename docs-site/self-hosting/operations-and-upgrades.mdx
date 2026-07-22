@@ -18,6 +18,23 @@ Before production:
 
 The dashboard uses a server-side proxy; keep `EYEBALL_API_KEY` server-only. Mockhouse and `/_mock` must stay on loopback or an isolated test network.
 
+## Checked-in Vercel manifests
+
+Use one Vercel project per deployable web surface. The manifests are deliberately
+small and keep every environment-specific value in the platform's encrypted
+Project Settings.
+
+| Surface | Vercel Root Directory | Checked-in contract |
+| --- | --- | --- |
+| Dashboard | `apps/dashboard` | `apps/dashboard/vercel.json` selects Next.js and runs the filtered Turborepo build from the repository root. Keep source files outside the Root Directory available for workspace dependencies. |
+| Landing | `apps/landing` | `apps/landing/vercel.json` selects Next.js and serves the intentional static `out` export. Keep **Include source files outside of the Root Directory** enabled so the build can read the root pnpm lockfile, Turbo binary, and `@eyeball/catalog` workspace package. It requires no runtime secret. |
+| Cloud control plane | Private cloud repository root | That repository's `vercel.json` builds the Hono `api/index.ts` function and schedules the authenticated five-minute jobs adapter. Its production environment-variable names and equality constraints remain documented in the private repository. |
+
+These files make the deployment shape reproducible; they are not evidence of a
+live production deployment. Production still requires platform project setup,
+TLS and domains, encrypted environment values, Postgres/KMS/Stripe operations,
+health checks, backup/restore drills, and the founder-blocked launch validation.
+
 ## Executor health checks
 
 Configure the executor's own routes directly on the workload or load balancer:

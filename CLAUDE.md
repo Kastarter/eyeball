@@ -33,6 +33,7 @@ Open-core tool and integration platform for AI agents: one typed, authenticated 
 - Usage reservations release on failures before adapter dispatch; attempted adapter calls report through the terminal outbox.
 - The docs shell follows Mintlify-derived geometry: a 56px top bar, 576px prose column, and 256px/264px navigation rails.
 - Dashboard cloud mode is explicit: `NEXT_PUBLIC_EYEBALL_MODE=cloud` selects cloud-backed features and server-only `EYEBALL_CLOUD_URL` supplies the control-plane origin; unset remains demo mode.
+- Dashboard and landing Vercel projects use app-local `vercel.json` files with `apps/dashboard` and `apps/landing` as their Root Directories; their filtered builds run from the monorepo root so workspace dependencies and the root pnpm lockfile remain authoritative.
 - Dashboard cloud requests use the same-origin `/api/cloud` allowlist proxy; org/project context and manually pasted per-project executor keys live in validated `HttpOnly` cookies.
 - Cloud Stripe returns land on session-gated `/billing/checkout/success` and `/billing/checkout/cancel`; `/billing?org=...` renders organization billing, current-month usage, plan comparison, checkout, and portal controls.
 - Cloud API-key verification is authenticated `POST /internal/keys/verify` with a pre-buffer 4 KiB body cap and a 1,024-character key schema; never place customer keys in internal URL queries.
@@ -93,6 +94,7 @@ Open-core tool and integration platform for AI agents: one typed, authenticated 
 - The manifest-derived matrix has 493 rows: 227 smoke and 266 explicit `not_supported`.
 - The dashboard, SDK, MCP gateway, local encrypted vault, auth CLI, and public docs source are built.
 - The self-hosted docs renderer builds all 115 authored/generated pages with local navigation, search, syntax highlighting, and dark/light themes.
+- Shared landing chrome uses homepage-qualified section links from root and legal routes, and checked-in Vercel manifests define the dashboard, static landing export, and private control-plane deployment shapes without embedding environment values or claiming a live deployment.
 - The dashboard has demo-default and cloud modes; cloud mode adds session auth, first-run org/project/key bootstrap, real connection/key/audit screens, project switchers, and per-project executor-key settings.
 - The project Webhooks surface provides endpoint CRUD, catalog-derived exact trigger selection, reveal-once create/rotation secrets, confirmed rotation/deletion, and metadata-only paginated delivery attempts through the executor in both dashboard modes; the proxy exports scoped endpoint-update `PATCH` coverage without broadening unrelated routes.
 - The project Triggers surface provides subscription create/manage/delete with catalog-derived trigger and delivery-mode selection, minimum-validated polling cadence, webhook endpoint targeting, reveal-once create/rotation push ingest URLs, confirmed destructive actions, and a project-level Recent events tab through the executor in both dashboard modes; subscription projections never retain ingest URLs, while event projections reconstruct only documented redacted metadata.

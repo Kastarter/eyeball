@@ -1,12 +1,13 @@
 # eyeball — Planned work
 
-State as of 2026-07-21. The 0.2.0 source cut, M5, M6.1, and M6.2 are complete;
-M6.3 is next, and two audit sweeps
-(cross-feature wiring; dashboard/SDK/docs parity) produced a milestone-ordered
-gap ledger. Milestones **M1 (hosted execution slice)**, **M2 (billing as a
-product)**, **M3 (restart-state durability)**, **M4 (voice hardening)**, and
-**M5 (local dashboard surfaces)** are DONE. This file lists what
-remains, in the intended order. Each item was scoped from audit findings with `file:line` evidence — search the
+State as of 2026-07-21. All numbered engineering items produced by the two audit
+sweeps (cross-feature wiring; dashboard/SDK/docs parity) are complete.
+Milestones **M1 (hosted execution slice)**, **M2 (billing as a product)**,
+**M3 (restart-state durability)**, **M4 (voice hardening)**, **M5 (local
+dashboard surfaces)**, and **M6 (quality of life)** are DONE. No numbered
+implementation item remains in this file; the explicit deferrals, open security
+register, and founder-blocked launch gates remain below. Each completed item was
+scoped from audit findings with `file:line` evidence — search the
 audit IDs (A-xx, SEC-xxx, CLOUD-xxx) in `docs/SECURITY.md`, `cloud/SECURITY.md`,
 and the git history for full context.
 
@@ -108,12 +109,11 @@ change. Never bind ports in tests; use in-process apps (`app.request`, PGlite).
   verifies its table and admission permissions without inserting a job.
   `/health` remains dependency-free liveness, and zero-database mode is ready
   after runtime boot. Audit finding 14 closed.
-
-## M6 — Quality of life
-
-15. **M6.3 Landing anchors + deploy manifests.** Fragment links break on legal
-    pages (`site-chrome.tsx:18` → `/#providers`); add checked-in deploy
-    manifests for control plane, dashboard, landing. Audit findings 16 + 6.
+- M6.3 Landing anchors + deploy manifests: the shared landing chrome now uses
+  homepage-qualified provider and open-core section URLs from legal and root
+  pages. Checked-in Vercel manifests define the dashboard, intentional static
+  landing export, and private control-plane Hono/cron deployment shapes without
+  embedding environment values. Audit findings 16 + 6 closed.
 
 ## Deferred by explicit founder decision
 

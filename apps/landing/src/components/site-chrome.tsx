@@ -21,8 +21,8 @@ export function SiteHeader() {
       <div className="site-header__inner">
         <Brand />
         <nav aria-label="Primary" className="site-nav">
-          <a href="#providers">Providers</a>
-          <a href="#open-core">Open Core</a>
+          <a href="/#providers">Providers</a>
+          <a href="/#open-core">Open Core</a>
           <a className="site-nav__docs" href="/docs">
             Docs
             <ArrowIcon size={14} />
