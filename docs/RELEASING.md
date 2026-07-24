@@ -1,6 +1,6 @@
 # Releasing Eyeball packages
 
-The publishing pipeline is ready, but access to the `@eyeball` npm organization and the first npm release are still pending. Do not describe any package as published until a registry release has been verified. The FSL-1.1 text is also still a legal-review placeholder and must be finalized before the first public release.
+The publishing pipeline is ready, but access to the `@eyeball` npm organization and the first npm release are still pending. Do not describe any package as published until a registry release has been verified. The FSL-1.1 text is also still a legal-review placeholder and must be finalized before the first public release, and the placeholder security disclosure channel must be provisioned and tested.
 
 ## Public package boundary
 
@@ -15,7 +15,11 @@ The publishing pipeline is ready, but access to the `@eyeball` npm organization 
 
 The four public packages are a Changesets `fixed` group rather than independent packages. They share canonical contracts and are still pre-1.0, so one coordinated version makes compatibility and support boundaries explicit. This can be reconsidered after the APIs stabilize and the dependency graph can support independent release cadences.
 
-The root and all four public package manifests are at `0.2.0`. The baseline Changeset was consumed by the local version cut, and package changelogs were generated. This source state does not claim a registry release; publication remains blocked on npm organization access, final license approval, pushing the reviewed commit, and the protected manual workflow.
+The root and all four public package manifests remain at `0.2.0`, but current `main` contains six pending Changesets that move the fixed public group to `0.3.0`. The protected publish job rejects pending releases, so the generated version PR must be reviewed and merged before current `main` can publish. The original 0.2.0 cut is commit `2fa6fe0`; do not publish the current post-cut source under 0.2.0.
+
+The private repository is pushed at `Kastarter/eyeball`, while the four package `repository` and `homepage` fields still identify `eyeball-ai/eyeball`. The founder must decide whether Kastarter is canonical or a staging push and then align the Git remote, package metadata, release tests, runbooks, and GitHub commands. See [the release decision packet](./RELEASE-DECISION.md).
+
+This source state does not claim a registry release. Publication remains blocked on the version PR, canonical-repository decision, npm organization access and token, final license approval, monitored security disclosure channel, and the protected manual workflow.
 
 ## Required GitHub configuration
 
