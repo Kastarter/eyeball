@@ -4,7 +4,7 @@
   "description": "Canonical contracts, schemas, credentials, and execution seams for Eyeball.",
   "private": false,
   "type": "module",
-  "license": "SEE LICENSE IN LICENSE.md",
+  "license": "MIT",
   "repository": {
     "type": "git",
     "url": "git+https://github.com/eyeball-ai/eyeball.git",

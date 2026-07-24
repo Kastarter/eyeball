@@ -1,6 +1,6 @@
 # Releasing Eyeball packages
 
-The publishing pipeline is ready, but access to the `@eyeball` npm organization and the first npm release are still pending. Do not describe any package as published until a registry release has been verified. The FSL-1.1 text is also still a legal-review placeholder and must be finalized before the first public release, and the placeholder security disclosure channel must be provisioned and tested.
+The publishing pipeline is ready, but access to the `@eyeball` npm organization and the first npm release are still pending. Do not describe any package as published until a registry release has been verified. The four public packages are licensed **MIT** (`LICENSE.md` at the repository root and copied into each package); the placeholder security disclosure channel must still be provisioned and tested before the first public release.
 
 ## Public package boundary
 
