@@ -671,7 +671,13 @@ export class ExecutionEngine {
       new WebhookDeliverer({
         queue: this.queue,
         executionStore: this.store,
-        fetchImpl: this.#fetchImpl,
+        // Only forward an explicitly injected fetch. When the embedder does not
+        // supply one, the deliverer applies its SSRF-safe guarded transport
+        // (resolver-aware, address-pinned) rather than raw `fetch`, closing the
+        // DNS-rebinding gate on the user-controlled webhook egress path.
+        ...(options.fetchImpl === undefined
+          ? {}
+          : { fetchImpl: options.fetchImpl }),
         clock: this.#clock,
         telemetry: this.telemetry,
       });

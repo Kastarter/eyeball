@@ -226,10 +226,14 @@ redirects are rejected.
 ### Webhook egress
 
 Registration requires HTTPS and blocks literal loopback, private, link-local,
-and IPv4-mapped addresses. Delivery does not follow redirects. Hostnames are not
-resolved and pinned at registration or delivery, however, so DNS rebinding and
-time-of-check/time-of-use changes remain open. Production must also enforce a
-network-layer egress deny policy.
+and IPv4-mapped addresses. Delivery does not follow redirects. Delivery also
+resolves the target hostname at connection time, classifies every returned
+address against the same private ranges, requires the host to be uniformly
+public, and pins the socket to the vetted address so it cannot be re-resolved
+between check and connect; empty, unrecognized, or non-HTTPS resolutions fail
+closed (SEC-002). This closes application-layer DNS rebinding and
+time-of-check/time-of-use SSRF. Production should still enforce a network-layer
+egress deny policy as defense in depth.
 
 ### Voice worker
 
@@ -265,7 +269,7 @@ untrusted hosted traffic.
 | ID | Priority | Status | Finding and exposure | Remediation / estimate |
 | --- | --- | --- | --- | --- |
 | SEC-001 | P1 | Fixed | Cloud API-key verification placed a customer key in `GET /internal/keys/verify?key=`, exposing it to URL logs and caches. | Replaced with authenticated `POST`, a pre-buffer 4 KiB cap, and a bounded key schema; old `GET` and oversized bodies are tested. |
-| SEC-002 | P1 | Open, launch gate | Webhook registration blocks literal private addresses but does not resolve and pin DNS at delivery, leaving DNS-rebinding/TOCTOU SSRF. | Resolver-aware delivery with IP classification on every connection, address pinning, and network egress policy; 3–5 days. |
+| SEC-002 | P1 | Fixed | Webhook registration blocked literal private addresses but did not resolve and pin DNS at delivery, leaving DNS-rebinding/TOCTOU SSRF. | The webhook deliverer now dials through a resolver-aware guarded transport (`webhooks/ssrf.ts`) that resolves the target at connection time, classifies every returned address against the loopback/private/link-local/CGNAT/multicast/unique-local ranges, rejects any host that is not uniformly public, and pins the socket to the vetted address so it cannot be re-resolved between check and connect. It is the default transport in both the engine and runtime compositions, fails closed on empty or unrecognized resolutions and non-HTTPS targets, and reuses the same classification as registration. Socket-free rebinding regression coverage is in `apps/executor/test/ssrf.test.ts`. |
 | SEC-003 | P1 | Open, bridge gate | `@activepieces/shared` brings unpatched `expr-eval@2.0.2`; [GHSA-8gw3-rxh4-v6jx](https://github.com/advisories/GHSA-8gw3-rxh4-v6jx) and [GHSA-jc85-fpwf-qm7x](https://github.com/advisories/GHSA-jc85-fpwf-qm7x) permit prototype pollution/code execution when attackers control expressions or evaluation variables. The bridge remains a private spike and must not accept untrusted formulas. | Replace with a maintained compatible fork and run formula compatibility/security tests, or remove formula evaluation; 1–2 days. No patched `expr-eval` release exists. |
 | SEC-004 | P1 | Fixed | One static voice-worker key authorized every session on a worker, preventing a safe multi-user authority model. | Added short-lived, audience/project/user/session/tool-scoped HMAC capabilities, executor-owned session IDs, durable grant identity/revocation, terminal cleanup, and a v2 worker contract. The static pinned key remains an explicitly documented single-user compatibility fallback. |
 | SEC-005 | P1 | Fixed | After the 14-day cloud billing grace period, existing keys and connections continued executing indefinitely; only creation was blocked. | Cloud usage reservation and credential resolution now enforce restriction after grace, payment recovery lifts it immediately, identity-only key verification stays separate, and a future-expiring internal-secret-guarded operator exemption is audited with a bounded reason. |

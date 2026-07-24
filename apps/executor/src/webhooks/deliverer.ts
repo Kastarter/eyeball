@@ -52,6 +52,7 @@ import {
 } from "./endpoint-store.js";
 import { InMemoryVoiceWebhookSourceStore } from "./memory-voice-source-store.js";
 import { InMemoryWebhookWorkStore } from "./memory-work-store.js";
+import { createSsrfSafeWebhookFetch } from "./ssrf.js";
 import type { VoiceWebhookSourceStore } from "./voice-source-store.js";
 import type {
   WebhookEventSourceKind,
@@ -79,6 +80,16 @@ export interface WebhookDelivererOptions {
   executionStore?: ExecutionStore;
   queue?: TaskQueue;
   fetchImpl?: typeof globalThis.fetch;
+  /**
+   * Dev-only escape hatch: permit webhook delivery to private-network targets.
+   * Ignored when a `fetchImpl` is injected. Never set in hosted operation.
+   */
+  allowPrivateNetwork?: boolean;
+  /**
+   * Dev-only escape hatch: permit `http:` webhook targets. Ignored when a
+   * `fetchImpl` is injected. Hosted delivery is HTTPS-only.
+   */
+  allowInsecureHttp?: boolean;
   clock?: Clock;
   /** @deprecated Durable retries no longer sleep inside a handler. */
   sleep?: WebhookSleep;
@@ -218,7 +229,16 @@ export class WebhookDeliverer {
       options.endpointStore ?? new InMemoryWebhookEndpointStore();
     this.deliveryStore =
       options.deliveryStore ?? new InMemoryWebhookDeliveryStore();
-    this.#fetchImpl = options.fetchImpl ?? globalThis.fetch;
+    this.#fetchImpl =
+      options.fetchImpl ??
+      createSsrfSafeWebhookFetch({
+        ...(options.allowPrivateNetwork === undefined
+          ? {}
+          : { allowPrivateNetwork: options.allowPrivateNetwork }),
+        ...(options.allowInsecureHttp === undefined
+          ? {}
+          : { allowInsecureHttp: options.allowInsecureHttp }),
+      });
     this.#clock = options.clock ?? systemClock;
     this.#telemetry =
       options.telemetry ??

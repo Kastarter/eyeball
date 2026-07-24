@@ -8,6 +8,7 @@ import {
   type WebhookEndpointPage,
   type WebhookSubscriptionEventType,
 } from "@eyeball/core";
+import { isBlockedIpv4, isBlockedIpv6 } from "./ssrf.js";
 
 export interface CreateWebhookEndpointInput {
   url: string;
@@ -133,33 +134,6 @@ export function validateEvents(
   }
 }
 
-function privateIpv4(hostname: string): boolean {
-  const parts = hostname.split(".").map(Number);
-  const first = parts[0] ?? -1;
-  const second = parts[1] ?? -1;
-  return (
-    first === 0 ||
-    first === 10 ||
-    first === 127 ||
-    (first === 100 && second >= 64 && second <= 127) ||
-    (first === 169 && second === 254) ||
-    (first === 172 && second >= 16 && second <= 31) ||
-    (first === 192 && second === 168) ||
-    first >= 224
-  );
-}
-
-function privateIpv6(hostname: string): boolean {
-  const normalized = hostname.toLowerCase();
-  return (
-    normalized.startsWith("::") ||
-    normalized.startsWith("fc") ||
-    normalized.startsWith("fd") ||
-    /^fe[89abcdef]/u.test(normalized) ||
-    normalized.startsWith("ff")
-  );
-}
-
 function privateHostname(hostname: string): boolean {
   const normalized = hostname
     .replace(/^\[/u, "")
@@ -175,8 +149,8 @@ function privateHostname(hostname: string): boolean {
   }
   const version = isIP(normalized);
   return (
-    (version === 4 && privateIpv4(normalized)) ||
-    (version === 6 && privateIpv6(normalized))
+    (version === 4 && isBlockedIpv4(normalized)) ||
+    (version === 6 && isBlockedIpv6(normalized))
   );
 }
 
