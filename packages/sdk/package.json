@@ -1,6 +1,6 @@
 {
   "name": "@eyeball/sdk",
-  "version": "0.2.0",
+  "version": "0.3.0",
   "description": "TypeScript client for Eyeball tool discovery, execution, and automation APIs.",
   "private": false,
   "type": "module",

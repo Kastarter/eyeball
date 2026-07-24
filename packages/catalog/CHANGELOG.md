@@ -1,5 +1,16 @@
 # @eyeball/catalog
 
+## 0.3.0
+
+### Patch Changes
+
+- Updated dependencies [07ec872]
+- Updated dependencies [25718c3]
+- Updated dependencies [52327e0]
+- Updated dependencies [4a794d6]
+- Updated dependencies [b9fe8c6]
+  - @eyeball/core@0.3.0
+
 ## 0.2.0
 
 ### Minor Changes

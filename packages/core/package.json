@@ -1,6 +1,6 @@
 {
   "name": "@eyeball/core",
-  "version": "0.2.0",
+  "version": "0.3.0",
   "description": "Canonical contracts, schemas, credentials, and execution seams for Eyeball.",
   "private": false,
   "type": "module",
