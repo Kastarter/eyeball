@@ -3,6 +3,7 @@ from __future__ import annotations
 import asyncio
 import hashlib
 import json
+import os
 import sqlite3
 import sys
 from dataclasses import replace
@@ -45,6 +46,18 @@ from eyeball_voice_worker.repository import (
 
 CONTROL_TOKEN = "worker-control-test-token-at-least-32-bytes"
 WORKER_KEY = "ey_test_worker_user_pinned"
+
+
+def test_repository_restricts_database_file_permissions(tmp_path: Path) -> None:
+    database = tmp_path / "voice.sqlite3"
+    database.touch(mode=0o666)
+    os.chmod(database, 0o666)
+
+    repository = VoiceSessionRepository(database)
+    try:
+        assert database.stat().st_mode & 0o077 == 0
+    finally:
+        repository.close()
 
 
 def start_payload(

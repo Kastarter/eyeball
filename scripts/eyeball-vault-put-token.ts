@@ -31,24 +31,11 @@ import {
   LocalVaultCredentialProvider,
   type ToolkitSlug,
 } from "../packages/core/src/index.js";
-
-function option(name: string): string | undefined {
-  const flag = `--${name}`;
-  const index = process.argv.indexOf(flag);
-  if (index === -1) return undefined;
-  const value = process.argv[index + 1];
-  if (value === undefined || value.startsWith("--")) {
-    throw new Error(`${flag} requires a value.`);
-  }
-  return value;
-}
-
-function required(name: string, value: string | undefined): string {
-  if (value === undefined || value.length === 0) {
-    throw new Error(`Missing required value: ${name}.`);
-  }
-  return value;
-}
+import {
+  parseVaultPutTokenOptions,
+  requiredVaultConfiguration,
+  vaultPutTokenErrorMessage,
+} from "./vault-put-token-options.js";
 
 // Read named environment variables through a dynamic key. Biome's turbo-aware
 // noUndeclaredEnvVars rule only inspects statically-known keys; these vars are
@@ -61,24 +48,18 @@ function envValue(name: string): string | undefined {
 }
 
 async function main(): Promise<void> {
-  const userId = required("--user", option("user"));
-  const toolkitSlug = required("--toolkit", option("toolkit")) as ToolkitSlug;
-  const credentialType = option("type") ?? "oauth2";
-  if (credentialType !== "oauth2" && credentialType !== "api_key") {
-    throw new Error(
-      `--type must be oauth2 or api_key (got ${credentialType}).`,
-    );
-  }
+  const options = parseVaultPutTokenOptions(process.argv.slice(2));
+  const toolkitSlug = options.toolkitSlug as ToolkitSlug;
 
-  const secret = required(
+  const secret = requiredVaultConfiguration(
     "EYEBALL_STORE_ACCESS_TOKEN",
     envValue("EYEBALL_STORE_ACCESS_TOKEN"),
   );
-  const filePath = required(
+  const filePath = requiredVaultConfiguration(
     "EYEBALL_VAULT_PATH",
     envValue("EYEBALL_VAULT_PATH"),
   );
-  const allowedProjectId = required(
+  const allowedProjectId = requiredVaultConfiguration(
     "EYEBALL_PROJECT_ID",
     envValue("EYEBALL_PROJECT_ID"),
   );
@@ -89,22 +70,22 @@ async function main(): Promise<void> {
     env: environment,
   });
 
-  if (credentialType === "oauth2") {
+  if (options.credentialType === "oauth2") {
     // clientId is a required field on the stored record but is only consulted
     // for token refresh, which never runs for an accessToken-only credential. A
     // label documents provenance without being a real OAuth client id.
-    const clientId = option("client-id") ?? "static-access-token";
+    const clientId = options.clientId ?? "static-access-token";
     await provider.put({
-      userId,
+      userId: options.userId,
       toolkitSlug,
       credential: { type: "oauth2", accessToken: secret, clientId },
     });
   } else {
     // apiKeyBearerValue prefers the `apiKey` field, so default to it; a single
     // named value becomes `Authorization: Bearer <secret>`.
-    const valueKey = option("value-key") ?? "apiKey";
+    const valueKey = options.valueKey ?? "apiKey";
     await provider.put({
-      userId,
+      userId: options.userId,
       toolkitSlug,
       credential: { type: "api_key", values: { [valueKey]: secret } },
     });
@@ -112,13 +93,11 @@ async function main(): Promise<void> {
 
   // Never print the secret. Confirm only the non-secret selector.
   process.stdout.write(
-    `Stored ${toolkitSlug} ${credentialType} credential for user ${userId}.\n`,
+    `Stored ${toolkitSlug} ${options.credentialType} credential for user ${options.userId}.\n`,
   );
 }
 
 main().catch((error: unknown) => {
-  process.stderr.write(
-    `${error instanceof Error ? error.message : String(error)}\n`,
-  );
+  process.stderr.write(`${vaultPutTokenErrorMessage(error)}\n`);
   process.exit(1);
 });

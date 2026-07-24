@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import os
 import sqlite3
 import threading
 from collections.abc import Iterator
@@ -84,6 +85,12 @@ class VoiceSessionRepository:
     def __init__(self, path: Path) -> None:
         if str(path) != ":memory:":
             path.parent.mkdir(parents=True, exist_ok=True)
+            flags = os.O_CREAT | os.O_RDWR | getattr(os, "O_NOFOLLOW", 0)
+            descriptor = os.open(path, flags, 0o600)
+            try:
+                os.fchmod(descriptor, 0o600)
+            finally:
+                os.close(descriptor)
         self._lock = threading.RLock()
         self._connection = sqlite3.connect(
             str(path),

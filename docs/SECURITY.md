@@ -24,6 +24,14 @@ license and lifecycle-script inventories, and workflow pin review. It did not
 include external penetration testing, live-provider certification, or a formal
 cryptographic audit.
 
+The 2026-07-24 pre-release delta review applied the same three lenses to the
+exact ranges `93d22a1..1743c4c` in main (38 commits) and
+`eafe9a2..7ece86b` in the private cloud repository (10 commits), plus the
+current read-only Mockhouse tree. It reviewed every changed path, fully read the
+new durable/security-sensitive stores and workers, and included the fixes and
+verification recorded below. The commit counts are the repository-observed
+counts, rather than the approximate counts in the review request.
+
 ## Threat model
 
 ### Assets
@@ -260,7 +268,7 @@ untrusted hosted traffic.
 | SEC-002 | P1 | Open, launch gate | Webhook registration blocks literal private addresses but does not resolve and pin DNS at delivery, leaving DNS-rebinding/TOCTOU SSRF. | Resolver-aware delivery with IP classification on every connection, address pinning, and network egress policy; 3–5 days. |
 | SEC-003 | P1 | Open, bridge gate | `@activepieces/shared` brings unpatched `expr-eval@2.0.2`; [GHSA-8gw3-rxh4-v6jx](https://github.com/advisories/GHSA-8gw3-rxh4-v6jx) and [GHSA-jc85-fpwf-qm7x](https://github.com/advisories/GHSA-jc85-fpwf-qm7x) permit prototype pollution/code execution when attackers control expressions or evaluation variables. The bridge remains a private spike and must not accept untrusted formulas. | Replace with a maintained compatible fork and run formula compatibility/security tests, or remove formula evaluation; 1–2 days. No patched `expr-eval` release exists. |
 | SEC-004 | P1 | Fixed | One static voice-worker key authorized every session on a worker, preventing a safe multi-user authority model. | Added short-lived, audience/project/user/session/tool-scoped HMAC capabilities, executor-owned session IDs, durable grant identity/revocation, terminal cleanup, and a v2 worker contract. The static pinned key remains an explicitly documented single-user compatibility fallback. |
-| SEC-005 | P1 | Open, product decision | After the 14-day cloud billing grace period, existing keys and connections continue executing indefinitely; only creation is blocked. A delinquent tenant can continue incurring provider/control-plane cost. | Define suspension semantics and enforce them at execution/credential resolution, with operator override and tests; 1–2 days. |
+| SEC-005 | P1 | Fixed | After the 14-day cloud billing grace period, existing keys and connections continued executing indefinitely; only creation was blocked. | Cloud usage reservation and credential resolution now enforce restriction after grace, payment recovery lifts it immediately, identity-only key verification stays separate, and a future-expiring internal-secret-guarded operator exemption is audited with a bounded reason. |
 | SEC-017 | P1 | Open, hosted multi-user gate | Staged files are project-scoped rather than user-owned. A pinned user who learns another same-project user's high-entropy file ID during its TTL can retrieve metadata or reference those bytes in an execution. | Add owner user IDs to the file contract/store, bind uploads to the effective identity, and enforce ownership on metadata and adapter resolution; 1–2 days including persistence migration and tests. |
 | SEC-022 | P1 | Fixed | Usage-gate transport and protocol failures defaulted fail open in the full hosted executor composition, so degrading the Cloud usage service could bypass quota admission and permit unbounded unbilled executions. | Unset `EYEBALL_USAGE_STRICT` now defaults fail closed when `EYEBALL_CREDENTIALS=cloud` and remains fail open for self-hosted composition. Explicit `1`/`true` and `0`/`false` overrides are honored, invalid values fail startup, and a structured startup log exposes the resolution and warns on hosted relaxation. |
 | SEC-006 | P2 | Open | Internal cloud bearer authentication has no timestamp, nonce, or body signature; captured requests are replayable while the shared secret is valid. | HMAC-sign method/path/body hash/timestamp, enforce a short window, and persist/deduplicate nonces; 2–4 days. |
@@ -278,11 +286,26 @@ untrusted hosted traffic.
 | SEC-019 | P2 | Fixed | Unauthenticated trigger ingest buffered an unbounded body before checking the path credential, enabling memory-pressure denial of service. | Added Hono's streaming body limiter at 1 MiB before route parsing, with an oversized-body regression test. |
 | SEC-020 | P2 | Fixed | Webhook private-host validation accepted root-dot local names such as `localhost.`; alternate IPv4 literals also needed explicit regression coverage. | Strip terminal DNS root dots before classification and test decimal, hexadecimal, octal, short-form, encoded-dot, local-name, IPv6, and IPv4-mapped loopback inputs. DNS resolution and rebinding remain SEC-002. |
 | SEC-021 | P2 | Fixed | Authenticated staged-file uploads enforced their decoded-byte limit only after buffering and parsing the JSON body, allowing memory-pressure denial of service above the configured limit. | Added Hono's streaming body limiter before JSON parsing, sized for canonical base64 plus 16 KiB of metadata, with an oversized-body regression test. |
+| SEC-023 | P2 | Fixed | The live token-import CLI read credential material only from the environment, but silently ignored unknown argv, so an operator typo such as `--token <secret>` would leave the secret in shell history and the process table while the command continued. Unexpected provider/vault errors were also rendered verbatim. | Added a strict allowlist parser for non-secret selectors, rejected positional/unknown/duplicate argv without echoing values, and made unexpected provider/vault failures render a constant message. Seven regression cases cover access-token aliases, positional values, duplicates, invalid types, and cause redaction. |
+| SEC-024 | P2 | Fixed | The voice worker temporarily stores an active session grant in SQLite for crash recovery, but the database file inherited the host umask and could therefore be group/world-readable on a permissive deployment. | Pre-create/open the configured database with no symlink following where supported, force owner-only `0600` mode before SQLite opens it, retain terminal token erasure, and test correction of a pre-existing `0666` file. |
+| SEC-025 | P2 | Open, accepted for preview isolation | Voice-session grants are signed by the executor and tightly scope project, user, session, tools, child execution IDs, expiry, and durable revocation, but their audience is service-wide and they remain bearer tokens. Theft permits replay from a different worker/process until expiry or revocation; there is no worker-bound proof of possession. | Bind grants to a deployment/worker audience plus mutually authenticated worker identity or use proof-of-possession request signing. Until then, keep worker control/SQLite access isolated, use short grants, and revoke on every terminal/failure path; 2–4 days. |
 
 M4.2 closes cross-feature audit ordinals 9–10 for observer durability and voice-worker transport classification. Those ordinal labels are not `SEC-009` or `SEC-010`; both security-register findings above remain open and unchanged.
 
 ## Secrets audit notes
 
+- The delta-history scan covered every added and removed patch line in the exact
+  38-commit main range and 10-commit cloud range. It searched for
+  `ntn_`, `secret_`, Slack, OpenAI-style, GitHub, JWT, Google, AWS, and private-key
+  shapes without printing candidate values. Main produced four false positives:
+  two `push_secret_must_not_persist` references and two explicit webhook-secret
+  non-persistence fixtures. Cloud produced 18 candidates across 15 lines, all
+  `secret_*` encrypted-column names in generated migration snapshots. No token
+  material was found.
+- The two live-auth commits were inspected independently. The documented
+  `.eyeball/vault.json` path is root-ignored and untracked; the local vault writes
+  through an owner-only temporary file and chmods the final file to `0600`.
+  SEC-023 closes the remaining argv/error-output footgun.
 - No tracked real `.env` file was found in any of the three repositories; only
   documented `.env.example` templates are tracked. Repository ignore rules
   cover local environment files.
@@ -301,6 +324,22 @@ M4.2 closes cross-feature audit ordinals 9–10 for observer durability and voic
 
 ## Dependency and supply-chain verdict
 
+- The 2026-07-24 `pnpm audit --prod` attempts for main and cloud could not reach
+  the npm advisory endpoint (`ENOTFOUND` / `fetch failed`). The required offline
+  fallback found no new package records or lifecycle-script flags in main's lock
+  delta: the added importer edges reuse already-locked Next/React,
+  OpenTelemetry, Drizzle, PGlite, and `pg` packages. Cloud's lockfile did not
+  change. The previously recorded online findings below therefore remain the
+  advisory baseline; this review does not claim a fresh online clean audit.
+- The four-package release build and `publish --dry-run --json` succeeded.
+  Exact manifests contain 83 core, 223 catalog, 187 toolkits, and 23 SDK entries,
+  limited to `dist`, source maps, `README.md`, `LICENSE.md`, and package
+  manifests. Tests, fixtures, vault files, worker databases, signing keys, and
+  grant values are absent. Public voice capability/driver code contains no grant
+  signing secret.
+- Current tracked-file secret scans pass in main, private cloud, and read-only
+  Mockhouse. All current workflow actions remain pinned to full commit SHAs, and
+  neither reviewed range changed workflow references.
 - Main `pnpm audit` reached the registry and reported two High `expr-eval`
   advisories and one Low `@ai-sdk/provider-utils` advisory, all confined to the
   non-production Activepieces bridge and all without a published patched
@@ -377,11 +416,11 @@ The following are explicit limitations, not implied guarantees:
 - The local vault is safe for one process, must not be shared between executors,
   detects ciphertext tampering, and does not detect rollback to an older valid
   vault file.
-- Hosted OAuth and billing are implemented in the private cloud source, but
-  production KMS/backup operations, live Stripe/provider validation, delinquency
-  enforcement policy, cloud deployment, license finalization, and real-provider
-  certification are incomplete. Packages are preview source, not a claim of npm
-  or hosted-cloud availability.
+- Hosted OAuth, billing, and post-grace enforcement are implemented in the
+  private cloud source, but production KMS/backup operations, live
+  Stripe/provider validation, cloud deployment, license finalization, and
+  real-provider certification are incomplete. Packages are preview source, not
+  a claim of npm or hosted-cloud availability.
 - Mockhouse includes documented shims where provider APIs lack canonical
   retrieval operations; passing mock contracts does not certify a real vendor.
 
@@ -412,3 +451,53 @@ data, disrupting service, or publishing details before coordinated disclosure.
 Eyeball's target acknowledgement is one business day for critical reports and
 three business days for other reports; the disclosure timing policy is in
 [`INCIDENT-RESPONSE.md`](./INCIDENT-RESPONSE.md).
+
+## RELEASE-SECURITY-VERDICT
+
+### OSS npm publication
+
+**Blocking findings:** No code-level security blocker was found in the four
+public tarballs. SEC-002 and SEC-017 are hosted-service boundaries; SEC-003 and
+SEC-009 remain confined to the excluded private Activepieces spike; SEC-010 is
+the separately deployed Python worker. Before publication, the placeholder
+security contact must be provisioned and tested, and the already-recorded final
+license/provenance sign-off must complete.
+
+**Accepted-risk items:** Published source maps disclose the package source
+layout by design. The npm packages expose public voice contracts and remote
+session-driver code, but contain no signing key, live capability, fixture
+credential, worker database, or private cloud source. The fresh online advisory
+query was unavailable, so the unchanged lockfile/advisory baseline and exact
+tarball inspection are the evidence for this decision.
+
+**Verdict — conditional go.** From the reviewed code and package contents, OSS
+npm publication can proceed after the monitored disclosure channel and final
+license/provenance sign-off are in place. Those are real release prerequisites,
+but this delta review found no reason to hold the four public packages for an
+additional code-security fix.
+
+### Hosted cloud launch
+
+**Blocking findings:** SEC-002 (DNS-rebinding SSRF at webhook delivery) and
+SEC-017 (same-project cross-user staged-file capability) remain explicit hosted
+launch gates. SEC-008 blocks exposure of Slack push ingest unless that feature is
+disabled or provider-native signatures are added. Production key custody,
+backup/restore evidence, and rotation operations under CLOUD-005 also remain
+unproven.
+
+**Accepted-risk items:** Shared internal bearers remain replayable
+(SEC-006/CLOUD-003), database RLS is absent (CLOUD-004), audit retention is not
+yet immutable (CLOUD-006), and worker-independent replay after theft remains
+possible during a grant's short lifetime (SEC-025). These are defensible only
+inside the documented private-network, least-privilege, one-worker-per-trust
+boundary with upstream log suppression and active monitoring; they are not
+claims of Internet-scale certification.
+
+**Verdict — wait.** Do not launch the current source as a general public
+multi-tenant hosted service. The delta materially improved usage atomicity,
+delinquency enforcement, durability, cancellation, readiness, and voice
+capability scope, but the SSRF and staged-file isolation gates are still
+concrete cross-boundary risks, and production key/backup operations are not yet
+evidenced. A limited preview is reasonable only if webhooks, push ingest, and
+multi-user file sharing are feature-gated and the documented infrastructure
+controls are actually enforced.

@@ -103,6 +103,7 @@ Open-core tool and integration platform for AI agents: one typed, authenticated 
 - Executions and durable task jobs have a first-class `cancelled` terminal state. The bodyless cancel route and SDK method fence pre-dispatch work, reconcile usage and cancellation webhooks idempotently, abort same-process stock HTTP adapters after dispatch where possible, and let MCP Tasks persist or reconstruct the same authoritative cancelled result.
 - The dashboard voice panel activates `webrtc:livekit` agents through `create_web_session` (join grant shown only from the create response and discarded on dismiss) and manages the owned-number inventory with buy/attach/detach/release flows; release stays disabled while a number is bound.
 - Cloud mode has full Billing and Organization surfaces for usage, plan changes, members, BYO OAuth apps, redirect origins, organization rename, and audit navigation; OAuth connection setup can select an app and validated return URL, and the dashboard suite has 150 serial tests.
+- Cloud billing enforcement denies usage reservations and hosted credential resolution after grace, recovers immediately after payment, and supports bounded, future-expiring, audited operator exemptions.
 - Dashboard connection drawers and hosted-link dialogs now preserve query/history state and keyboard focus; executor and cloud connection lists distinguish confirmed-empty data from load failures, and toolkit semantic search exposes query-keyed failures and retry without applying stale matches.
 - Advertised canonical-tool snippets are generated or validated from catalog schemas, including the Gmail quickstart's required `body`; the dedicated mock-session and self-hosted worker docs include independently runnable provider-free end-to-end TypeScript examples, and the worker Compose path forwards the explicit fake-transport opt-in with a secure `false` default.
 - Search-mode MCP exposes both discovery and a generic executor-backed dispatch tool.
@@ -125,6 +126,8 @@ Open-core tool and integration platform for AI agents: one typed, authenticated 
 - The security posture pass added product/cloud threat models, an incident-response runbook, SHA-pinned CI actions, trigger-secret rotation, and query/log/redirect hardening.
 - The 2026-07-19 Apple M4 in-process executor baseline is 0.247 ms p95 and 4,922 req/s for sync Gmail execution; adapter dispatch is the largest named traced stage.
 - The stock executor composes Cloud-issued key verification and hosted credential resolution independently through bearer-authenticated, no-store, in-process-testable HTTP seams.
+- The local token-import CLI accepts only allowlisted non-secret selectors on argv; credential material is environment-only and unexpected vault/provider causes are not rendered.
+- The voice worker pre-creates and re-permissions its SQLite database to owner-only mode before opening it.
 - The stock executor exposes public `/health` liveness and public, no-store `/ready` traffic admission. Readiness fails closed with an executor-owned 10-second deadline and redacted per-check breakdown for Postgres connectivity, exact committed/applied migration parity, credential-provider health, and task-queue admission; Cloud probes traverse billing/vault with an impossible sentinel, durable queue probes validate the job table and admission permissions without inserting a job, and zero-database mode is ready after boot.
 
 ## Known Issues
@@ -154,5 +157,6 @@ Open-core tool and integration platform for AI agents: one typed, authenticated 
 - The Activepieces spike contains unpatched `expr-eval` High advisories and incomplete published license metadata; do not expose its formula evaluator to untrusted input or promote it before replacement/provenance work.
 - Internal cloud bearer requests remain replayable without timestamp/nonce signing; trigger and voice URL secrets require upstream access-log suppression, and push triggers still need provider-native signature verification.
 - Staged files are project-scoped bearer capabilities rather than user-owned records; pinned keys cannot enumerate `GET /v1/files`, but until ownership is added, a leaked or learned same-project file ID can cross a user-pinned boundary during its TTL.
-- Voice Python dependencies are direct-pinned but not transitively hash-locked or covered by `pip-audit`; cloud billing grace still permits existing execution indefinitely.
+- Voice Python dependencies are direct-pinned but not transitively hash-locked or covered by `pip-audit`.
+- Voice-session execution grants are bearer capabilities with a service-wide audience rather than worker-bound proof of possession; short expiry, exact session/user/project/tool scope, and durable revocation limit but do not eliminate cross-worker replay after theft.
 - Managed sandboxes may reject loopback and tsx IPC sockets with `EPERM`; use in-process apps.
