@@ -990,6 +990,7 @@ it("migrates staged file content as bytea with metadata and expiry columns", asy
     { column_name: "content", data_type: "bytea" },
     { column_name: "created_at", data_type: "timestamp with time zone" },
     { column_name: "expires_at", data_type: "timestamp with time zone" },
+    { column_name: "owner_user_id", data_type: "text" },
   ]);
 });
 
@@ -1082,6 +1083,7 @@ it("keeps uploaded staged bytes available across a PGlite restart until exact ex
       const resolved = await restoredEngine.getFile(
         projectId,
         "file_restart_round_trip",
+        undefined,
       );
       expect(resolved.meta).toMatchObject({
         fileId: "file_restart_round_trip",

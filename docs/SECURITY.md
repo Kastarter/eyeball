@@ -172,17 +172,22 @@ credential for all users in that project, but it cannot opt into the reserved
 child-ID path. MCP metadata is checked against the inbound key's pin and MCP
 callers do not receive the reserved-ID header seam.
 
-Staged-file records are currently scoped only to a project, not to their
-uploading user. Upload and single-file metadata routes remain available through
-the normal project/pinned middleware, while project-wide `GET /v1/files`
-enumeration requires an unpinned project-authority key. That restriction keeps
-the collection route from turning SEC-017's high-entropy bearer IDs into a
-pinned-user enumeration surface. A pinned user who otherwise obtains another
-same-project user's file ID can still retrieve its metadata or reference its
-bytes in an execution, so treat file IDs as bearer capabilities until user
-ownership is enforced in the file-store contract. The JSON upload route applies
-a streaming body ceiling derived from the configured decoded-byte limit plus 16
-KiB for metadata before parsing or base64 decoding.
+Staged-file records carry an optional owner user ID bound at upload to the
+effective identity (`pinnedUserId ?? X-Eyeball-User-Id`). Upload and single-file
+metadata routes remain available through the normal project/pinned middleware,
+while project-wide `GET /v1/files` enumeration requires an unpinned
+project-authority key. That restriction keeps the collection route from turning
+SEC-017's high-entropy bearer IDs into a pinned-user enumeration surface.
+Single-file metadata (`GET /v1/files/:id`) and adapter byte resolution during
+execution now enforce ownership in the file-store contract: an owned record
+resolves only for its owning user and fails closed for a mismatched or absent
+identity, so a pinned user who learns another same-project user's file ID can no
+longer read its metadata or reference its bytes (SEC-017). Owner-less records —
+legacy uploads and project-scoped uploads made without a user identity — stay
+project-visible for backward compatibility, so continue to treat those IDs as
+project-wide bearer capabilities. The JSON upload route applies a streaming body
+ceiling derived from the configured decoded-byte limit plus 16 KiB for metadata
+before parsing or base64 decoding.
 
 Execution attachment summaries may expose those same high-entropy file IDs only
 inside an execution projection already authorized for the requesting project and,
@@ -273,7 +278,7 @@ untrusted hosted traffic.
 | SEC-003 | P1 | Open, bridge gate | `@activepieces/shared` brings unpatched `expr-eval@2.0.2`; [GHSA-8gw3-rxh4-v6jx](https://github.com/advisories/GHSA-8gw3-rxh4-v6jx) and [GHSA-jc85-fpwf-qm7x](https://github.com/advisories/GHSA-jc85-fpwf-qm7x) permit prototype pollution/code execution when attackers control expressions or evaluation variables. The bridge remains a private spike and must not accept untrusted formulas. | Replace with a maintained compatible fork and run formula compatibility/security tests, or remove formula evaluation; 1–2 days. No patched `expr-eval` release exists. |
 | SEC-004 | P1 | Fixed | One static voice-worker key authorized every session on a worker, preventing a safe multi-user authority model. | Added short-lived, audience/project/user/session/tool-scoped HMAC capabilities, executor-owned session IDs, durable grant identity/revocation, terminal cleanup, and a v2 worker contract. The static pinned key remains an explicitly documented single-user compatibility fallback. |
 | SEC-005 | P1 | Fixed | After the 14-day cloud billing grace period, existing keys and connections continued executing indefinitely; only creation was blocked. | Cloud usage reservation and credential resolution now enforce restriction after grace, payment recovery lifts it immediately, identity-only key verification stays separate, and a future-expiring internal-secret-guarded operator exemption is audited with a bounded reason. |
-| SEC-017 | P1 | Open, hosted multi-user gate | Staged files are project-scoped rather than user-owned. A pinned user who learns another same-project user's high-entropy file ID during its TTL can retrieve metadata or reference those bytes in an execution. | Add owner user IDs to the file contract/store, bind uploads to the effective identity, and enforce ownership on metadata and adapter resolution; 1–2 days including persistence migration and tests. |
+| SEC-017 | P1 | Fixed | Staged files were project-scoped rather than user-owned. A pinned user who learned another same-project user's high-entropy file ID during its TTL could retrieve metadata or reference those bytes in an execution. | Staged files now carry an optional owner user ID bound at upload to the effective identity (`pinnedUserId ?? X-Eyeball-User-Id`). The file-store contract enforces ownership on single-file metadata (`GET /v1/files/:id`) and on adapter byte resolution during execution: an owned record resolves only for its owner and fails closed for a mismatched or absent identity, while owner-less legacy/project-scoped uploads stay project-visible for backward compatibility. The `0010_staged_file_owner` migration adds the nullable column, and `apps/executor/test/files.test.ts` adds cross-user metadata and adapter-resolution regression coverage. Project-wide `GET /v1/files` remains unpinned-only. |
 | SEC-022 | P1 | Fixed | Usage-gate transport and protocol failures defaulted fail open in the full hosted executor composition, so degrading the Cloud usage service could bypass quota admission and permit unbounded unbilled executions. | Unset `EYEBALL_USAGE_STRICT` now defaults fail closed when `EYEBALL_CREDENTIALS=cloud` and remains fail open for self-hosted composition. Explicit `1`/`true` and `0`/`false` overrides are honored, invalid values fail startup, and a structured startup log exposes the resolution and warns on hosted relaxation. |
 | SEC-006 | P2 | Open | Internal cloud bearer authentication has no timestamp, nonce, or body signature; captured requests are replayable while the shared secret is valid. | HMAC-sign method/path/body hash/timestamp, enforce a short window, and persist/deduplicate nonces; 2–4 days. |
 | SEC-007 | P2 | Mitigated, open | Trigger and voice media bearer material appears in URLs. App access logging is suppressed, but upstream/browser/carrier logging is outside application control. | Infra log redaction/suppression, retention tests, and prefer header/subprotocol tokens where carriers permit; 1–2 days. |
@@ -413,8 +418,9 @@ The following are explicit limitations, not implied guarantees:
   process-local, and stock SSE replay is not implemented. Executor cancellation is
   supported; once provider dispatch may have begun, cancellation remains best effort
   and external side effects may still complete even though late results are discarded.
-- Staged files are project-scoped bearer capabilities, not user-owned records,
-  until SEC-017 is remediated.
+- Staged files bind an optional owner user ID at upload; owned records enforce
+  ownership on metadata and adapter byte resolution (SEC-017), while owner-less
+  legacy/project-scoped uploads remain project-wide bearer capabilities.
 - Provider-level idempotency propagation is separate from executor replay
   protection.
 - The local vault is safe for one process, must not be shared between executors,

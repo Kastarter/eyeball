@@ -242,21 +242,21 @@ A skipped row is not a pass. Record only sanitized evidence in
 
 ## Engineering and operational gates for hosted multi-tenant launch
 
-The hosted security verdict is **wait**. The following register items must be
-closed for a general public multi-tenant launch, or the affected surface must be
-disabled in a narrowly controlled preview:
+The hosted security verdict is **wait**. SEC-002 and SEC-017 are now closed in
+code (see [Engineering-deferred gates](#engineering-deferred-gates)); the
+remaining register items below must be closed for a general public multi-tenant
+launch, or the affected surface must be disabled in a narrowly controlled
+preview:
 
 | ID | Required closure | Estimate from security register |
 | --- | --- | ---: |
-| SEC-002 | Resolve/classify/pin webhook destination IPs on every connection and enforce network egress deny policy. | 3–5 days |
-| SEC-017 | Add staged-file owner identity and enforce it on upload, metadata, and adapter byte resolution. | 1–2 days |
 | SEC-025 | Bind voice grants to a worker/deployment identity with mutual authentication or proof of possession. | 2–4 days |
 | CLOUD-003 | Add method/path/body/timestamp signing and nonce deduplication for internal service requests. | 2–4 days |
 | CLOUD-004 | Add and test Postgres RLS or a formally checked tenant-query boundary. | 3–5 days |
 | CLOUD-005 | Integrate KMS, dual control, backup-aware KEK rotation, and an audited operator job. | 3–5 days plus infrastructure |
 | CLOUD-006 | Export complete audit coverage to restricted immutable retention with alert/review evidence. | 3–5 days plus SIEM work |
 
-These estimates sum to 17–30 sequential engineering days, plus infrastructure
+These estimates sum to 13–23 sequential engineering days, plus infrastructure
 and SIEM lead time. If Slack push ingest will be enabled, SEC-008 adds 2–4 days
 for provider-native signature and freshness verification; otherwise keep that
 surface disabled.
@@ -327,3 +327,14 @@ Retain sanitized evidence for outbound and supported inbound PSTN, WebRTC,
 speech-to-text, model turns, text-to-speech, child execution identity, webhook
 delivery, restart recovery, capability revocation, and cleanup. Account-free
 worker tests prove the control-plane contract and mocked request assembly only.
+
+## Engineering-deferred gates
+
+These are neither account setup nor release ceremony; they require code or operations work and must remain visible in launch decisions:
+
+- SEC-002 P1: Fixed. Webhook delivery now dials through a resolver-aware guarded transport that classifies and pins the resolved address on every connection, fails closed on private/empty/non-HTTPS resolutions, and is the default in the engine and runtime compositions (`webhooks/ssrf.ts`, `apps/executor/test/ssrf.test.ts`). A network-layer egress deny policy remains a recommended defense-in-depth control, not a code gate.
+- SEC-017 P1: Fixed. Staged files now bind an optional owner user ID at upload to the effective identity (`pinnedUserId ?? X-Eyeball-User-Id`); single-file metadata (`GET /v1/files/:id`) and adapter byte resolution enforce ownership in the file-store contract, resolving an owned record only for its owner and failing closed for a mismatched or absent identity, while owner-less legacy/project-scoped uploads stay project-visible (`migrations/0010_staged_file_owner.sql`, `apps/executor/test/files.test.ts`). Project-wide `GET /v1/files` remains unpinned-only.
+- Trigger polling still needs distributed leases, replay/backfill, provider-native signature verification, and an atomic claim/outbox. The Postgres execution/webhook, voice-agent, `voice_agent_session_observers`, `voice_webhook_sources`, and MCP session/task stores still need production backup/restore drills and multi-replica load/chaos evidence. Production monitoring must alert on queue age, observer retry age, exhausted observers, exhausted-but-unsignaled observers, repeated lease takeover, voice-source invariant misses, and exhausted webhook deliveries.
+- The Activepieces bridge remains a private selective-promotion spike. Resolve its expression-engine advisories, license provenance, isolation/egress, auth mapping, and per-piece mock/real certification before exposing it.
+
+After any remediation, update docs/SECURITY.md and CLAUDE.md, add the adversarial regression test, and rerun pnpm build, pnpm test, pnpm typecheck, pnpm lint, the four docs validators, pnpm test:contract, and the applicable cloud/worker gates serially.

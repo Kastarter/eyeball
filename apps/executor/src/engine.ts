@@ -721,6 +721,7 @@ export class ExecutionEngine {
   async stageFile(
     projectId: string,
     input: StageFileInput,
+    ownerUserId?: string,
   ): Promise<StagedFileMetadata> {
     if (projectId.trim().length === 0) {
       return invalidRequest("Authenticated project ID must not be empty.");
@@ -779,6 +780,9 @@ export class ExecutionEngine {
       meta,
       content: Uint8Array.from(input.content),
       createdAt: now.toISOString(),
+      // SEC-017: bind the file to the staging identity when present. Omitted
+      // for project-scoped uploads, which stay readable across the project.
+      ...(ownerUserId === undefined ? {} : { ownerUserId }),
     });
     return structuredClone(meta);
   }
@@ -786,6 +790,7 @@ export class ExecutionEngine {
   async getFile(
     projectId: string,
     fileId: string,
+    requesterUserId: string | undefined,
   ): Promise<{ meta: StagedFileMetadata; content: Uint8Array }> {
     if (!isFileId(fileId)) {
       throw new ExecutionRequestError(404, {
@@ -794,7 +799,12 @@ export class ExecutionEngine {
       });
     }
     const now = this.#now();
-    const file = await this.fileStore.get(projectId, fileId, now.toISOString());
+    const file = await this.fileStore.get(
+      projectId,
+      fileId,
+      now.toISOString(),
+      requesterUserId,
+    );
     if (file === undefined) {
       throw new ExecutionRequestError(404, {
         code: TOOL_ERROR_CODES.NOT_FOUND,
@@ -817,6 +827,7 @@ export class ExecutionEngine {
   async getFileMetadata(
     projectId: string,
     fileId: string,
+    requesterUserId?: string,
   ): Promise<StagedFileMetadata> {
     if (!isFileId(fileId)) {
       throw new ExecutionRequestError(404, {
@@ -829,6 +840,7 @@ export class ExecutionEngine {
       projectId,
       fileId,
       now.toISOString(),
+      requesterUserId,
     );
     if (metadata === undefined) {
       throw new ExecutionRequestError(404, {
@@ -2099,7 +2111,9 @@ export class ExecutionEngine {
                   }),
               files: {
                 resolve: async (fileId) => {
-                  return this.getFile(projectId, fileId);
+                  // SEC-017: resolve bytes under the execution's effective
+                  // identity so a user cannot read another user's staged file.
+                  return this.getFile(projectId, fileId, request.userId);
                 },
               },
             });

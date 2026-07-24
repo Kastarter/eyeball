@@ -1,0 +1,1 @@
+ALTER TABLE "staged_files" ADD COLUMN "owner_user_id" text;
