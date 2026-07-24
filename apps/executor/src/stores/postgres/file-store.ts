@@ -4,7 +4,18 @@ import type {
   StagedFileMetadata,
   StagedFilePage,
 } from "@eyeball/core";
-import { and, asc, desc, eq, gt, lt, lte, or, type SQL } from "drizzle-orm";
+import {
+  and,
+  asc,
+  desc,
+  eq,
+  gt,
+  isNull,
+  lt,
+  lte,
+  or,
+  type SQL,
+} from "drizzle-orm";
 import type { PgQueryResultHKT } from "drizzle-orm/pg-core";
 import {
   type ExpiredFileSweepInput,
@@ -32,6 +43,21 @@ function fileWhere(projectId: string, fileId: string) {
     eq(stagedFiles.projectId, projectId),
     eq(stagedFiles.fileId, fileId),
   );
+}
+
+/**
+ * SEC-017 ownership predicate. Owner-less rows (legacy or project-scoped
+ * uploads) are always visible; an owned row is visible only to its owner. A
+ * missing requester identity resolves owner-less rows only — fail closed.
+ */
+function ownerWhere(requesterUserId: string | undefined): SQL {
+  if (requesterUserId === undefined) {
+    return isNull(stagedFiles.ownerUserId);
+  }
+  return or(
+    isNull(stagedFiles.ownerUserId),
+    eq(stagedFiles.ownerUserId, requesterUserId),
+  ) as SQL;
 }
 
 function isoTimestamp(value: string): string {
@@ -87,6 +113,7 @@ export class PostgresFileStore<
           content: Uint8Array.from(file.content),
           createdAt: file.createdAt,
           expiresAt: file.meta.expiresAt,
+          ownerUserId: file.ownerUserId ?? null,
         })
         .onConflictDoNothing()
         .returning({ fileId: stagedFiles.fileId });
@@ -104,11 +131,18 @@ export class PostgresFileStore<
     projectId: string,
     fileId: FileId,
     now: string,
+    requesterUserId?: string,
   ): Promise<ResolvedFile | undefined> {
     const [row] = await this.#database
       .select({ ...metadataSelection, content: stagedFiles.content })
       .from(stagedFiles)
-      .where(and(fileWhere(projectId, fileId), gt(stagedFiles.expiresAt, now)))
+      .where(
+        and(
+          fileWhere(projectId, fileId),
+          gt(stagedFiles.expiresAt, now),
+          ownerWhere(requesterUserId),
+        ),
+      )
       .limit(1);
     if (row === undefined) {
       await this.#deleteExpired(projectId, fileId, now);
@@ -124,11 +158,18 @@ export class PostgresFileStore<
     projectId: string,
     fileId: FileId,
     now: string,
+    requesterUserId?: string,
   ): Promise<StagedFileMetadata | undefined> {
     const [row] = await this.#database
       .select(metadataSelection)
       .from(stagedFiles)
-      .where(and(fileWhere(projectId, fileId), gt(stagedFiles.expiresAt, now)))
+      .where(
+        and(
+          fileWhere(projectId, fileId),
+          gt(stagedFiles.expiresAt, now),
+          ownerWhere(requesterUserId),
+        ),
+      )
       .limit(1);
     if (row === undefined) {
       await this.#deleteExpired(projectId, fileId, now);

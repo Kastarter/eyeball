@@ -1433,12 +1433,27 @@ export function createExecutorApp(options: ExecutorAppOptions = {}): Hono<{
           "content must be canonical padded base64.",
         );
       }
+      // SEC-017: bind the upload to the effective end user. A pinned key owns
+      // the file; an unpinned project key may name the user via the header, or
+      // omit it for a project-scoped upload readable across the project.
+      const headerUserId = context.req.header(USER_ID_HEADER);
+      if (headerUserId !== undefined && headerUserId.trim().length === 0) {
+        return invalidQuery(context, `${USER_ID_HEADER} must not be empty.`);
+      }
+      if (rejectsPinnedUser(context, headerUserId)) {
+        return pinnedUserFailure(context);
+      }
+      const ownerUserId = context.get("pinnedUserId") ?? headerUserId;
       try {
-        const file = await engine.stageFile(context.get("projectId"), {
-          name: request.name,
-          mimeType: request.mimeType ?? "application/octet-stream",
-          content,
-        });
+        const file = await engine.stageFile(
+          context.get("projectId"),
+          {
+            name: request.name,
+            mimeType: request.mimeType ?? "application/octet-stream",
+            content,
+          },
+          ownerUserId,
+        );
         return context.json(file, 201);
       } catch (error) {
         return handleRouteError(context, error);
@@ -1462,10 +1477,21 @@ export function createExecutorApp(options: ExecutorAppOptions = {}): Hono<{
   });
 
   app.get("/v1/files/:id", async (context) => {
+    // SEC-017: read metadata under the effective identity. Owner-less files
+    // stay project-visible; an owned file is visible only to its owner.
+    const headerUserId = context.req.header(USER_ID_HEADER);
+    if (headerUserId !== undefined && headerUserId.trim().length === 0) {
+      return invalidQuery(context, `${USER_ID_HEADER} must not be empty.`);
+    }
+    if (rejectsPinnedUser(context, headerUserId)) {
+      return pinnedUserFailure(context);
+    }
+    const requesterUserId = context.get("pinnedUserId") ?? headerUserId;
     try {
       const file = await engine.getFileMetadata(
         context.get("projectId"),
         context.req.param("id"),
+        requesterUserId,
       );
       return context.json(file);
     } catch (error) {

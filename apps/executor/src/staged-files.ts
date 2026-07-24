@@ -13,6 +13,13 @@ export const DEFAULT_MAX_FILE_SIZE_BYTES = 25 * 1_024 * 1_024;
 export interface StoredStagedFile extends ResolvedFile {
   /** Private ordering timestamp; deliberately absent from public metadata. */
   createdAt: string;
+  /**
+   * SEC-017: effective user that staged the file. Deliberately absent from
+   * public metadata. `undefined` marks a legacy or project-scoped upload with
+   * no bound user, readable by the whole project; a set value scopes reads to
+   * that user on metadata and content resolution.
+   */
+  ownerUserId?: string;
 }
 
 export interface ListFilesInput {
@@ -44,15 +51,25 @@ export class InvalidFileCursorError extends Error {
  */
 export interface FileStore {
   put(projectId: string, file: StoredStagedFile): Promise<void>;
+  /**
+   * Resolve file content. `requesterUserId` is the effective execution
+   * identity; an owned file is returned only when it matches. `undefined`
+   * resolves owner-less (project-scoped) files only — fail closed.
+   */
   get(
     projectId: string,
     fileId: FileId,
     now: string,
+    requesterUserId?: string,
   ): Promise<ResolvedFile | undefined>;
+  /**
+   * Resolve public metadata under the same ownership rule as `get`.
+   */
   getMetadata(
     projectId: string,
     fileId: FileId,
     now: string,
+    requesterUserId?: string,
   ): Promise<StagedFileMetadata | undefined>;
   list(projectId: string, input: ListFilesInput): Promise<StagedFilePage>;
   sweepExpired(input: ExpiredFileSweepInput): Promise<number>;
@@ -167,6 +184,9 @@ export class InMemoryFileStore implements FileStore {
       projectId,
       sequence: this.#sequence,
       createdAt: file.createdAt,
+      ...(file.ownerUserId !== undefined
+        ? { ownerUserId: file.ownerUserId }
+        : {}),
       ...cloneFile(file),
     });
   }
@@ -175,6 +195,7 @@ export class InMemoryFileStore implements FileStore {
     projectId: string,
     fileId: FileId,
     now: string,
+    requesterUserId?: string,
   ): Promise<ResolvedFile | undefined> {
     const key = storageKey(projectId, fileId);
     const file = this.#files.get(key);
@@ -187,6 +208,14 @@ export class InMemoryFileStore implements FileStore {
       this.#files.delete(key);
       return undefined;
     }
+    // SEC-017: owned files resolve only for their owner; owner-less files
+    // stay project-scoped. Never surface the owner to callers.
+    if (
+      file.ownerUserId !== undefined &&
+      file.ownerUserId !== requesterUserId
+    ) {
+      return undefined;
+    }
     return cloneFile(file);
   }
 
@@ -194,6 +223,7 @@ export class InMemoryFileStore implements FileStore {
     projectId: string,
     fileId: FileId,
     now: string,
+    requesterUserId?: string,
   ): Promise<StagedFileMetadata | undefined> {
     const key = storageKey(projectId, fileId);
     const file = this.#files.get(key);
@@ -203,6 +233,13 @@ export class InMemoryFileStore implements FileStore {
       validTimestamp(now, "File metadata read now")
     ) {
       this.#files.delete(key);
+      return undefined;
+    }
+    // SEC-017: same ownership rule as `get`.
+    if (
+      file.ownerUserId !== undefined &&
+      file.ownerUserId !== requesterUserId
+    ) {
       return undefined;
     }
     return cloneMetadata(file.meta);

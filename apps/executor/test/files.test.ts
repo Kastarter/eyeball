@@ -203,7 +203,11 @@ describe.sequential("staged files", () => {
     });
     expect(fetched.status).toBe(200);
     await expect(fetched.json()).resolves.toEqual(metadata);
-    const internal = await engine.getFile(PROJECT_A, metadata.fileId);
+    const internal = await engine.getFile(
+      PROJECT_A,
+      metadata.fileId,
+      undefined,
+    );
     expect(Buffer.from(internal.content).toString("utf8")).toBe("hello");
   });
 
@@ -709,5 +713,110 @@ describe.sequential("staged files", () => {
           "Project-scoped file listing requires an unpinned project API key.",
       },
     });
+  });
+
+  it("scopes owned staged-file metadata to the owning user (SEC-017)", async () => {
+    const { app } = createHarness();
+
+    // A pinned key binds the upload to its effective user.
+    const owned = await stage(app, KEY_PINNED);
+    expect(owned.status).toBe(201);
+    const { fileId } = (await owned.json()) as { fileId: string };
+
+    // The owner resolves their own file, whether the identity arrives from a
+    // pinned key or a matching header on an unpinned project key.
+    for (const headers of [
+      authorization(KEY_PINNED),
+      { ...authorization(KEY_A), "X-Eyeball-User-Id": "user_pinned" },
+    ]) {
+      expect(
+        (await app.request(`/v1/files/${fileId}`, { headers })).status,
+      ).toBe(200);
+    }
+
+    // A different same-project user is denied, and an identity-less project
+    // request cannot read an owned file — the store fails closed.
+    for (const headers of [
+      { ...authorization(KEY_A), "X-Eyeball-User-Id": "user_intruder" },
+      authorization(KEY_A),
+    ]) {
+      const denied = await app.request(`/v1/files/${fileId}`, { headers });
+      expect(denied.status).toBe(404);
+      await expect(denied.json()).resolves.toMatchObject({
+        error: { code: "not_found" },
+      });
+    }
+
+    // An empty ownership header is rejected before any store read.
+    const empty = await app.request(`/v1/files/${fileId}`, {
+      headers: { ...authorization(KEY_A), "X-Eyeball-User-Id": "   " },
+    });
+    expect(empty.status).toBe(422);
+    await expect(empty.json()).resolves.toMatchObject({
+      error: { code: "invalid_input" },
+    });
+  });
+
+  it("keeps owner-less staged files project-scoped (SEC-017 backward compatibility)", async () => {
+    const { app } = createHarness();
+
+    // An unpinned project key with no identity header stages an owner-less file.
+    const shared = await stage(app, KEY_A);
+    expect(shared.status).toBe(201);
+    const { fileId } = (await shared.json()) as { fileId: string };
+
+    // Any identity within the project resolves it, including none at all.
+    for (const headers of [
+      authorization(KEY_A),
+      { ...authorization(KEY_A), "X-Eyeball-User-Id": "user_pinned" },
+      { ...authorization(KEY_A), "X-Eyeball-User-Id": "someone_else" },
+    ]) {
+      expect(
+        (await app.request(`/v1/files/${fileId}`, { headers })).status,
+      ).toBe(200);
+    }
+  });
+
+  it("blocks adapter byte resolution across the owner boundary (SEC-017)", async () => {
+    const { app } = createHarness({ withAdapter: true });
+
+    // user_b_other owns this PROJECT_B upload.
+    const owned = await stage(app, KEY_B_PINNED_OTHER, {
+      name: "confidential.pdf",
+      mimeType: "application/pdf",
+      content: Buffer.from("confidential-bytes", "utf8"),
+    });
+    expect(owned.status).toBe(201);
+    const { fileId } = (await owned.json()) as { fileId: string };
+
+    // user_b executes in the same project; the adapter must not resolve another
+    // user's owned bytes, so resolution fails closed before provider I/O.
+    const execution = await app.request("/v1/execute", {
+      method: "POST",
+      headers: { ...authorization(KEY_B), "Idempotency-Key": "sec017-owner" },
+      body: JSON.stringify({
+        tool: "gmail.send_email",
+        userId: "user_b",
+        mode: "sync",
+        input: {
+          to: ["recipient@example.com"],
+          subject: "Owner boundary",
+          body: "This must fail before provider I/O.",
+          attachments: [{ fileId }],
+        },
+      }),
+    });
+    expect(execution.status).toBe(200);
+    await expect(execution.json()).resolves.toMatchObject({
+      status: "failed",
+      error: { code: "not_found" },
+    });
+
+    // The owner still reads their own file's metadata — enforcement is scoped,
+    // not a blanket denial.
+    const ownerMetadata = await app.request(`/v1/files/${fileId}`, {
+      headers: authorization(KEY_B_PINNED_OTHER),
+    });
+    expect(ownerMetadata.status).toBe(200);
   });
 });

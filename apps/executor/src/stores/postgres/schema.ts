@@ -346,6 +346,10 @@ export const stagedFiles = pgTable(
     content: bytea("content").notNull(),
     createdAt: timestampColumn("created_at").notNull(),
     expiresAt: timestampColumn("expires_at").notNull(),
+    // SEC-017: effective owner captured at stage time. NULL is a legacy or
+    // project-scoped upload with no bound user; a set value scopes reads to
+    // that user on metadata and adapter byte resolution.
+    ownerUserId: text("owner_user_id"),
   },
   (table) => [
     primaryKey({ columns: [table.projectId, table.fileId] }),
