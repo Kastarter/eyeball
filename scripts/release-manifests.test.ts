@@ -107,7 +107,7 @@ describe("release workspace boundary", () => {
       expect(manifest.description).toBeTruthy();
       expect(manifest.type).toBe("module");
       expect(manifest.files).toEqual(["dist", "README.md", "LICENSE.md"]);
-      expect(manifest.license).toBe("SEE LICENSE IN LICENSE.md");
+      expect(manifest.license).toBe("MIT");
       expect(manifest.repository).toEqual({
         type: "git",
         url: "git+https://github.com/eyeball-ai/eyeball.git",
