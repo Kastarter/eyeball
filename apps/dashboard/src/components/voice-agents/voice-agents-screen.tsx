@@ -18,6 +18,7 @@ import {
   Select,
   TableShell,
 } from "@/src/components/ui";
+import { VoiceSessionJoinDialog } from "@/src/components/voice-agents/voice-session-join-dialog";
 import {
   dashboardExecutorClient,
   type ExecuteToolResponse,
@@ -812,6 +813,7 @@ export function VoiceAgentsScreen({
   const [testMessage, setTestMessage] = useState<string>();
   const [progressionAvailable, setProgressionAvailable] = useState(true);
   const [chatMessage, setChatMessage] = useState("");
+  const [joinDialogOpen, setJoinDialogOpen] = useState(false);
   const [joinGrant, setJoinGrant] = useState<{
     expiresAt: string;
     participantToken: string;
@@ -1827,14 +1829,34 @@ export function VoiceAgentsScreen({
                 The join grant appears only in this create response; provider
                 API secrets never enter session output. Dismissing discards it.
               </small>
-              <Button
-                onClick={() => setJoinGrant(undefined)}
-                size="small"
-                variant="secondary"
-              >
-                Dismiss grant
-              </Button>
+              <div className="voice-join-grant__actions">
+                <Button
+                  icon={<Icon name="voice" />}
+                  onClick={() => setJoinDialogOpen(true)}
+                  size="small"
+                  variant="primary"
+                >
+                  Join session
+                </Button>
+                <Button
+                  onClick={() => {
+                    setJoinDialogOpen(false);
+                    setJoinGrant(undefined);
+                  }}
+                  size="small"
+                  variant="secondary"
+                >
+                  Dismiss grant
+                </Button>
+              </div>
             </div>
+          ) : null}
+
+          {joinDialogOpen && joinGrant !== undefined ? (
+            <VoiceSessionJoinDialog
+              grant={joinGrant}
+              onClose={() => setJoinDialogOpen(false)}
+            />
           ) : null}
 
           {!progressionAvailable &&
