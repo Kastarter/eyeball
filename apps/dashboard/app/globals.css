@@ -6865,6 +6865,12 @@ select.field__control {
   font-size: 12px;
 }
 
+.voice-join-grant__actions {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+}
+
 .voice-join-grant p {
   display: flex;
   min-width: 0;
