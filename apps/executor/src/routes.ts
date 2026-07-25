@@ -694,7 +694,21 @@ export function createExecutorApp(options: ExecutorAppOptions = {}): Hono<{
       context.set("authPrincipal", grant);
       context.set("projectId", grant.projectId);
       context.set("pinnedUserId", grant.userId);
-      if (context.req.method !== "POST" || context.req.path !== "/v1/execute") {
+      const isExecute =
+        context.req.method === "POST" && context.req.path === "/v1/execute";
+      // Async child executions need the worker to poll their terminal state;
+      // a grant may read only executions reserved for its own session.
+      const executionRead =
+        context.req.method === "GET"
+          ? /^\/v1\/executions\/([^/]+)$/u.exec(context.req.path)
+          : null;
+      const readsOwnSessionExecution =
+        executionRead !== null &&
+        isVoiceSessionExecutionIdForSession(
+          decodeURIComponent(executionRead[1] ?? ""),
+          grant.sessionId,
+        );
+      if (!isExecute && !readsOwnSessionExecution) {
         return grantScopeFailure(context);
       }
     } else {
@@ -1545,7 +1559,7 @@ export function createExecutorApp(options: ExecutorAppOptions = {}): Hono<{
             authPrincipal.sessionId,
           ) ||
           !isRecord(request) ||
-          request.mode !== "sync" ||
+          (request.mode !== "sync" && request.mode !== "async") ||
           typeof request.tool !== "string" ||
           !isCanonicalToolName(request.tool) ||
           !authPrincipal.allowedTools.includes(request.tool)
@@ -1591,11 +1605,12 @@ export function createExecutorApp(options: ExecutorAppOptions = {}): Hono<{
       }
       if (
         reservedExecutionId !== undefined &&
-        (!isRecord(request) || request.mode !== "sync")
+        (!isRecord(request) ||
+          (request.mode !== "sync" && request.mode !== "async"))
       ) {
         return invalidQuery(
           context,
-          `${VOICE_WORKER_EXECUTION_ID_HEADER} is restricted to synchronous child executions.`,
+          `${VOICE_WORKER_EXECUTION_ID_HEADER} requires an explicit sync or async child execution.`,
         );
       }
       if (
@@ -1609,7 +1624,7 @@ export function createExecutorApp(options: ExecutorAppOptions = {}): Hono<{
           pinnedUserId === undefined ||
           bodyUserId !== pinnedUserId ||
           !isRecord(request) ||
-          request.mode !== "sync" ||
+          (request.mode !== "sync" && request.mode !== "async") ||
           !isVoiceSessionExecutionIdForSession(
             reservedExecutionId,
             sessionId,
