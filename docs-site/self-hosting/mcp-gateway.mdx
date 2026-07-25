@@ -34,7 +34,7 @@ pnpm --filter @eyeball/mcp-gateway start
 | `EYEBALL_MCP_TASK_POLL_MS` | Executor status poll interval and client hint; defaults to 1000 ms |
 | `HOST` / `PORT` | Listener; defaults to `127.0.0.1:3001` |
 
-`search` discovery lists `eyeball.search_tools` plus `eyeball.execute_tool`, allowing standard MCP hosts to execute a returned canonical tool without receiving a new descriptor. `catalog` lists the full eligible catalog. Async-by-nature tools are omitted from ordinary sessions and appear only after a client opts into the experimental Tasks profile during initialization.
+`search` discovery lists `eyeball.search_tools` plus `eyeball.execute_tool`, allowing standard MCP hosts to execute a returned canonical tool without receiving a new descriptor. `catalog` lists the full eligible catalog. Async-by-nature tools are listed in ordinary sessions and execute as bounded synchronous calls through the executor's async mode; opting into the experimental Tasks profile during initialization exposes them as pollable tasks instead.
 
 The gateway supports JSON responses and SSE responses on `POST /mcp`, a notification stream on `GET /mcp`, and authenticated session teardown on `DELETE /mcp`. It rejects unknown or expired session IDs with 404 and hashes the inbound credential before binding it to stored state. Browser requests with an untrusted `Origin` are rejected before authentication.
 

@@ -120,7 +120,7 @@ Tasks are opt-in per initialized session. Under MCP `2025-11-25`, a Tasks-capabl
 
 The legacy `capabilities.experimental.tasks` alias is still accepted for compatibility, but new clients should use the top-level capability.
 
-When the executor supports async allocation and status reads, the initialize result advertises `tasks.requests.tools.call`. `tools/list` then includes async-by-nature tools and adds `execution.taskSupport`: `"required"` for async-by-nature tools and `"optional"` for ordinary tools. Without this negotiation, async tools remain omitted and the existing terminal tool-result behavior is unchanged.
+When the executor supports async allocation and status reads, the initialize result advertises `tasks.requests.tools.call`. `tools/list` then adds `execution.taskSupport`: `"required"` for async-by-nature tools and `"optional"` for ordinary tools. Without this negotiation, async-by-nature tools stay listed without `execution` metadata, and a plain `tools/call` runs them through the executor's async mode and waits for the terminal record before responding.
 
 Create a task by adding `task` to `tools/call` params:
 

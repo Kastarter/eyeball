@@ -259,9 +259,11 @@ describe("negotiated MCP Tasks", () => {
     const legacyBody = (await legacy.json()) as {
       result: { tools: Array<Record<string, unknown>> };
     };
-    expect(
-      legacyBody.result.tools.some(({ name }) => name === "twilio.start_call"),
-    ).toBe(false);
+    const legacyStartCall = legacyBody.result.tools.find(
+      ({ name }) => name === "twilio.start_call",
+    );
+    expect(legacyStartCall).toBeDefined();
+    expect(legacyStartCall).not.toHaveProperty("execution");
 
     const legacyCall = await post(
       app,

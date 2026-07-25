@@ -108,7 +108,7 @@ Open-core tool and integration platform for AI agents: one typed, authenticated 
 - Dashboard connection drawers and hosted-link dialogs now preserve query/history state and keyboard focus; executor and cloud connection lists distinguish confirmed-empty data from load failures, and toolkit semantic search exposes query-keyed failures and retry without applying stale matches.
 - Advertised canonical-tool snippets are generated or validated from catalog schemas, including the Gmail quickstart's required `body`; the dedicated mock-session and self-hosted worker docs include independently runnable provider-free end-to-end TypeScript examples, and the worker Compose path forwards the explicit fake-transport opt-in with a secure `false` default.
 - Search-mode MCP exposes both discovery and a generic executor-backed dispatch tool.
-- MCP Streamable HTTP supports JSON and SSE POST responses, authenticated GET event streams, DELETE teardown, one-way credential-and-scope-bound sessions, and opt-in 2025-11-25 Tasks with execution-backed polling and progress notifications.
+- MCP Streamable HTTP supports JSON and SSE POST responses, authenticated GET event streams, DELETE teardown, one-way credential-and-scope-bound sessions, and opt-in 2025-11-25 Tasks with execution-backed polling and progress notifications. Sessions without the Tasks opt-in list async-by-nature tools without `execution` metadata and run them as bounded synchronous calls that wait on the executor's async mode.
 - `pnpm dev:stack` boots 30-provider Mockhouse, executor, and MCP gateway with dev connections.
 - Deterministic MCP and restaurant voice demos run in-process; the Anthropic episode is optional.
 - The nested mocks repository has eight workspaces and 164 tests.

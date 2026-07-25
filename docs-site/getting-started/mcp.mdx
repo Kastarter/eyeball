@@ -77,7 +77,7 @@ Ordinary MCP clients continue to receive terminal tool results. A client that su
 That session discovers async-by-nature tools such as `twilio.start_call` with `execution.taskSupport: "required"`. Invoke one with a `task` object, poll its returned `exe_*` task ID through `tasks/get`, and retrieve the canonical result through `tasks/result`. A long-lived `GET /mcp` SSE connection receives progress and terminal-status notifications while polling remains the source of truth.
 
 <Note>
-  Claude Code and Cursor manage initialize and session headers automatically. Async tools stay hidden unless the host negotiates Eyeball's experimental Tasks opt-in.
+  Claude Code and Cursor manage initialize and session headers automatically. Hosts that skip the Tasks opt-in still see and call async-by-nature tools; each call waits for the underlying execution to finish before returning.
 </Note>
 
 <Note>
