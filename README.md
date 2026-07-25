@@ -6,6 +6,10 @@ Eyeball is **open source (MIT)**, and that is the bet: integrations are a proble
 
 > **Status:** pre-release. The engineering is complete and gated (build, tests, typecheck, lint); when the optional maintainers' `mocks/` checkout is present, the test gates also run the 493-row contract matrix. The four public packages (`@eyeball/core`, `@eyeball/catalog`, `@eyeball/toolkits`, `@eyeball/sdk`) are cut and MIT-licensed. The npm publish is imminent, pending the `@eyeball` organization. The hosted Cloud control plane lives in a separate private repository and is not part of this open project. Provider adapters are certified against deterministic mocks in that maintainers' suite; live-provider certification is ongoing (Notion and Google Drive are proven live).
 
+## Demo
+
+[▶️ Watch the demo video](docs/assets/eyeball.mp4)
+
 ## Architecture
 
 ```text
