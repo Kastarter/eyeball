@@ -8,7 +8,9 @@ Eyeball is **open source (MIT)**, and that is the bet: integrations are a proble
 
 ## Demo
 
-[▶️ Watch the demo video](docs/assets/eyeball.mp4)
+![Eyeball demo](docs/assets/eyeball.gif)
+
+[▶️ Watch the full-quality video](docs/assets/eyeball.mp4)
 
 ## Architecture
 
