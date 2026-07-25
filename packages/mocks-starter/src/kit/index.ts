@@ -44,3 +44,11 @@ export type {
   StoredRecord,
 } from "./store.js";
 export { createStore } from "./store.js";
+export type { CursorPage } from "./values.js";
+export {
+  cursorPage,
+  isObject,
+  readJsonObject,
+  requiredString,
+  validIso,
+} from "./values.js";

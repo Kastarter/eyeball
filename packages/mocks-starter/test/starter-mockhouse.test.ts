@@ -8,6 +8,8 @@ describe("createStarterMockhouse", () => {
     const response = await app.request("http://mockhouse.test/_mock/status");
 
     expect(response.status).toBe(200);
-    await expect(response.json()).resolves.toEqual({ providers: ["echo"] });
+    await expect(response.json()).resolves.toEqual({
+      providers: ["echo", "github", "gmail", "slack"],
+    });
   });
 });
