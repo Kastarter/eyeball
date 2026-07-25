@@ -443,13 +443,17 @@ function descriptorWithMeta(
   };
 }
 
-function visibleTools(
-  catalog: GatewayCatalog,
-  tasksEnabled: boolean,
-): readonly ToolDefinition[] {
-  return tasksEnabled
-    ? catalog.listTools()
-    : catalog.listTools().filter((tool) => !tool.annotations.async);
+function visibleTools(catalog: GatewayCatalog): readonly ToolDefinition[] {
+  // Async-by-nature tools stay visible without MCP Tasks: plain calls bridge
+  // through the executor's async mode and wait for the terminal record.
+  return catalog.listTools();
+}
+
+function withoutExecutionMeta(
+  descriptor: McpToolDescriptor,
+): McpToolDescriptor {
+  const { execution: _execution, ...rest } = descriptor;
+  return rest;
 }
 
 function listedTools(
@@ -468,11 +472,8 @@ function listedTools(
         : executeToolDescriptor,
     ];
   }
-  const raw = visibleTools(catalog, tasksEnabled);
-  const converted = toMcpTools(
-    raw,
-    tasksEnabled ? { includeAsync: true } : {},
-  ).tools;
+  const raw = visibleTools(catalog);
+  const converted = toMcpTools(raw, { includeAsync: true }).tools;
   return [
     searchToolDescriptor,
     ...converted.map((descriptor, index) => {
@@ -480,7 +481,11 @@ function listedTools(
       if (tool === undefined || tool.name !== descriptor.name) {
         throw new Error("MCP conversion changed canonical catalog ordering.");
       }
-      return descriptorWithMeta(descriptor, tool);
+      // `execution.taskSupport` is Tasks metadata; only negotiated sessions see it.
+      return descriptorWithMeta(
+        tasksEnabled ? descriptor : withoutExecutionMeta(descriptor),
+        tool,
+      );
     }),
   ];
 }
@@ -882,7 +887,7 @@ export class McpProtocol {
         protocolVersion: MCP_PROTOCOL_VERSION,
         capabilities,
         serverInfo: { name: MCP_SERVER_NAME, version: this.#serverVersion },
-        instructions: `Use eyeball.search_tools to find canonical provider tools. In search discovery mode, invoke a returned tool through eyeball.execute_tool. Tool failures are returned as normalized MCP tool results.${tasksEnabled ? " Async-by-nature tools require task augmentation; poll tasks/get and retrieve tasks/result." : ""}`,
+        instructions: `Use eyeball.search_tools to find canonical provider tools. In search discovery mode, invoke a returned tool through eyeball.execute_tool. Tool failures are returned as normalized MCP tool results.${tasksEnabled ? " Async-by-nature tools require task augmentation; poll tasks/get and retrieve tasks/result." : " Async-by-nature tools run to completion before the call returns."}`,
       }),
     };
   }
@@ -954,12 +959,7 @@ export class McpProtocol {
     return {
       response: rpcResult(
         message.id,
-        await this.#callTool(
-          message.id,
-          message.params,
-          context,
-          session?.tasksEnabled ?? false,
-        ),
+        await this.#callTool(message.id, message.params, context),
       ),
     };
   }
@@ -968,7 +968,6 @@ export class McpProtocol {
     requestId: JsonRpcId,
     value: unknown,
     context: McpRequestContext,
-    tasksEnabled: boolean,
   ): Promise<ToolResult> {
     const resolution = this.#resolveProviderCall(value);
     if (resolution.kind === "error") return resolution.result;
@@ -976,7 +975,7 @@ export class McpProtocol {
       try {
         return successfulToolResult(
           searchTools(
-            visibleTools(this.#catalog, tasksEnabled),
+            visibleTools(this.#catalog),
             resolution.params.input,
           ) as unknown as JsonValue,
         );
@@ -984,14 +983,6 @@ export class McpProtocol {
         return failedToolResult(normalizedError(error));
       }
     }
-    if (resolution.call.tool.annotations.async) {
-      return failedToolResult({
-        code: TOOL_ERROR_CODES.NOT_SUPPORTED,
-        message: `Tool ${resolution.call.tool.name} requires MCP Tasks support, which this gateway did not negotiate.`,
-        retryable: false,
-      });
-    }
-
     const executionRequest = this.#executionRequest(
       resolution.call,
       requestId,
@@ -1198,6 +1189,9 @@ export class McpProtocol {
           ...(selectedConnectionId === undefined
             ? {}
             : { connectionId: selectedConnectionId }),
+          // The executor refuses sync dispatch for async-by-nature tools; the
+          // bridge waits on the pending execution to keep tools/call synchronous.
+          ...(call.tool.annotations.async ? { mode: "async" as const } : {}),
         },
       };
     } catch (error) {

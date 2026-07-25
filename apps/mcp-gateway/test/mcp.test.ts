@@ -90,12 +90,12 @@ describe("MCP Streamable HTTP gateway", () => {
         capabilities: { tools: { listChanged: true } },
         serverInfo: { name: "eyeball-mcp-gateway", version: "0.1.0" },
         instructions:
-          "Use eyeball.search_tools to find canonical provider tools. In search discovery mode, invoke a returned tool through eyeball.execute_tool. Tool failures are returned as normalized MCP tool results.",
+          "Use eyeball.search_tools to find canonical provider tools. In search discovery mode, invoke a returned tool through eyeball.execute_tool. Tool failures are returned as normalized MCP tool results. Async-by-nature tools run to completion before the call returns.",
       },
     });
   });
 
-  it("lists exact canonical schemas and annotations while hiding Tasks-only tools", async () => {
+  it("lists exact canonical schemas and annotations including async-by-nature tools", async () => {
     const app = createMcpGatewayApp({ executor: executor(), apiKey: API_KEY });
     const response = await request(app, rpc("tools/list"));
     const body = (await response.json()) as {
@@ -132,9 +132,17 @@ describe("MCP Streamable HTTP gateway", () => {
         },
       },
     });
-    expect(
-      body.result.tools.some(({ name }) => name === "twilio.start_call"),
-    ).toBe(false);
+    const startCall = body.result.tools.find(
+      ({ name }) => name === "twilio.start_call",
+    );
+    expect(startCall).toMatchObject({
+      annotations: {
+        readOnlyHint: false,
+        destructiveHint: false,
+        idempotentHint: false,
+      },
+    });
+    expect(startCall).not.toHaveProperty("execution");
     expect(
       body.result.tools.some(({ name }) => name === "gmail__list_emails"),
     ).toBe(false);
@@ -413,8 +421,16 @@ describe("MCP Streamable HTTP gateway", () => {
     expect(JSON.stringify(redactedBody)).not.toContain("SECRET_TOKEN");
   });
 
-  it("rejects direct async calls until Tasks support exists", async () => {
-    const execution = executor();
+  it("bridges direct async calls to completion when Tasks are not negotiated", async () => {
+    const execution = executor(async (request) => ({
+      executionId: createExecutionId("mcp_async_bridge"),
+      tool: request.tool,
+      toolVersion: "1.0.0",
+      catalogVersion: "1.1",
+      status: "succeeded",
+      output: { callId: "call_mcp_async", status: "queued" } as never,
+      latencyMs: 12,
+    }));
     const app = createMcpGatewayApp({
       executor: execution,
       apiKey: API_KEY,
@@ -434,13 +450,12 @@ describe("MCP Streamable HTTP gateway", () => {
 
     await expect(response.json()).resolves.toMatchObject({
       result: {
-        isError: true,
-        content: [
-          { text: expect.stringContaining("requires MCP Tasks support") },
-        ],
+        structuredContent: { callId: "call_mcp_async", status: "queued" },
       },
     });
-    expect(execution.execute).not.toHaveBeenCalled();
+    expect(execution.execute).toHaveBeenCalledWith(
+      expect.objectContaining({ tool: "twilio.start_call", mode: "async" }),
+    );
   });
 
   it("implements transport errors, notifications, and bearer authentication", async () => {

@@ -33,6 +33,8 @@ export interface McpExecuteRequest {
   input: Readonly<Record<string, JsonValue>>;
   idempotencyKey: string;
   connectionId?: ConnectionId;
+  /** Executor dispatch mode; async-by-nature tools must run as "async". */
+  mode?: "sync" | "async";
 }
 
 export interface McpExecutionRequest {
@@ -78,7 +80,7 @@ export class HttpMcpExecutor implements McpExecutor {
     const client = this.#client(request.apiKey, request.userId);
     const immediate = await client.tools.execute(request.tool, {
       input: request.input,
-      mode: "sync",
+      mode: request.mode ?? "sync",
       idempotencyKey: request.idempotencyKey,
       ...(request.connectionId === undefined
         ? {}
