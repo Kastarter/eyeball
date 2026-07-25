@@ -1,0 +1,91 @@
+---
+title: "Bring your own OAuth"
+description: "Register your own provider OAuth app, authorize it with the local CLI, and let the encrypted vault refresh tokens."
+---
+
+Open-source Eyeball does not ship shared OAuth client credentials, and the
+hosted connect flow is not part of the executor. When you self-host, you
+register your own OAuth application with each provider, authorize it locally,
+and store the resulting tokens in the encrypted local vault. Hosted multi-user
+OAuth — Eyeball-managed provider apps, hosted consent redirects, and
+distributed refresh — belongs to Eyeball Cloud, the paid hosted product, which
+is not yet available; it is implemented and tested in the private Cloud source
+and is not part of the open-source API.
+
+## 1. Create the provider OAuth app
+
+Register a web or installed application in the provider's developer console and
+add the CLI callback `http://127.0.0.1:53682/callback` as an authorized
+redirect URI. Request the scopes listed on the toolkit's reference page.
+
+## 2. Initialize the encrypted vault
+
+```bash
+# Refuses to overwrite an existing vault. Capture both export lines securely.
+pnpm eyeball-auth init --vault .eyeball/vault.json
+
+export EYEBALL_VAULT_KEY='...output from init...'
+export EYEBALL_VAULT_PATH="$PWD/.eyeball/vault.json"
+```
+
+The vault is a single-tenant AES-256-GCM encrypted file. `EYEBALL_VAULT_KEY`
+must decode to exactly 32 bytes; losing it makes the vault unrecoverable, and
+exposing it exposes every record. Do not commit the key or the vault file.
+
+## 3. Authorize your app
+
+Set the client credentials for the toolkit, then add the connection:
+
+```bash
+export EYEBALL_OAUTH_GMAIL_CLIENT_ID='...'
+export EYEBALL_OAUTH_GMAIL_CLIENT_SECRET='...'
+pnpm eyeball-auth add gmail --user local-user
+```
+
+The CLI prints the full authorize URL, captures the loopback redirect, and
+exchanges the authorization code immediately. The client secret is prompted
+when omitted. `--manual` switches to paste mode: authorize in any browser and
+paste the complete final redirect URL, including `code` and `state`.
+`--redirect-uri` changes the registered callback, and `--public-client`
+supports a provider-approved public client without a secret.
+
+API-key and Basic providers use the same CLI without an OAuth app:
+
+```bash
+pnpm eyeball-auth add stripe --user local-user --secret 'apiKey=sk_live_...'
+pnpm eyeball-auth add twilio --user local-user --username 'AC...' --secret 'auth-token'
+```
+
+## 4. Run the executor against the vault
+
+```bash
+export EYEBALL_CREDENTIALS=local-vault
+export EYEBALL_PROJECT_ID=local-project
+pnpm --filter @eyeball/executor dev
+```
+
+On expiry, the vault posts the refresh grant to the provider's token endpoint,
+persists any rotated refresh token, and returns the fresh access token. A
+rejected refresh grant becomes a non-retryable `auth_expired` error with a
+reconnect command; transport failures and provider 429/5xx responses stay
+retryable as `provider_unavailable`.
+
+Verify a connection with a read-only canonical call:
+
+```bash
+pnpm eyeball-auth test gmail --user local-user \
+  --tool gmail.list_emails --input '{"pageSize":1}'
+```
+
+<Warning>
+  The vault is a single-process, single-tenant store: do not point multiple
+  executor processes at one file. Rotation of your provider app's client
+  secret and revocation at the provider remain your responsibility. Hosted
+  multi-user connection ownership and distributed refresh belong to Eyeball
+  Cloud.
+</Warning>
+
+Related: [Environment credentials](/self-hosting/credential-provider) for a
+static single-service identity, and
+[Connected accounts](/concepts/connected-accounts) for the lifecycle and
+boundary model.

@@ -1,9 +1,9 @@
 ---
 title: "Run the dashboard"
-description: "Choose the default demo data layer or connect the same dashboard screens to the cloud control plane."
+description: "Demo mode linked to your own executor today; cloud mode targets the not-yet-available Eyeball Cloud control plane."
 ---
 
-The dashboard starts in **demo mode** unless cloud mode is explicitly enabled. Demo mode keeps the existing local experience and reads toolkits, executions, connections, webhooks, triggers, files, and voice-agent data from the configured executor.
+The dashboard starts in **demo mode** unless cloud mode is explicitly enabled, and it stays demo-only until you link an executor. In demo mode the account-level surfaces — sign-in, organizations, API keys, and audit — render demo fixture data, and toolkits read from the bundled catalog. Executions, connections, webhooks, triggers, files, and voice-agent screens show real data only after you link your self-hosted executor:
 
 ```bash
 EYEBALL_API_KEY="eyeball_local_key" \
@@ -12,6 +12,8 @@ pnpm --filter @eyeball/dashboard start
 ```
 
 ## Cloud mode
+
+Cloud mode is the dashboard's client for an Eyeball Cloud control plane. Eyeball Cloud is the paid hosted product and is not yet available, and its control-plane source is not part of the open-source repository — so open-source deployments run demo mode linked to their own executor today.
 
 Cloud mode swaps only the data source for authentication, organization and project context, hosted connections, API keys, and audit events. Toolkits, executions, webhooks, triggers, files, and voice agents continue to use the executor through the dashboard's existing server-side proxy.
 

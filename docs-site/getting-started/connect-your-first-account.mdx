@@ -3,9 +3,12 @@ title: "Connect your first account"
 description: "Understand the cloud connect handoff and the intentionally narrow development-vault API."
 ---
 
-The private Cloud source implements a hosted OAuth connect flow in which your application later executes tools using the same `external_user_id`. The vault owns refresh tokens and provider-specific consent state. This describes checked-in control-plane source, not a deployed or live-provider-certified service.
+Connecting a provider account sits on the open-core boundary, so be clear about which side you are on:
 
-The open-source executor does not implement hosted OAuth. Its optional development vault accepts prebuilt, non-secret fixtures for local testing:
+- **Eyeball Cloud (paid, not yet available)** implements the hosted OAuth connect flow: Eyeball-managed provider apps, hosted consent redirects, and a vault that owns refresh tokens and provider-specific consent state. Your application later executes tools using the same `external_user_id`. This is implemented and tested in the private Cloud source; there is no deployed or live-provider-certified hosted service today, and it is not part of the open-source API.
+- **Open source and self-hosted** deployments bring their own OAuth: register your own provider application and authorize it locally with the CLI and encrypted vault. See [Bring your own OAuth](/self-hosting/byo-oauth).
+
+The `connections.create` flow below is a **mock**. The open-source executor does not implement hosted OAuth; its optional development vault accepts prebuilt, non-secret fixtures for local testing:
 
 ```ts
 import { Eyeball } from "@eyeball/sdk";
