@@ -19,7 +19,7 @@ import {
   DASHBOARD_ORGANIZATION_COOKIE,
   DASHBOARD_PROJECT_COOKIE,
 } from "./cloud-api";
-import { isCloudMode } from "./runtime-config";
+import { configuredCloudControlUrl } from "./cloud-proxy";
 
 export interface CloudOrganizationContext {
   organization: CloudOrganization;
@@ -34,36 +34,22 @@ export interface CloudShellContext {
 }
 
 function configuredCloudUrl(): string {
-  const value = process.env.EYEBALL_CLOUD_URL?.trim();
-  if (!isCloudMode() || value === undefined || value.length === 0) {
+  // Reuse the strict control-plane validator that the browser proxy already
+  // enforces (apps/dashboard/src/lib/cloud-proxy.ts). The server rendering path
+  // in serverCloudClient() copies the session and CSRF cookies into an outbound
+  // Cookie header, so an insecure origin here would leak authenticated cookies
+  // in cleartext. This shared validator permits https:, allows http: only for
+  // loopback development hosts, and rejects embedded credentials, query, and
+  // fragment.
+  const url = configuredCloudControlUrl();
+  if (url === undefined) {
     throw new CloudApiError(
-      "Cloud mode requires a server-only EYEBALL_CLOUD_URL.",
+      "Cloud mode requires a valid server-only EYEBALL_CLOUD_URL (HTTPS, or loopback HTTP for development, without embedded credentials, query, or fragment).",
       503,
       "cloud_not_configured",
     );
   }
-  let url: URL;
-  try {
-    url = new URL(value);
-  } catch {
-    throw new CloudApiError(
-      "EYEBALL_CLOUD_URL must be a valid HTTP(S) URL.",
-      503,
-      "cloud_not_configured",
-    );
-  }
-  if (
-    (url.protocol !== "https:" && url.protocol !== "http:") ||
-    url.username.length > 0 ||
-    url.password.length > 0
-  ) {
-    throw new CloudApiError(
-      "EYEBALL_CLOUD_URL must be an HTTP(S) URL without embedded credentials.",
-      503,
-      "cloud_not_configured",
-    );
-  }
-  return value.replace(/\/$/u, "");
+  return url;
 }
 
 async function serverCloudClient(): Promise<CloudClient> {
