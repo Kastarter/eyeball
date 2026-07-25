@@ -245,6 +245,7 @@
         "self-hosting/dashboard",
         "self-hosting/architecture",
         "self-hosting/credential-provider",
+        "self-hosting/byo-oauth",
         "self-hosting/mcp-gateway",
         "self-hosting/executor",
         "self-hosting/observability",

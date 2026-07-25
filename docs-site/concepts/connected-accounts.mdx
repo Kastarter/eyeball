@@ -32,7 +32,9 @@ The optional OSS development vault is:
 
 ## Cloud vault
 
-The private Cloud source owns hosted OAuth callbacks, encrypted refresh-token storage, consent repair, and connect UI. Those services are outside the open-source repository and are not claimed as deployed or live-provider certified.
+The private Cloud source owns hosted OAuth callbacks, encrypted refresh-token storage, consent repair, and connect UI. Hosted OAuth will be offered only as part of Eyeball Cloud, the paid hosted product, which is not yet available; those services are outside the open-source repository and are not claimed as deployed or live-provider certified.
+
+Self-hosted deployments bring their own provider OAuth apps and store tokens in the encrypted local vault instead — see [Bring your own OAuth](/self-hosting/byo-oauth).
 
 <Warning>
   `EnvCredentialProvider` is suitable for service credentials in controlled deployments, not multi-tenant end-user OAuth.
