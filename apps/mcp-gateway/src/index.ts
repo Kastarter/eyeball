@@ -1,4 +1,4 @@
-import { createHash } from "node:crypto";
+import { createHash, timingSafeEqual } from "node:crypto";
 import {
   type ApiKeyPrincipal,
   type ApiKeyringInput,
@@ -83,6 +83,15 @@ function bearerToken(value: string | undefined): string | undefined {
     return undefined;
   }
   return /^Bearer ([^\s]+)$/iu.exec(value.trim())?.[1];
+}
+
+function constantTimeEquals(actual: string, expected: string): boolean {
+  const actualBytes = Buffer.from(actual, "utf8");
+  const expectedBytes = Buffer.from(expected, "utf8");
+  return (
+    actualBytes.length === expectedBytes.length &&
+    timingSafeEqual(actualBytes, expectedBytes)
+  );
 }
 
 function discoveryMode(value: string | undefined): ToolDiscoveryMode {
@@ -499,7 +508,7 @@ function createMcpGatewayComposition(options: McpGatewayOptions = {}): {
       if (principal === undefined) return unauthorized(context);
     } else if (
       configuredApiKey !== undefined &&
-      inboundApiKey !== configuredApiKey
+      !constantTimeEquals(inboundApiKey, configuredApiKey)
     ) {
       return unauthorized(context);
     }
