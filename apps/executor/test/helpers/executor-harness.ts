@@ -9,14 +9,20 @@ import {
 } from "@eyeball/core";
 import { defaultToolkitAdapters } from "@eyeball/toolkits";
 import {
-  createMockApp,
-  type ProviderMock,
-} from "../../../../mocks/packages/mock-kit/dist/index.js";
-import {
   AdapterRegistry,
   createExecutorApp,
   ExecutionEngine,
 } from "../../src/index.js";
+import {
+  hasMocksCheckout,
+  loadMocksModule,
+  type MockKitModule,
+  type ProviderMock,
+} from "../mocks-checkout.js";
+
+const createMockApp = hasMocksCheckout()
+  ? (await loadMocksModule<MockKitModule>("mock-kit")).createMockApp
+  : undefined;
 
 const API_KEY = "ey_test_in_process";
 const MOCK_ORIGIN = "http://mocks.local";
@@ -187,10 +193,15 @@ export function createInProcessExecutorHarness(
     ...(baseUrl === undefined ? {} : { [baseUrlEnv]: baseUrl }),
   };
 
-  const mockApp =
-    options.provider === undefined
-      ? undefined
-      : createMockApp({ providers: [options.provider] });
+  const mockApp = (() => {
+    if (options.provider === undefined) {
+      return undefined;
+    }
+    if (createMockApp === undefined) {
+      throw new Error("Mockhouse checkout is required for a provider harness.");
+    }
+    return createMockApp({ providers: [options.provider] });
+  })();
   const fetchImpl = (async (
     input: Parameters<typeof fetch>[0],
     init?: Parameters<typeof fetch>[1],

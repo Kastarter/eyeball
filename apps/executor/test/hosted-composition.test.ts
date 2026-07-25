@@ -1,7 +1,6 @@
 import type { ApiKeyPrincipal } from "@eyeball/core";
 import { Hono } from "hono";
 import { describe, expect, it } from "vitest";
-import { createGmailMock } from "../../../mocks/packages/mocks-email/dist/index.js";
 import {
   createConfiguredApiKeyAuthenticator,
   createExecutorApp,
@@ -10,6 +9,16 @@ import {
   createPgliteStoreBundle,
   RemoteKeyAuthenticator,
 } from "../src/index.js";
+import {
+  hasMocksCheckout,
+  loadMocksModule,
+  mocksSuiteTitle,
+} from "./mocks-checkout.js";
+
+type EmailMocksModule =
+  typeof import("../../../mocks/packages/mocks-email/dist/index.js");
+
+const mocksAvailable = hasMocksCheckout();
 
 const INTERNAL_API_SECRET =
   "hosted-composition-test-internal-secret-32-characters";
@@ -326,109 +335,120 @@ describe("stock hosted runtime composition", () => {
     ).rejects.toThrow("at least 32 UTF-8 bytes");
   });
 
-  it("uses cloud key verification and a freshly resolved cloud OAuth token during execution", async () => {
-    const fixedNow = Date.parse("2026-07-20T12:00:00.000Z");
-    const gmailScope = "https://www.googleapis.com/auth/gmail.modify";
-    const staleCredential = {
-      type: "oauth2" as const,
-      accessToken: "stale-cloud-token",
-      expiresAt: new Date(fixedNow + 60_000).toISOString(),
-      scopes: [gmailScope],
-    };
-    const freshCredential = {
-      type: "oauth2" as const,
-      accessToken: "fresh-cloud-token",
-      connectionId: "conn_cloud_gmail",
-      expiresAt: new Date(fixedNow + 3_600_000).toISOString(),
-      scopes: [gmailScope],
-      tokenType: "Bearer",
-    };
-    const resolveRequests: unknown[] = [];
-    const cloud = new Hono();
-    cloud.post("/internal/keys/verify", async (context) => {
-      const { key } = (await context.req.json()) as { key: string };
-      return context.json(
-        key === REMOTE_KEY
-          ? { valid: true, projectId: "project_cloud" }
-          : { valid: false },
-      );
-    });
-    cloud.post("/internal/credentials/resolve", async (context) => {
-      resolveRequests.push(await context.req.json());
-      const nearExpiry =
-        Date.parse(staleCredential.expiresAt) <= fixedNow + 5 * 60_000;
-      return context.json(nearExpiry ? freshCredential : staleCredential);
-    });
-
-    const gmail = createGmailMock();
-    const providerAuthorizations: Array<string | undefined> = [];
-    const fetchImpl = (async (input: RequestInfo | URL, init?: RequestInit) => {
-      const request = new Request(input, init);
-      const url = new URL(request.url);
-      if (url.hostname === "cloud.example.test") {
-        return cloud.request(request);
-      }
-      if (url.hostname === "gmail.example.test") {
-        providerAuthorizations.push(
-          request.headers.get("Authorization") ?? undefined,
+  it.skipIf(!mocksAvailable)(
+    mocksSuiteTitle(
+      "uses cloud key verification and a freshly resolved cloud OAuth token during execution",
+      mocksAvailable,
+    ),
+    async () => {
+      const fixedNow = Date.parse("2026-07-20T12:00:00.000Z");
+      const gmailScope = "https://www.googleapis.com/auth/gmail.modify";
+      const staleCredential = {
+        type: "oauth2" as const,
+        accessToken: "stale-cloud-token",
+        expiresAt: new Date(fixedNow + 60_000).toISOString(),
+        scopes: [gmailScope],
+      };
+      const freshCredential = {
+        type: "oauth2" as const,
+        accessToken: "fresh-cloud-token",
+        connectionId: "conn_cloud_gmail",
+        expiresAt: new Date(fixedNow + 3_600_000).toISOString(),
+        scopes: [gmailScope],
+        tokenType: "Bearer",
+      };
+      const resolveRequests: unknown[] = [];
+      const cloud = new Hono();
+      cloud.post("/internal/keys/verify", async (context) => {
+        const { key } = (await context.req.json()) as { key: string };
+        return context.json(
+          key === REMOTE_KEY
+            ? { valid: true, projectId: "project_cloud" }
+            : { valid: false },
         );
-        return gmail.app.request(request);
-      }
-      throw new Error("Unexpected in-process fetch target.");
-    }) as typeof fetch;
-    const env = {
-      EYEBALL_KEY_VERIFY_URL: KEY_VERIFY_URL,
-      EYEBALL_CREDENTIALS: "cloud",
-      EYEBALL_CREDENTIALS_URL: CREDENTIALS_URL,
-      EYEBALL_INTERNAL_API_SECRET: INTERNAL_API_SECRET,
-      EYEBALL_GMAIL_BASE_URL: "https://gmail.example.test",
-    };
-    const runtime = await createExecutorRuntime({
-      env,
-      fetchImpl,
-      clock: { now: () => new Date(fixedNow) },
-    });
+      });
+      cloud.post("/internal/credentials/resolve", async (context) => {
+        resolveRequests.push(await context.req.json());
+        const nearExpiry =
+          Date.parse(staleCredential.expiresAt) <= fixedNow + 5 * 60_000;
+        return context.json(nearExpiry ? freshCredential : staleCredential);
+      });
 
-    try {
-      const app = createExecutorApp({
-        engine: runtime.engine,
-        apiKeyAuthenticator: runtime.apiKeyAuthenticator,
+      const { createGmailMock } =
+        await loadMocksModule<EmailMocksModule>("mocks-email");
+      const gmail = createGmailMock();
+      const providerAuthorizations: Array<string | undefined> = [];
+      const fetchImpl = (async (
+        input: RequestInfo | URL,
+        init?: RequestInit,
+      ) => {
+        const request = new Request(input, init);
+        const url = new URL(request.url);
+        if (url.hostname === "cloud.example.test") {
+          return cloud.request(request);
+        }
+        if (url.hostname === "gmail.example.test") {
+          providerAuthorizations.push(
+            request.headers.get("Authorization") ?? undefined,
+          );
+          return gmail.app.request(request);
+        }
+        throw new Error("Unexpected in-process fetch target.");
+      }) as typeof fetch;
+      const env = {
+        EYEBALL_KEY_VERIFY_URL: KEY_VERIFY_URL,
+        EYEBALL_CREDENTIALS: "cloud",
+        EYEBALL_CREDENTIALS_URL: CREDENTIALS_URL,
+        EYEBALL_INTERNAL_API_SECRET: INTERNAL_API_SECRET,
+        EYEBALL_GMAIL_BASE_URL: "https://gmail.example.test",
+      };
+      const runtime = await createExecutorRuntime({
         env,
-        requestIdFactory: () => "req_hosted_execution",
-      });
-      const response = await app.request("/v1/execute", {
-        method: "POST",
-        headers: {
-          Authorization: `Bearer ${REMOTE_KEY}`,
-          "Content-Type": "application/json",
-        },
-        body: JSON.stringify({
-          tool: "gmail.list_emails",
-          userId: "user_cloud",
-          input: {},
-          mode: "sync",
-        }),
+        fetchImpl,
+        clock: { now: () => new Date(fixedNow) },
       });
 
-      expect(response.status).toBe(200);
-      expect(await response.json()).toMatchObject({
-        tool: "gmail.list_emails",
-        status: "succeeded",
-        output: { emails: [] },
-      });
-      expect(resolveRequests).toEqual([
-        {
-          projectId: "project_cloud",
-          userId: "user_cloud",
-          toolkit: "gmail",
-        },
-      ]);
-      expect(providerAuthorizations).toEqual([
-        `Bearer ${freshCredential.accessToken}`,
-      ]);
-      expect(runtime.engine.credentialProvider.kind).toBe("cloud");
-    } finally {
-      await runtime.close();
-    }
-  });
+      try {
+        const app = createExecutorApp({
+          engine: runtime.engine,
+          apiKeyAuthenticator: runtime.apiKeyAuthenticator,
+          env,
+          requestIdFactory: () => "req_hosted_execution",
+        });
+        const response = await app.request("/v1/execute", {
+          method: "POST",
+          headers: {
+            Authorization: `Bearer ${REMOTE_KEY}`,
+            "Content-Type": "application/json",
+          },
+          body: JSON.stringify({
+            tool: "gmail.list_emails",
+            userId: "user_cloud",
+            input: {},
+            mode: "sync",
+          }),
+        });
+
+        expect(response.status).toBe(200);
+        expect(await response.json()).toMatchObject({
+          tool: "gmail.list_emails",
+          status: "succeeded",
+          output: { emails: [] },
+        });
+        expect(resolveRequests).toEqual([
+          {
+            projectId: "project_cloud",
+            userId: "user_cloud",
+            toolkit: "gmail",
+          },
+        ]);
+        expect(providerAuthorizations).toEqual([
+          `Bearer ${freshCredential.accessToken}`,
+        ]);
+        expect(runtime.engine.credentialProvider.kind).toBe("cloud");
+      } finally {
+        await runtime.close();
+      }
+    },
+  );
 });

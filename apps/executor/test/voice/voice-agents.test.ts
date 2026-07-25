@@ -15,18 +15,28 @@ import {
   VoiceSessionDriverTimeoutError,
   type VoiceSessionObservationLifecycle,
 } from "@eyeball/toolkits";
-import { describe, expect, it, vi } from "vitest";
-import {
-  createLiveKitMock,
-  createPipecatMock,
-  createTwilioMock,
-} from "../../../../mocks/packages/mocks-voice/dist/index.js";
+import { beforeAll, describe, expect, it, vi } from "vitest";
 import { createVoiceSessionGrantAuthority } from "../../src/index.js";
 import { InMemoryVoiceSessionObserverStore } from "../../src/voice/memory-observer-store.js";
 import { RemoteVoiceSessionObserver } from "../../src/voice/remote-session-observer.js";
 import { WebhookDeliverer } from "../../src/webhooks/deliverer.js";
 import { InMemoryVoiceWebhookSourceStore } from "../../src/webhooks/memory-voice-source-store.js";
-import { createVoiceMockHarness, output } from "./helpers.js";
+import {
+  hasMocksCheckout,
+  loadMocksModule,
+  mocksSuiteTitle,
+} from "../mocks-checkout.js";
+
+type VoiceMocksModule =
+  typeof import("../../../../mocks/packages/mocks-voice/dist/index.js");
+type VoiceHelpersModule = typeof import("./helpers.js");
+
+let createLiveKitMock: VoiceMocksModule["createLiveKitMock"];
+let createPipecatMock: VoiceMocksModule["createPipecatMock"];
+let createTwilioMock: VoiceMocksModule["createTwilioMock"];
+let createVoiceMockHarness: VoiceHelpersModule["createVoiceMockHarness"];
+let output: VoiceHelpersModule["output"];
+const mocksAvailable = hasMocksCheckout();
 
 const agentDraft = {
   name: "Reservation host",
@@ -212,1073 +222,1091 @@ function createObservationLifecycle(
   };
 }
 
-describe("native voice-agents toolkit", () => {
-  it("reserves executor-owned grant scope before remote start and revokes before stop", async () => {
-    const store = new InMemoryAgentStore();
-    const driver = new RecordingRemoteDriver();
-    const issue = vi.fn(async (input: { sessionId: string }) => ({
-      token: "evg1.test-session-grant.signature",
-      grantId: "vsg_voice_agents_test",
-      expiresAt: "2026-07-21T10:06:00.000Z",
-      sessionId: input.sessionId,
-    }));
-    driver.beforeStart = async (request) => {
-      await expect(
-        store.getSession(
-          request.scope.projectId,
-          request.scope.userId,
-          request.sessionId,
-        ),
-      ).resolves.toMatchObject({
-        sessionId: request.sessionId,
-        grantId: "vsg_voice_agents_test",
-        grantExpiresAt: "2026-07-21T10:06:00.000Z",
-      });
-    };
-    const harness = createVoiceMockHarness(
-      createPipecatMock(),
-      { type: "none" },
-      {
-        toolkitSlug: "voice-agents",
-        adapter: new VoiceAgentsAdapter({
-          store,
-          sessionDriver: driver,
-          voiceSessionGrantIssuer: { issue },
-          resolveTool: (name) => defaultCatalog.getTool(name),
-        }),
-      },
-    );
-    const agent = object(
-      output(
-        await harness.execute("voice-agents.create_voice_agent", {
-          agent: remoteAgentDraft,
-        }),
-      ).agent,
-    );
-    const started = output(
-      await harness.execute(
-        "voice-agents.start_agent_call",
-        {
-          agentId: String(agent.id),
-          revision: 1,
-          to: "+15550001111",
-          from: "+15550002222",
-          transportConnectionId: "conn_voice_test",
-        },
-        "async",
-      ),
-    );
-    const sessionId = String(object(started.session).id);
-    expect(sessionId).toMatch(/^session_[0-9a-f]{32}$/u);
-    expect(driver.starts[0]).toMatchObject({
-      sessionId,
-      executorGrant: {
+describe.skipIf(!mocksAvailable)(
+  mocksSuiteTitle("native voice-agents toolkit", mocksAvailable),
+  () => {
+    beforeAll(async () => {
+      const [mocks, helpers] = await Promise.all([
+        loadMocksModule<VoiceMocksModule>("mocks-voice"),
+        import("./helpers.js") as Promise<VoiceHelpersModule>,
+      ]);
+      ({ createLiveKitMock, createPipecatMock, createTwilioMock } = mocks);
+      ({ createVoiceMockHarness, output } = helpers);
+    });
+
+    it("reserves executor-owned grant scope before remote start and revokes before stop", async () => {
+      const store = new InMemoryAgentStore();
+      const driver = new RecordingRemoteDriver();
+      const issue = vi.fn(async (input: { sessionId: string }) => ({
         token: "evg1.test-session-grant.signature",
+        grantId: "vsg_voice_agents_test",
         expiresAt: "2026-07-21T10:06:00.000Z",
-      },
-    });
-    expect(issue).toHaveBeenCalledWith({
-      projectId: "proj_voice_mocks",
-      userId: "user_voice_mocks",
-      sessionId,
-      maxDurationSeconds: 300,
-      allowedTools: ["hubspot.search_contacts"],
-    });
-    driver.beforeStop = async () => {
-      await expect(
-        store.getSession("proj_voice_mocks", "user_voice_mocks", sessionId),
-      ).resolves.toMatchObject({
-        grantRevokedAt: expect.any(String),
-      });
-    };
-    output(
-      await harness.execute("voice-agents.stop_agent_session", { sessionId }),
-    );
-    expect(driver.stops).toEqual([sessionId]);
-  });
-
-  it("revokes the durable grant before a failing worker session read", async () => {
-    const store = new InMemoryAgentStore();
-    const driver = new RecordingRemoteDriver();
-    const authority = createVoiceSessionGrantAuthority({
-      secret: "g".repeat(32),
-      store,
-      clock: { now: () => new Date("2026-07-21T10:00:00.000Z") },
-    });
-    const harness = createVoiceMockHarness(
-      createPipecatMock(),
-      { type: "none" },
-      {
-        toolkitSlug: "voice-agents",
-        adapter: new VoiceAgentsAdapter({
-          store,
-          sessionDriver: driver,
-          voiceSessionGrantIssuer: authority.issuer,
-          resolveTool: (name) => defaultCatalog.getTool(name),
-        }),
-      },
-    );
-    const agent = object(
-      output(
-        await harness.execute("voice-agents.create_voice_agent", {
-          agent: remoteAgentDraft,
-        }),
-      ).agent,
-    );
-    const started = output(
-      await harness.execute(
-        "voice-agents.start_agent_call",
-        {
-          agentId: String(agent.id),
-          revision: 1,
-          to: "+15550001111",
-          from: "+15550002222",
-          transportConnectionId: "conn_voice_test",
-        },
-        "async",
-      ),
-    );
-    const sessionId = String(object(started.session).id);
-    const token = driver.starts[0]?.executorGrant?.token;
-    if (token === undefined) throw new Error("Expected a session grant.");
-    expect((await authority.verifier.verify(token)).status).toBe("valid");
-
-    driver.failGet = true;
-    const stopped = await harness.execute("voice-agents.stop_agent_session", {
-      sessionId,
-    });
-    expect(stopped.terminal.status).toBe("failed");
-    await expect(authority.verifier.verify(token)).resolves.toEqual({
-      status: "expired",
-    });
-    await expect(
-      store.getSession("proj_voice_mocks", "user_voice_mocks", sessionId),
-    ).resolves.toMatchObject({ grantRevokedAt: expect.any(String) });
-  });
-
-  it("revokes a reserved grant when remote start fails and keeps static mode grantless", async () => {
-    const failedStore = new InMemoryAgentStore();
-    const failedDriver = new RecordingRemoteDriver();
-    failedDriver.failStart = true;
-    const failedHarness = createVoiceMockHarness(
-      createPipecatMock(),
-      { type: "none" },
-      {
-        toolkitSlug: "voice-agents",
-        adapter: new VoiceAgentsAdapter({
-          store: failedStore,
-          sessionDriver: failedDriver,
-          voiceSessionGrantIssuer: {
-            issue: async () => ({
-              token: `evg1.${"g".repeat(32)}.${"s".repeat(32)}`,
-              grantId: "vsg_failed_voice_agents_test",
-              expiresAt: "2026-07-21T10:06:00.000Z",
-            }),
-          },
-          resolveTool: (name) => defaultCatalog.getTool(name),
-        }),
-      },
-    );
-    const failedAgent = object(
-      output(
-        await failedHarness.execute("voice-agents.create_voice_agent", {
-          agent: remoteAgentDraft,
-        }),
-      ).agent,
-    );
-    const failed = await failedHarness.execute(
-      "voice-agents.start_agent_call",
-      {
-        agentId: String(failedAgent.id),
-        revision: 1,
-        to: "+15550001111",
-        from: "+15550002222",
-        transportConnectionId: "conn_voice_test",
-      },
-      "async",
-    );
-    expect(failed.terminal.status).toBe("failed");
-    const [failedPointer] = await failedStore.listSessions(
-      "proj_voice_mocks",
-      "user_voice_mocks",
-    );
-    expect(failedPointer).toMatchObject({
-      grantId: "vsg_failed_voice_agents_test",
-      grantRevokedAt: expect.any(String),
-    });
-
-    const staticStore = new InMemoryAgentStore();
-    const staticDriver = new RecordingRemoteDriver();
-    const staticHarness = createVoiceMockHarness(
-      createPipecatMock(),
-      { type: "none" },
-      {
-        toolkitSlug: "voice-agents",
-        adapter: new VoiceAgentsAdapter({
-          store: staticStore,
-          sessionDriver: staticDriver,
-          resolveTool: (name) => defaultCatalog.getTool(name),
-        }),
-      },
-    );
-    const staticAgent = object(
-      output(
-        await staticHarness.execute("voice-agents.create_voice_agent", {
-          agent: remoteAgentDraft,
-        }),
-      ).agent,
-    );
-    output(
-      await staticHarness.execute(
-        "voice-agents.start_agent_call",
-        {
-          agentId: String(staticAgent.id),
-          revision: 1,
-          to: "+15550001111",
-          from: "+15550002222",
-          transportConnectionId: "conn_voice_test",
-        },
-        "async",
-      ),
-    );
-    expect(staticDriver.starts[0]).not.toHaveProperty("executorGrant");
-    const [staticPointer] = await staticStore.listSessions(
-      "proj_voice_mocks",
-      "user_voice_mocks",
-    );
-    expect(staticPointer).not.toHaveProperty("grantId");
-
-    const failedStaticStore = new InMemoryAgentStore();
-    const failedStaticDriver = new RecordingRemoteDriver();
-    failedStaticDriver.failStart = true;
-    const failedStaticHarness = createVoiceMockHarness(
-      createPipecatMock(),
-      { type: "none" },
-      {
-        toolkitSlug: "voice-agents",
-        adapter: new VoiceAgentsAdapter({
-          store: failedStaticStore,
-          sessionDriver: failedStaticDriver,
-          resolveTool: (name) => defaultCatalog.getTool(name),
-        }),
-      },
-    );
-    const failedStaticAgent = object(
-      output(
-        await failedStaticHarness.execute("voice-agents.create_voice_agent", {
-          agent: remoteAgentDraft,
-        }),
-      ).agent,
-    );
-    const failedStatic = await failedStaticHarness.execute(
-      "voice-agents.start_agent_call",
-      {
-        agentId: String(failedStaticAgent.id),
-        revision: 1,
-        to: "+15550001111",
-        from: "+15550002222",
-        transportConnectionId: "conn_voice_test",
-      },
-      "async",
-    );
-    expect(failedStatic.terminal.status).toBe("failed");
-    await expect(
-      failedStaticStore.listSessions("proj_voice_mocks", "user_voice_mocks"),
-    ).resolves.toEqual([
-      expect.objectContaining({
-        projectId: "proj_voice_mocks",
-        userId: "user_voice_mocks",
-      }),
-    ]);
-  });
-
-  it("prepares static pointers before dispatch and retains ambiguous starts", async () => {
-    const store = new InMemoryAgentStore();
-    const driver = new RecordingRemoteDriver();
-    driver.startError = new VoiceSessionDriverTimeoutError("pending", 0, {
-      operation: "start_session",
-      retryable: true,
-    });
-    const calls: string[] = [];
-    const lifecycle: VoiceSessionObservationLifecycle = {
-      prepare: async (pointer) => {
-        calls.push("prepare");
+        sessionId: input.sessionId,
+      }));
+      driver.beforeStart = async (request) => {
         await expect(
           store.getSession(
-            pointer.projectId,
-            pointer.userId,
-            pointer.sessionId,
+            request.scope.projectId,
+            request.scope.userId,
+            request.sessionId,
           ),
-        ).resolves.toMatchObject({ sessionId: pointer.sessionId });
-      },
-      activate: async () => {
-        calls.push("activate");
-      },
-      handleStartFailure: async ({ pointer, error }) => {
-        calls.push("reconcile");
-        expect(error).toMatchObject({
-          kind: "timeout",
-          retryable: true,
-          operation: "start_session",
+        ).resolves.toMatchObject({
+          sessionId: request.sessionId,
+          grantId: "vsg_voice_agents_test",
+          grantExpiresAt: "2026-07-21T10:06:00.000Z",
         });
-        await expect(
-          store.getSession(
-            pointer.projectId,
-            pointer.userId,
-            pointer.sessionId,
-          ),
-        ).resolves.toMatchObject({ sessionId: pointer.sessionId });
-        return undefined;
-      },
-    };
-    driver.beforeStart = async () => {
-      calls.push("start");
-    };
-    const harness = createVoiceMockHarness(
-      createPipecatMock(),
-      { type: "none" },
-      {
-        toolkitSlug: "voice-agents",
-        adapter: new VoiceAgentsAdapter({
-          store,
-          sessionDriver: driver,
-          remoteObservationLifecycle: lifecycle,
-          resolveTool: (name) => defaultCatalog.getTool(name),
-        }),
-      },
-    );
-    const agent = object(
-      output(
-        await harness.execute("voice-agents.create_voice_agent", {
-          agent: remoteAgentDraft,
-        }),
-      ).agent,
-    );
-
-    const result = await harness.execute(
-      "voice-agents.start_agent_call",
-      {
-        agentId: String(agent.id),
-        revision: 1,
-        to: "+15550001111",
-        from: "+15550002222",
-        transportConnectionId: "conn_voice_test",
-      },
-      "async",
-    );
-
-    expect(result.terminal.status).toBe("failed");
-    expect(calls).toEqual(["prepare", "start", "reconcile"]);
-    const pointers = await store.listSessions(
-      "proj_voice_mocks",
-      "user_voice_mocks",
-    );
-    expect(pointers).toHaveLength(1);
-    expect(pointers[0]).not.toHaveProperty("grantId");
-  });
-
-  it("activates an ambiguously committed terminal session exactly once", async () => {
-    const store = new InMemoryAgentStore();
-    const driver = new RecordingRemoteDriver();
-    driver.commitTerminalBeforeStartError = true;
-    driver.startError = new VoiceSessionDriverTimeoutError("pending", 0, {
-      operation: "start_session",
-      retryable: true,
-    });
-    const observation = createObservationLifecycle(store, driver);
-    const harness = createVoiceMockHarness(
-      createPipecatMock(),
-      { type: "none" },
-      {
-        toolkitSlug: "voice-agents",
-        adapter: new VoiceAgentsAdapter({
-          store,
-          sessionDriver: driver,
-          remoteObservationLifecycle: observation.observer,
-          resolveTool: (name) => defaultCatalog.getTool(name),
-        }),
-      },
-    );
-    const agent = object(
-      output(
-        await harness.execute("voice-agents.create_voice_agent", {
-          agent: remoteAgentDraft,
-        }),
-      ).agent,
-    );
-
-    const result = await harness.execute(
-      "voice-agents.start_agent_call",
-      {
-        agentId: String(agent.id),
-        revision: 1,
-        to: "+15550001111",
-        from: "+15550002222",
-        transportConnectionId: "conn_voice_test",
-      },
-      "async",
-    );
-
-    expect(result.terminal.status).toBe("succeeded");
-    const sessionId = String(object(output(result).session).id);
-    await expect(observation.store.get(sessionId)).resolves.toMatchObject({
-      status: "completed",
-      handledSequence: 1,
-      terminalSequence: 1,
-    });
-    await observation.observer.close();
-  });
-
-  it("keeps a fresh prepared observer out of claims until delayed start succeeds", async () => {
-    const store = new InMemoryAgentStore();
-    const driver = new RecordingRemoteDriver();
-    let releaseStart = () => {};
-    const startGate = new Promise<void>((resolve) => {
-      releaseStart = resolve;
-    });
-    let markStartEntered = () => {};
-    const startEntered = new Promise<void>((resolve) => {
-      markStartEntered = resolve;
-    });
-    driver.beforeStart = async () => {
-      markStartEntered();
-      await startGate;
-    };
-    const observation = createObservationLifecycle(store, driver);
-    const harness = createVoiceMockHarness(
-      createPipecatMock(),
-      { type: "none" },
-      {
-        toolkitSlug: "voice-agents",
-        adapter: new VoiceAgentsAdapter({
-          store,
-          sessionDriver: driver,
-          remoteObservationLifecycle: observation.observer,
-          resolveTool: (name) => defaultCatalog.getTool(name),
-        }),
-      },
-    );
-    const agent = object(
-      output(
-        await harness.execute("voice-agents.create_voice_agent", {
-          agent: remoteAgentDraft,
-        }),
-      ).agent,
-    );
-
-    const pending = harness.execute(
-      "voice-agents.start_agent_call",
-      {
-        agentId: String(agent.id),
-        revision: 1,
-        to: "+15550001111",
-        from: "+15550002222",
-        transportConnectionId: "conn_voice_test",
-      },
-      "async",
-    );
-    await startEntered;
-
-    await expect(observation.observer.runOnce()).resolves.toBe(0);
-    expect(driver.getSessionCalls).toEqual([]);
-    const [prepared] = await store.listSessions(
-      "proj_voice_mocks",
-      "user_voice_mocks",
-    );
-    if (prepared === undefined) throw new Error("Expected a prepared pointer.");
-    await expect(
-      observation.store.get(prepared.sessionId),
-    ).resolves.toMatchObject({
-      status: "prepared",
-      consecutiveFailures: 0,
-      nextAttemptAt: expect.any(String),
-    });
-
-    releaseStart();
-    const result = await pending;
-    expect(result.terminal.status).toBe("succeeded");
-    const sessionId = String(object(output(result).session).id);
-    await expect(observation.store.get(sessionId)).resolves.toMatchObject({
-      status: "observing",
-      consecutiveFailures: 0,
-    });
-    await expect(
-      store.getSession("proj_voice_mocks", "user_voice_mocks", sessionId),
-    ).resolves.not.toHaveProperty("grantRevokedAt");
-    await observation.observer.close();
-  });
-
-  it("runs the full immutable-agent and Pipecat session lifecycle", async () => {
-    const provider = createPipecatMock();
-    const harness = createVoiceMockHarness(
-      provider,
-      { type: "none" },
-      {
-        toolkitSlug: "voice-agents",
-        adapter: new VoiceAgentsAdapter(),
-      },
-    );
-
-    const created = object(
-      output(
-        await harness.execute("voice-agents.create_voice_agent", {
-          agent: agentDraft,
-        }),
-      ).agent,
-    );
-    expect(created).toMatchObject({
-      id: expect.stringMatching(/^va_/u),
-      revision: 1,
-      name: "Reservation host",
-      systemPrompt: agentDraft.systemPrompt,
-    });
-    const agentId = String(created.id);
-
-    expect(
-      object(
+      };
+      const harness = createVoiceMockHarness(
+        createPipecatMock(),
+        { type: "none" },
+        {
+          toolkitSlug: "voice-agents",
+          adapter: new VoiceAgentsAdapter({
+            store,
+            sessionDriver: driver,
+            voiceSessionGrantIssuer: { issue },
+            resolveTool: (name) => defaultCatalog.getTool(name),
+          }),
+        },
+      );
+      const agent = object(
         output(
-          await harness.execute("voice-agents.get_voice_agent", {
-            agentId,
-            revision: 1,
+          await harness.execute("voice-agents.create_voice_agent", {
+            agent: remoteAgentDraft,
           }),
         ).agent,
-      ),
-    ).toEqual(created);
-
-    const updatedDraft = {
-      ...agentDraft,
-      systemPrompt:
-        "Help callers reserve a table, check availability, and confirm every detail.",
-    };
-    const updated = object(
+      );
+      const started = output(
+        await harness.execute(
+          "voice-agents.start_agent_call",
+          {
+            agentId: String(agent.id),
+            revision: 1,
+            to: "+15550001111",
+            from: "+15550002222",
+            transportConnectionId: "conn_voice_test",
+          },
+          "async",
+        ),
+      );
+      const sessionId = String(object(started.session).id);
+      expect(sessionId).toMatch(/^session_[0-9a-f]{32}$/u);
+      expect(driver.starts[0]).toMatchObject({
+        sessionId,
+        executorGrant: {
+          token: "evg1.test-session-grant.signature",
+          expiresAt: "2026-07-21T10:06:00.000Z",
+        },
+      });
+      expect(issue).toHaveBeenCalledWith({
+        projectId: "proj_voice_mocks",
+        userId: "user_voice_mocks",
+        sessionId,
+        maxDurationSeconds: 300,
+        allowedTools: ["hubspot.search_contacts"],
+      });
+      driver.beforeStop = async () => {
+        await expect(
+          store.getSession("proj_voice_mocks", "user_voice_mocks", sessionId),
+        ).resolves.toMatchObject({
+          grantRevokedAt: expect.any(String),
+        });
+      };
       output(
-        await harness.execute("voice-agents.update_voice_agent", {
-          agentId,
-          expectedRevision: 1,
-          agent: updatedDraft,
-        }),
-      ).agent,
-    );
-    expect(updated).toMatchObject({
-      id: agentId,
-      revision: 2,
-      systemPrompt: updatedDraft.systemPrompt,
+        await harness.execute("voice-agents.stop_agent_session", { sessionId }),
+      );
+      expect(driver.stops).toEqual([sessionId]);
     });
 
-    const summaries = objects(
-      output(await harness.execute("voice-agents.list_voice_agents", {}))
-        .agents,
-    );
-    expect(summaries).toEqual([
-      expect.objectContaining({
-        id: agentId,
-        activeRevision: 2,
-        name: "Reservation host",
-        transport: "pstn:twilio",
-      }),
-    ]);
-    expect(summaries[0]).not.toHaveProperty("systemPrompt");
-    expect(summaries[0]).not.toHaveProperty("llm");
-    expect(summaries[0]).not.toHaveProperty("voice");
+    it("revokes the durable grant before a failing worker session read", async () => {
+      const store = new InMemoryAgentStore();
+      const driver = new RecordingRemoteDriver();
+      const authority = createVoiceSessionGrantAuthority({
+        secret: "g".repeat(32),
+        store,
+        clock: { now: () => new Date("2026-07-21T10:00:00.000Z") },
+      });
+      const harness = createVoiceMockHarness(
+        createPipecatMock(),
+        { type: "none" },
+        {
+          toolkitSlug: "voice-agents",
+          adapter: new VoiceAgentsAdapter({
+            store,
+            sessionDriver: driver,
+            voiceSessionGrantIssuer: authority.issuer,
+            resolveTool: (name) => defaultCatalog.getTool(name),
+          }),
+        },
+      );
+      const agent = object(
+        output(
+          await harness.execute("voice-agents.create_voice_agent", {
+            agent: remoteAgentDraft,
+          }),
+        ).agent,
+      );
+      const started = output(
+        await harness.execute(
+          "voice-agents.start_agent_call",
+          {
+            agentId: String(agent.id),
+            revision: 1,
+            to: "+15550001111",
+            from: "+15550002222",
+            transportConnectionId: "conn_voice_test",
+          },
+          "async",
+        ),
+      );
+      const sessionId = String(object(started.session).id);
+      const token = driver.starts[0]?.executorGrant?.token;
+      if (token === undefined) throw new Error("Expected a session grant.");
+      expect((await authority.verifier.verify(token)).status).toBe("valid");
 
-    expect(
+      driver.failGet = true;
+      const stopped = await harness.execute("voice-agents.stop_agent_session", {
+        sessionId,
+      });
+      expect(stopped.terminal.status).toBe("failed");
+      await expect(authority.verifier.verify(token)).resolves.toEqual({
+        status: "expired",
+      });
+      await expect(
+        store.getSession("proj_voice_mocks", "user_voice_mocks", sessionId),
+      ).resolves.toMatchObject({ grantRevokedAt: expect.any(String) });
+    });
+
+    it("revokes a reserved grant when remote start fails and keeps static mode grantless", async () => {
+      const failedStore = new InMemoryAgentStore();
+      const failedDriver = new RecordingRemoteDriver();
+      failedDriver.failStart = true;
+      const failedHarness = createVoiceMockHarness(
+        createPipecatMock(),
+        { type: "none" },
+        {
+          toolkitSlug: "voice-agents",
+          adapter: new VoiceAgentsAdapter({
+            store: failedStore,
+            sessionDriver: failedDriver,
+            voiceSessionGrantIssuer: {
+              issue: async () => ({
+                token: `evg1.${"g".repeat(32)}.${"s".repeat(32)}`,
+                grantId: "vsg_failed_voice_agents_test",
+                expiresAt: "2026-07-21T10:06:00.000Z",
+              }),
+            },
+            resolveTool: (name) => defaultCatalog.getTool(name),
+          }),
+        },
+      );
+      const failedAgent = object(
+        output(
+          await failedHarness.execute("voice-agents.create_voice_agent", {
+            agent: remoteAgentDraft,
+          }),
+        ).agent,
+      );
+      const failed = await failedHarness.execute(
+        "voice-agents.start_agent_call",
+        {
+          agentId: String(failedAgent.id),
+          revision: 1,
+          to: "+15550001111",
+          from: "+15550002222",
+          transportConnectionId: "conn_voice_test",
+        },
+        "async",
+      );
+      expect(failed.terminal.status).toBe("failed");
+      const [failedPointer] = await failedStore.listSessions(
+        "proj_voice_mocks",
+        "user_voice_mocks",
+      );
+      expect(failedPointer).toMatchObject({
+        grantId: "vsg_failed_voice_agents_test",
+        grantRevokedAt: expect.any(String),
+      });
+
+      const staticStore = new InMemoryAgentStore();
+      const staticDriver = new RecordingRemoteDriver();
+      const staticHarness = createVoiceMockHarness(
+        createPipecatMock(),
+        { type: "none" },
+        {
+          toolkitSlug: "voice-agents",
+          adapter: new VoiceAgentsAdapter({
+            store: staticStore,
+            sessionDriver: staticDriver,
+            resolveTool: (name) => defaultCatalog.getTool(name),
+          }),
+        },
+      );
+      const staticAgent = object(
+        output(
+          await staticHarness.execute("voice-agents.create_voice_agent", {
+            agent: remoteAgentDraft,
+          }),
+        ).agent,
+      );
       output(
-        await harness.execute("voice-agents.attach_agent_to_number", {
+        await staticHarness.execute(
+          "voice-agents.start_agent_call",
+          {
+            agentId: String(staticAgent.id),
+            revision: 1,
+            to: "+15550001111",
+            from: "+15550002222",
+            transportConnectionId: "conn_voice_test",
+          },
+          "async",
+        ),
+      );
+      expect(staticDriver.starts[0]).not.toHaveProperty("executorGrant");
+      const [staticPointer] = await staticStore.listSessions(
+        "proj_voice_mocks",
+        "user_voice_mocks",
+      );
+      expect(staticPointer).not.toHaveProperty("grantId");
+
+      const failedStaticStore = new InMemoryAgentStore();
+      const failedStaticDriver = new RecordingRemoteDriver();
+      failedStaticDriver.failStart = true;
+      const failedStaticHarness = createVoiceMockHarness(
+        createPipecatMock(),
+        { type: "none" },
+        {
+          toolkitSlug: "voice-agents",
+          adapter: new VoiceAgentsAdapter({
+            store: failedStaticStore,
+            sessionDriver: failedStaticDriver,
+            resolveTool: (name) => defaultCatalog.getTool(name),
+          }),
+        },
+      );
+      const failedStaticAgent = object(
+        output(
+          await failedStaticHarness.execute("voice-agents.create_voice_agent", {
+            agent: remoteAgentDraft,
+          }),
+        ).agent,
+      );
+      const failedStatic = await failedStaticHarness.execute(
+        "voice-agents.start_agent_call",
+        {
+          agentId: String(failedStaticAgent.id),
+          revision: 1,
+          to: "+15550001111",
+          from: "+15550002222",
+          transportConnectionId: "conn_voice_test",
+        },
+        "async",
+      );
+      expect(failedStatic.terminal.status).toBe("failed");
+      await expect(
+        failedStaticStore.listSessions("proj_voice_mocks", "user_voice_mocks"),
+      ).resolves.toEqual([
+        expect.objectContaining({
+          projectId: "proj_voice_mocks",
+          userId: "user_voice_mocks",
+        }),
+      ]);
+    });
+
+    it("prepares static pointers before dispatch and retains ambiguous starts", async () => {
+      const store = new InMemoryAgentStore();
+      const driver = new RecordingRemoteDriver();
+      driver.startError = new VoiceSessionDriverTimeoutError("pending", 0, {
+        operation: "start_session",
+        retryable: true,
+      });
+      const calls: string[] = [];
+      const lifecycle: VoiceSessionObservationLifecycle = {
+        prepare: async (pointer) => {
+          calls.push("prepare");
+          await expect(
+            store.getSession(
+              pointer.projectId,
+              pointer.userId,
+              pointer.sessionId,
+            ),
+          ).resolves.toMatchObject({ sessionId: pointer.sessionId });
+        },
+        activate: async () => {
+          calls.push("activate");
+        },
+        handleStartFailure: async ({ pointer, error }) => {
+          calls.push("reconcile");
+          expect(error).toMatchObject({
+            kind: "timeout",
+            retryable: true,
+            operation: "start_session",
+          });
+          await expect(
+            store.getSession(
+              pointer.projectId,
+              pointer.userId,
+              pointer.sessionId,
+            ),
+          ).resolves.toMatchObject({ sessionId: pointer.sessionId });
+          return undefined;
+        },
+      };
+      driver.beforeStart = async () => {
+        calls.push("start");
+      };
+      const harness = createVoiceMockHarness(
+        createPipecatMock(),
+        { type: "none" },
+        {
+          toolkitSlug: "voice-agents",
+          adapter: new VoiceAgentsAdapter({
+            store,
+            sessionDriver: driver,
+            remoteObservationLifecycle: lifecycle,
+            resolveTool: (name) => defaultCatalog.getTool(name),
+          }),
+        },
+      );
+      const agent = object(
+        output(
+          await harness.execute("voice-agents.create_voice_agent", {
+            agent: remoteAgentDraft,
+          }),
+        ).agent,
+      );
+
+      const result = await harness.execute(
+        "voice-agents.start_agent_call",
+        {
+          agentId: String(agent.id),
+          revision: 1,
+          to: "+15550001111",
+          from: "+15550002222",
+          transportConnectionId: "conn_voice_test",
+        },
+        "async",
+      );
+
+      expect(result.terminal.status).toBe("failed");
+      expect(calls).toEqual(["prepare", "start", "reconcile"]);
+      const pointers = await store.listSessions(
+        "proj_voice_mocks",
+        "user_voice_mocks",
+      );
+      expect(pointers).toHaveLength(1);
+      expect(pointers[0]).not.toHaveProperty("grantId");
+    });
+
+    it("activates an ambiguously committed terminal session exactly once", async () => {
+      const store = new InMemoryAgentStore();
+      const driver = new RecordingRemoteDriver();
+      driver.commitTerminalBeforeStartError = true;
+      driver.startError = new VoiceSessionDriverTimeoutError("pending", 0, {
+        operation: "start_session",
+        retryable: true,
+      });
+      const observation = createObservationLifecycle(store, driver);
+      const harness = createVoiceMockHarness(
+        createPipecatMock(),
+        { type: "none" },
+        {
+          toolkitSlug: "voice-agents",
+          adapter: new VoiceAgentsAdapter({
+            store,
+            sessionDriver: driver,
+            remoteObservationLifecycle: observation.observer,
+            resolveTool: (name) => defaultCatalog.getTool(name),
+          }),
+        },
+      );
+      const agent = object(
+        output(
+          await harness.execute("voice-agents.create_voice_agent", {
+            agent: remoteAgentDraft,
+          }),
+        ).agent,
+      );
+
+      const result = await harness.execute(
+        "voice-agents.start_agent_call",
+        {
+          agentId: String(agent.id),
+          revision: 1,
+          to: "+15550001111",
+          from: "+15550002222",
+          transportConnectionId: "conn_voice_test",
+        },
+        "async",
+      );
+
+      expect(result.terminal.status).toBe("succeeded");
+      const sessionId = String(object(output(result).session).id);
+      await expect(observation.store.get(sessionId)).resolves.toMatchObject({
+        status: "completed",
+        handledSequence: 1,
+        terminalSequence: 1,
+      });
+      await observation.observer.close();
+    });
+
+    it("keeps a fresh prepared observer out of claims until delayed start succeeds", async () => {
+      const store = new InMemoryAgentStore();
+      const driver = new RecordingRemoteDriver();
+      let releaseStart = () => {};
+      const startGate = new Promise<void>((resolve) => {
+        releaseStart = resolve;
+      });
+      let markStartEntered = () => {};
+      const startEntered = new Promise<void>((resolve) => {
+        markStartEntered = resolve;
+      });
+      driver.beforeStart = async () => {
+        markStartEntered();
+        await startGate;
+      };
+      const observation = createObservationLifecycle(store, driver);
+      const harness = createVoiceMockHarness(
+        createPipecatMock(),
+        { type: "none" },
+        {
+          toolkitSlug: "voice-agents",
+          adapter: new VoiceAgentsAdapter({
+            store,
+            sessionDriver: driver,
+            remoteObservationLifecycle: observation.observer,
+            resolveTool: (name) => defaultCatalog.getTool(name),
+          }),
+        },
+      );
+      const agent = object(
+        output(
+          await harness.execute("voice-agents.create_voice_agent", {
+            agent: remoteAgentDraft,
+          }),
+        ).agent,
+      );
+
+      const pending = harness.execute(
+        "voice-agents.start_agent_call",
+        {
+          agentId: String(agent.id),
+          revision: 1,
+          to: "+15550001111",
+          from: "+15550002222",
+          transportConnectionId: "conn_voice_test",
+        },
+        "async",
+      );
+      await startEntered;
+
+      await expect(observation.observer.runOnce()).resolves.toBe(0);
+      expect(driver.getSessionCalls).toEqual([]);
+      const [prepared] = await store.listSessions(
+        "proj_voice_mocks",
+        "user_voice_mocks",
+      );
+      if (prepared === undefined)
+        throw new Error("Expected a prepared pointer.");
+      await expect(
+        observation.store.get(prepared.sessionId),
+      ).resolves.toMatchObject({
+        status: "prepared",
+        consecutiveFailures: 0,
+        nextAttemptAt: expect.any(String),
+      });
+
+      releaseStart();
+      const result = await pending;
+      expect(result.terminal.status).toBe("succeeded");
+      const sessionId = String(object(output(result).session).id);
+      await expect(observation.store.get(sessionId)).resolves.toMatchObject({
+        status: "observing",
+        consecutiveFailures: 0,
+      });
+      await expect(
+        store.getSession("proj_voice_mocks", "user_voice_mocks", sessionId),
+      ).resolves.not.toHaveProperty("grantRevokedAt");
+      await observation.observer.close();
+    });
+
+    it("runs the full immutable-agent and Pipecat session lifecycle", async () => {
+      const provider = createPipecatMock();
+      const harness = createVoiceMockHarness(
+        provider,
+        { type: "none" },
+        {
+          toolkitSlug: "voice-agents",
+          adapter: new VoiceAgentsAdapter(),
+        },
+      );
+
+      const created = object(
+        output(
+          await harness.execute("voice-agents.create_voice_agent", {
+            agent: agentDraft,
+          }),
+        ).agent,
+      );
+      expect(created).toMatchObject({
+        id: expect.stringMatching(/^va_/u),
+        revision: 1,
+        name: "Reservation host",
+        systemPrompt: agentDraft.systemPrompt,
+      });
+      const agentId = String(created.id);
+
+      expect(
+        object(
+          output(
+            await harness.execute("voice-agents.get_voice_agent", {
+              agentId,
+              revision: 1,
+            }),
+          ).agent,
+        ),
+      ).toEqual(created);
+
+      const updatedDraft = {
+        ...agentDraft,
+        systemPrompt:
+          "Help callers reserve a table, check availability, and confirm every detail.",
+      };
+      const updated = object(
+        output(
+          await harness.execute("voice-agents.update_voice_agent", {
+            agentId,
+            expectedRevision: 1,
+            agent: updatedDraft,
+          }),
+        ).agent,
+      );
+      expect(updated).toMatchObject({
+        id: agentId,
+        revision: 2,
+        systemPrompt: updatedDraft.systemPrompt,
+      });
+
+      const summaries = objects(
+        output(await harness.execute("voice-agents.list_voice_agents", {}))
+          .agents,
+      );
+      expect(summaries).toEqual([
+        expect.objectContaining({
+          id: agentId,
+          activeRevision: 2,
+          name: "Reservation host",
+          transport: "pstn:twilio",
+        }),
+      ]);
+      expect(summaries[0]).not.toHaveProperty("systemPrompt");
+      expect(summaries[0]).not.toHaveProperty("llm");
+      expect(summaries[0]).not.toHaveProperty("voice");
+
+      expect(
+        output(
+          await harness.execute("voice-agents.attach_agent_to_number", {
+            agentId,
+            revision: 2,
+            phoneNumber: "+15550002222",
+            transportConnectionId: "conn_twilio_fixture",
+          }),
+        ),
+      ).toMatchObject({
+        bindingId: expect.stringMatching(/^binding_/u),
+        agentId,
+        revision: 2,
+        phoneNumber: "+15550002222",
+      });
+
+      const started = await harness.execute(
+        "voice-agents.start_agent_call",
+        {
           agentId,
           revision: 2,
-          phoneNumber: "+15550002222",
-          transportConnectionId: "conn_twilio_fixture",
-        }),
-      ),
-    ).toMatchObject({
-      bindingId: expect.stringMatching(/^binding_/u),
-      agentId,
-      revision: 2,
-      phoneNumber: "+15550002222",
-    });
-
-    const started = await harness.execute(
-      "voice-agents.start_agent_call",
-      {
+          to: "+15550001111",
+          script: [
+            { caller: "I need a table for two tonight." },
+            {
+              expect_tool_call: "crm.search_contacts",
+              input: { phoneNumber: "+15550001111" },
+              result: { contactId: "contact_fixture" },
+            },
+          ],
+        },
+        "async",
+      );
+      expect(started.initialStatus).toBe(202);
+      expect(started.initial.status).toBe("pending");
+      const allocated = output(started);
+      const createdSession = object(allocated.session);
+      expect(createdSession).toMatchObject({
         agentId,
-        revision: 2,
-        to: "+15550001111",
-        script: [
-          { caller: "I need a table for two tonight." },
-          {
-            expect_tool_call: "crm.search_contacts",
-            input: { phoneNumber: "+15550001111" },
-            result: { contactId: "contact_fixture" },
-          },
-        ],
-      },
-      "async",
-    );
-    expect(started.initialStatus).toBe(202);
-    expect(started.initial.status).toBe("pending");
-    const allocated = output(started);
-    const createdSession = object(allocated.session);
-    expect(createdSession).toMatchObject({
-      agentId,
-      agentRevision: 2,
-      projectId: "proj_voice_mocks",
-      userId: "user_voice_mocks",
-      transport: "pstn:twilio",
-      state: "created",
-    });
-    expect(allocated.callId).toBe(`call_${String(createdSession.id)}`);
-    const sessionId = String(createdSession.id);
+        agentRevision: 2,
+        projectId: "proj_voice_mocks",
+        userId: "user_voice_mocks",
+        transport: "pstn:twilio",
+        state: "created",
+      });
+      expect(allocated.callId).toBe(`call_${String(createdSession.id)}`);
+      const sessionId = String(createdSession.id);
 
-    provider.advanceClock(2_000);
-    const activePage = output(
-      await harness.execute("voice-agents.get_agent_session", {
-        sessionId,
-      }),
-    );
-    expect(object(activePage.session)).toMatchObject({
-      state: "in-progress",
-      agentRevision: 2,
-    });
-    expect(
-      objects(activePage.events).map((event) => object(event.data).type),
-    ).toEqual([
-      "session.lifecycle",
-      "session.lifecycle",
-      "session.lifecycle",
-      "turn.transcript",
-    ]);
-    expect(
-      objects(activePage.events)
-        .map((event) => object(event.data))
-        .find((data) => data.type === "turn.transcript"),
-    ).toMatchObject({
-      speaker: "human",
-      text: "I need a table for two tonight.",
-    });
-
-    const messaged = await harness.execute(
-      "voice-agents.send_session_message",
-      {
-        agentId,
-        revision: 2,
-        sessionId,
-        message: "I’ll check your existing contact before searching tables.",
-        clientMessageId: "client_message_001",
-      },
-      "async",
-    );
-    expect(messaged.initialStatus).toBe(202);
-    expect(output(messaged)).toMatchObject({
-      userMessageId: expect.stringMatching(/^turn_/u),
-      assistantMessage:
-        "I’ll check your existing contact before searching tables.",
-      session: expect.objectContaining({ state: "in-progress" }),
-    });
-
-    const toolPage = output(
-      await harness.execute("voice-agents.get_agent_session", {
-        sessionId,
-        afterSequence: Number(activePage.nextSequence),
-      }),
-    );
-    expect(
-      objects(toolPage.events).map((event) => object(event.data).type),
-    ).toEqual(["turn.transcript", "tool_call"]);
-    expect(object(objects(toolPage.events)[1]?.data)).toMatchObject({
-      type: "tool_call",
-      tool: "crm.search_contacts",
-      input: { phoneNumber: "+15550001111" },
-      executionId: expect.stringMatching(/^exe_/u),
-    });
-
-    const partialArtifact = object(
-      output(
-        await harness.execute("voice-agents.get_session_transcript", {
+      provider.advanceClock(2_000);
+      const activePage = output(
+        await harness.execute("voice-agents.get_agent_session", {
           sessionId,
-          includePartial: true,
         }),
-      ).artifact,
-    );
-    expect(partialArtifact).toMatchObject({ final: false, language: "en" });
-    const partialTurns = objects(partialArtifact.turns);
-    expect(partialTurns.map(({ speaker }) => speaker)).toEqual([
-      "human",
-      "agent",
-      "tool",
-    ]);
-    expect(partialTurns[2]).toMatchObject({
-      speaker: "tool",
-      tool: "crm.search_contacts",
-      executionId: expect.stringMatching(/^exe_/u),
-      text: expect.stringContaining('"type":"tool_call"'),
-    });
+      );
+      expect(object(activePage.session)).toMatchObject({
+        state: "in-progress",
+        agentRevision: 2,
+      });
+      expect(
+        objects(activePage.events).map((event) => object(event.data).type),
+      ).toEqual([
+        "session.lifecycle",
+        "session.lifecycle",
+        "session.lifecycle",
+        "turn.transcript",
+      ]);
+      expect(
+        objects(activePage.events)
+          .map((event) => object(event.data))
+          .find((data) => data.type === "turn.transcript"),
+      ).toMatchObject({
+        speaker: "human",
+        text: "I need a table for two tonight.",
+      });
 
-    const listedSessions = objects(
-      output(
-        await harness.execute("voice-agents.list_agent_sessions", {
+      const messaged = await harness.execute(
+        "voice-agents.send_session_message",
+        {
           agentId,
-        }),
-      ).sessions,
-    );
-    expect(listedSessions).toEqual([
-      expect.objectContaining({ id: sessionId, agentRevision: 2 }),
-    ]);
-
-    const stopping = output(
-      await harness.execute("voice-agents.stop_agent_session", {
-        sessionId,
-        reason: "Reservation flow complete.",
-      }),
-    );
-    expect(object(stopping.session)).toMatchObject({ state: "in-progress" });
-    provider.advanceClock(2_000);
-
-    const completed = output(
-      await harness.execute("voice-agents.get_agent_session", { sessionId }),
-    );
-    expect(object(completed.session)).toMatchObject({
-      state: "completed",
-      completedAt: expect.any(String),
-    });
-    const finalArtifact = object(
-      output(
-        await harness.execute("voice-agents.get_session_transcript", {
+          revision: 2,
           sessionId,
-        }),
-      ).artifact,
-    );
-    expect(finalArtifact).toMatchObject({
-      id: `transcript_${sessionId}`,
-      final: true,
-      endedAt: expect.any(String),
-    });
-    expect(objects(finalArtifact.turns)).toEqual(partialTurns);
+          message: "I’ll check your existing contact before searching tables.",
+          clientMessageId: "client_message_001",
+        },
+        "async",
+      );
+      expect(messaged.initialStatus).toBe(202);
+      expect(output(messaged)).toMatchObject({
+        userMessageId: expect.stringMatching(/^turn_/u),
+        assistantMessage:
+          "I’ll check your existing contact before searching tables.",
+        session: expect.objectContaining({ state: "in-progress" }),
+      });
 
-    const deleted = output(
-      await harness.execute("voice-agents.delete_voice_agent", {
-        agentId,
-        expectedRevision: 2,
-      }),
-    );
-    expect(deleted).toMatchObject({ agentId, deletedAt: expect.any(String) });
-    expect(
-      output(
+      const toolPage = output(
+        await harness.execute("voice-agents.get_agent_session", {
+          sessionId,
+          afterSequence: Number(activePage.nextSequence),
+        }),
+      );
+      expect(
+        objects(toolPage.events).map((event) => object(event.data).type),
+      ).toEqual(["turn.transcript", "tool_call"]);
+      expect(object(objects(toolPage.events)[1]?.data)).toMatchObject({
+        type: "tool_call",
+        tool: "crm.search_contacts",
+        input: { phoneNumber: "+15550001111" },
+        executionId: expect.stringMatching(/^exe_/u),
+      });
+
+      const partialArtifact = object(
+        output(
+          await harness.execute("voice-agents.get_session_transcript", {
+            sessionId,
+            includePartial: true,
+          }),
+        ).artifact,
+      );
+      expect(partialArtifact).toMatchObject({ final: false, language: "en" });
+      const partialTurns = objects(partialArtifact.turns);
+      expect(partialTurns.map(({ speaker }) => speaker)).toEqual([
+        "human",
+        "agent",
+        "tool",
+      ]);
+      expect(partialTurns[2]).toMatchObject({
+        speaker: "tool",
+        tool: "crm.search_contacts",
+        executionId: expect.stringMatching(/^exe_/u),
+        text: expect.stringContaining('"type":"tool_call"'),
+      });
+
+      const listedSessions = objects(
+        output(
+          await harness.execute("voice-agents.list_agent_sessions", {
+            agentId,
+          }),
+        ).sessions,
+      );
+      expect(listedSessions).toEqual([
+        expect.objectContaining({ id: sessionId, agentRevision: 2 }),
+      ]);
+
+      const stopping = output(
+        await harness.execute("voice-agents.stop_agent_session", {
+          sessionId,
+          reason: "Reservation flow complete.",
+        }),
+      );
+      expect(object(stopping.session)).toMatchObject({ state: "in-progress" });
+      provider.advanceClock(2_000);
+
+      const completed = output(
+        await harness.execute("voice-agents.get_agent_session", { sessionId }),
+      );
+      expect(object(completed.session)).toMatchObject({
+        state: "completed",
+        completedAt: expect.any(String),
+      });
+      const finalArtifact = object(
+        output(
+          await harness.execute("voice-agents.get_session_transcript", {
+            sessionId,
+          }),
+        ).artifact,
+      );
+      expect(finalArtifact).toMatchObject({
+        id: `transcript_${sessionId}`,
+        final: true,
+        endedAt: expect.any(String),
+      });
+      expect(objects(finalArtifact.turns)).toEqual(partialTurns);
+
+      const deleted = output(
         await harness.execute("voice-agents.delete_voice_agent", {
           agentId,
           expectedRevision: 2,
         }),
-      ),
-    ).toEqual(deleted);
-    expect(
-      object(
+      );
+      expect(deleted).toMatchObject({ agentId, deletedAt: expect.any(String) });
+      expect(
         output(
-          await harness.execute("voice-agents.get_voice_agent", {
+          await harness.execute("voice-agents.delete_voice_agent", {
             agentId,
-            revision: 1,
+            expectedRevision: 2,
+          }),
+        ),
+      ).toEqual(deleted);
+      expect(
+        object(
+          output(
+            await harness.execute("voice-agents.get_voice_agent", {
+              agentId,
+              revision: 1,
+            }),
+          ).agent,
+        ),
+      ).toEqual(created);
+      expect(
+        output(await harness.execute("voice-agents.list_voice_agents", {}))
+          .agents,
+      ).toEqual([]);
+      expect(
+        objects(
+          output(
+            await harness.execute("voice-agents.list_voice_agents", {
+              includeDeleted: true,
+            }),
+          ).agents,
+        )[0],
+      ).toMatchObject({ id: agentId, deletedAt: deleted.deletedAt });
+    });
+
+    it("creates a LiveKit web session with an end-user-only join grant", async () => {
+      const pipecat = createPipecatMock();
+      const liveKit = createLiveKitMock();
+      const liveKitHarness = createVoiceMockHarness(liveKit, {
+        type: "api_key",
+        values: {
+          apiKey: "fixture:valid",
+          apiSecret: "fixture:provider-secret",
+        },
+      });
+      const harness = createVoiceMockHarness(
+        pipecat,
+        { type: "none" },
+        {
+          toolkitSlug: "voice-agents",
+          adapter: new VoiceAgentsAdapter({
+            executeProviderTool: async (request) =>
+              output(
+                await liveKitHarness.execute(request.tool, request.input),
+              ) as JsonValue,
+          }),
+        },
+      );
+      const created = object(
+        output(
+          await harness.execute("voice-agents.create_voice_agent", {
+            agent: {
+              ...agentDraft,
+              name: "Browser reservation host",
+              transport: "webrtc:livekit",
+            },
           }),
         ).agent,
-      ),
-    ).toEqual(created);
-    expect(
-      output(await harness.execute("voice-agents.list_voice_agents", {}))
-        .agents,
-    ).toEqual([]);
-    expect(
-      objects(
-        output(
-          await harness.execute("voice-agents.list_voice_agents", {
-            includeDeleted: true,
-          }),
-        ).agents,
-      )[0],
-    ).toMatchObject({ id: agentId, deletedAt: deleted.deletedAt });
-  });
+      );
+      const agentId = String(created.id);
 
-  it("creates a LiveKit web session with an end-user-only join grant", async () => {
-    const pipecat = createPipecatMock();
-    const liveKit = createLiveKitMock();
-    const liveKitHarness = createVoiceMockHarness(liveKit, {
-      type: "api_key",
-      values: {
-        apiKey: "fixture:valid",
-        apiSecret: "fixture:provider-secret",
-      },
-    });
-    const harness = createVoiceMockHarness(
-      pipecat,
-      { type: "none" },
-      {
-        toolkitSlug: "voice-agents",
-        adapter: new VoiceAgentsAdapter({
-          executeProviderTool: async (request) =>
-            output(
-              await liveKitHarness.execute(request.tool, request.input),
-            ) as JsonValue,
-        }),
-      },
-    );
-    const created = object(
-      output(
-        await harness.execute("voice-agents.create_voice_agent", {
-          agent: {
-            ...agentDraft,
-            name: "Browser reservation host",
-            transport: "webrtc:livekit",
-          },
-        }),
-      ).agent,
-    );
-    const agentId = String(created.id);
-
-    const started = await harness.execute(
-      "voice-agents.create_web_session",
-      {
+      const started = await harness.execute(
+        "voice-agents.create_web_session",
+        {
+          agentId,
+          revision: 1,
+          transportConnectionId: "conn_livekit_fixture",
+          participantIdentity: "web-user-001",
+          participantName: "Web User",
+          metadata: { channel: "browser" },
+          script: [{ caller: "I need a browser reservation." }],
+        },
+        "async",
+      );
+      expect(started.initialStatus).toBe(202);
+      const allocated = output(started);
+      const session = object(allocated.session);
+      expect(session).toMatchObject({
         agentId,
-        revision: 1,
-        transportConnectionId: "conn_livekit_fixture",
-        participantIdentity: "web-user-001",
-        participantName: "Web User",
-        metadata: { channel: "browser" },
-        script: [{ caller: "I need a browser reservation." }],
-      },
-      "async",
-    );
-    expect(started.initialStatus).toBe(202);
-    const allocated = output(started);
-    const session = object(allocated.session);
-    expect(session).toMatchObject({
-      agentId,
-      agentRevision: 1,
-      transport: "webrtc:livekit",
-      state: "created",
-    });
-    const joinGrant = object(allocated.joinGrant);
-    expect(joinGrant).toEqual({
-      roomUrl: expect.stringMatching(/^http:\/\/mocks\.local\/livekit\/?$/u),
-      participantToken: expect.stringMatching(/^[^.]+\.[^.]+\.[^.]+$/u),
-      expiresAt: expect.any(String),
-    });
-    expect(JSON.stringify(joinGrant)).not.toContain("fixture:provider-secret");
+        agentRevision: 1,
+        transport: "webrtc:livekit",
+        state: "created",
+      });
+      const joinGrant = object(allocated.joinGrant);
+      expect(joinGrant).toEqual({
+        roomUrl: expect.stringMatching(/^http:\/\/mocks\.local\/livekit\/?$/u),
+        participantToken: expect.stringMatching(/^[^.]+\.[^.]+\.[^.]+$/u),
+        expiresAt: expect.any(String),
+      });
+      expect(JSON.stringify(joinGrant)).not.toContain(
+        "fixture:provider-secret",
+      );
 
-    const tokenParts = String(joinGrant.participantToken).split(".");
-    const tokenPayload = object(
-      JSON.parse(
-        Buffer.from(String(tokenParts[1]), "base64url").toString("utf8"),
-      ) as unknown,
-    );
-    expect(tokenPayload).toMatchObject({
-      sub: "web-user-001",
-      video: expect.objectContaining({ roomJoin: true }),
-    });
-    expect(JSON.stringify(tokenPayload)).not.toContain("provider-secret");
-    expect(Date.parse(String(joinGrant.expiresAt))).toBe(
-      Number(tokenPayload.iat) * 1_000 + 3_600_000,
-    );
+      const tokenParts = String(joinGrant.participantToken).split(".");
+      const tokenPayload = object(
+        JSON.parse(
+          Buffer.from(String(tokenParts[1]), "base64url").toString("utf8"),
+        ) as unknown,
+      );
+      expect(tokenPayload).toMatchObject({
+        sub: "web-user-001",
+        video: expect.objectContaining({ roomJoin: true }),
+      });
+      expect(JSON.stringify(tokenPayload)).not.toContain("provider-secret");
+      expect(Date.parse(String(joinGrant.expiresAt))).toBe(
+        Number(tokenPayload.iat) * 1_000 + 3_600_000,
+      );
 
-    pipecat.advanceClock(2_000);
-    const active = output(
-      await harness.execute("voice-agents.get_agent_session", {
-        sessionId: String(session.id),
-      }),
-    );
-    expect(object(active.session)).toMatchObject({ state: "in-progress" });
-    expect(
-      objects(active.events).map((event) => object(event.data).type),
-    ).toContain("turn.transcript");
-
-    const stopping = output(
-      await harness.execute("voice-agents.stop_agent_session", {
-        sessionId: String(session.id),
-        reason: "Web client disconnected.",
-      }),
-    );
-    expect(object(stopping.session)).toMatchObject({ state: "in-progress" });
-    pipecat.advanceClock(2_000);
-    const transcript = object(
-      output(
-        await harness.execute("voice-agents.get_session_transcript", {
+      pipecat.advanceClock(2_000);
+      const active = output(
+        await harness.execute("voice-agents.get_agent_session", {
           sessionId: String(session.id),
         }),
-      ).artifact,
-    );
-    expect(transcript).toMatchObject({
-      final: true,
-      transport: "webrtc:livekit",
-      endedAt: expect.any(String),
-    });
-    expect(objects(transcript.turns)).toEqual([
-      expect.objectContaining({
-        speaker: "human",
-        text: "I need a browser reservation.",
-      }),
-    ]);
-  });
+      );
+      expect(object(active.session)).toMatchObject({ state: "in-progress" });
+      expect(
+        objects(active.events).map((event) => object(event.data).type),
+      ).toContain("turn.transcript");
 
-  it("enforces owned-number detach, reassign, and release lifecycle", async () => {
-    const pipecat = createPipecatMock();
-    const twilio = createTwilioMock();
-    const store = new InMemoryAgentStore();
-    const twilioHarness = createVoiceMockHarness(
-      twilio,
-      {
-        type: "basic",
-        username: "ACfixture",
-        password: "fixture:valid",
-      },
-      {
-        toolkitSlug: "twilio",
-        adapter: new TwilioAdapter({ bindingLookup: store }),
-      },
-    );
-    const harness = createVoiceMockHarness(
-      pipecat,
-      { type: "none" },
-      {
-        toolkitSlug: "voice-agents",
-        adapter: new VoiceAgentsAdapter({
-          store,
-          executeProviderTool: async (request) =>
-            output(
-              await twilioHarness.execute(request.tool, request.input),
-            ) as JsonValue,
+      const stopping = output(
+        await harness.execute("voice-agents.stop_agent_session", {
+          sessionId: String(session.id),
+          reason: "Web client disconnected.",
         }),
-      },
-    );
-    const phoneNumber = "+15550004444";
-    const connectionId = "conn_twilio_fixture";
-
-    const bought = object(
-      output(
-        await harness.execute("voice-agents.buy_number", {
-          phoneNumber,
-          friendlyName: "Lifecycle line",
-          transportConnectionId: connectionId,
-        }),
-      ).number,
-    );
-    expect(bought).toMatchObject({
-      phoneNumber,
-      provider: "twilio",
-      bindingStatus: "unbound",
-    });
-
-    const firstAgent = object(
-      output(
-        await harness.execute("voice-agents.create_voice_agent", {
-          agent: { ...agentDraft, name: "First number owner" },
-        }),
-      ).agent,
-    );
-    const secondAgent = object(
-      output(
-        await harness.execute("voice-agents.create_voice_agent", {
-          agent: { ...agentDraft, name: "Second number owner" },
-        }),
-      ).agent,
-    );
-    const attach = (agentId: string) =>
-      harness.execute("voice-agents.attach_agent_to_number", {
-        agentId,
-        revision: 1,
-        phoneNumber,
-        transportConnectionId: connectionId,
+      );
+      expect(object(stopping.session)).toMatchObject({ state: "in-progress" });
+      pipecat.advanceClock(2_000);
+      const transcript = object(
+        output(
+          await harness.execute("voice-agents.get_session_transcript", {
+            sessionId: String(session.id),
+          }),
+        ).artifact,
+      );
+      expect(transcript).toMatchObject({
+        final: true,
+        transport: "webrtc:livekit",
+        endedAt: expect.any(String),
       });
-    output(await attach(String(firstAgent.id)));
+      expect(objects(transcript.turns)).toEqual([
+        expect.objectContaining({
+          speaker: "human",
+          text: "I need a browser reservation.",
+        }),
+      ]);
+    });
 
-    expect(
-      object(
+    it("enforces owned-number detach, reassign, and release lifecycle", async () => {
+      const pipecat = createPipecatMock();
+      const twilio = createTwilioMock();
+      const store = new InMemoryAgentStore();
+      const twilioHarness = createVoiceMockHarness(
+        twilio,
+        {
+          type: "basic",
+          username: "ACfixture",
+          password: "fixture:valid",
+        },
+        {
+          toolkitSlug: "twilio",
+          adapter: new TwilioAdapter({ bindingLookup: store }),
+        },
+      );
+      const harness = createVoiceMockHarness(
+        pipecat,
+        { type: "none" },
+        {
+          toolkitSlug: "voice-agents",
+          adapter: new VoiceAgentsAdapter({
+            store,
+            executeProviderTool: async (request) =>
+              output(
+                await twilioHarness.execute(request.tool, request.input),
+              ) as JsonValue,
+          }),
+        },
+      );
+      const phoneNumber = "+15550004444";
+      const connectionId = "conn_twilio_fixture";
+
+      const bought = object(
+        output(
+          await harness.execute("voice-agents.buy_number", {
+            phoneNumber,
+            friendlyName: "Lifecycle line",
+            transportConnectionId: connectionId,
+          }),
+        ).number,
+      );
+      expect(bought).toMatchObject({
+        phoneNumber,
+        provider: "twilio",
+        bindingStatus: "unbound",
+      });
+
+      const firstAgent = object(
+        output(
+          await harness.execute("voice-agents.create_voice_agent", {
+            agent: { ...agentDraft, name: "First number owner" },
+          }),
+        ).agent,
+      );
+      const secondAgent = object(
+        output(
+          await harness.execute("voice-agents.create_voice_agent", {
+            agent: { ...agentDraft, name: "Second number owner" },
+          }),
+        ).agent,
+      );
+      const attach = (agentId: string) =>
+        harness.execute("voice-agents.attach_agent_to_number", {
+          agentId,
+          revision: 1,
+          phoneNumber,
+          transportConnectionId: connectionId,
+        });
+      output(await attach(String(firstAgent.id)));
+
+      expect(
+        object(
+          objects(
+            output(await twilioHarness.execute("twilio.list_numbers", {}))
+              .numbers,
+          )[0],
+        ),
+      ).toMatchObject({
+        phoneNumber,
+        bindingStatus: "bound",
+        binding: { agentId: firstAgent.id },
+      });
+      const directBoundRelease = await twilioHarness.execute(
+        "twilio.release_number",
+        { phoneNumber },
+      );
+      expect(directBoundRelease.terminal).toMatchObject({
+        status: "failed",
+        error: {
+          code: "invalid_input",
+          message: expect.stringContaining("detach_number"),
+        },
+      });
+
+      const conflict = await attach(String(secondAgent.id));
+      expect(conflict.terminal).toMatchObject({
+        status: "failed",
+        error: {
+          code: "invalid_input",
+          message: expect.stringContaining("already has a different"),
+        },
+      });
+      const boundRelease = await harness.execute(
+        "voice-agents.release_number",
+        {
+          phoneNumber,
+          transportConnectionId: connectionId,
+        },
+      );
+      expect(boundRelease.terminal).toMatchObject({
+        status: "failed",
+        error: {
+          code: "invalid_input",
+          message: expect.stringContaining("detach_number"),
+        },
+      });
+
+      expect(
+        output(
+          await harness.execute("voice-agents.detach_number", { phoneNumber }),
+        ),
+      ).toMatchObject({
+        phoneNumber,
+        bindingStatus: "unbound",
+        detachedBindingId: expect.stringMatching(/^binding_/u),
+      });
+      output(await attach(String(secondAgent.id)));
+      const rebound = object(
         objects(
-          output(await twilioHarness.execute("twilio.list_numbers", {}))
-            .numbers,
+          output(
+            await harness.execute("voice-agents.list_numbers", {
+              transportConnectionId: connectionId,
+            }),
+          ).numbers,
         )[0],
-      ),
-    ).toMatchObject({
-      phoneNumber,
-      bindingStatus: "bound",
-      binding: { agentId: firstAgent.id },
-    });
-    const directBoundRelease = await twilioHarness.execute(
-      "twilio.release_number",
-      { phoneNumber },
-    );
-    expect(directBoundRelease.terminal).toMatchObject({
-      status: "failed",
-      error: {
-        code: "invalid_input",
-        message: expect.stringContaining("detach_number"),
-      },
-    });
+      );
+      expect(rebound).toMatchObject({
+        phoneNumber,
+        bindingStatus: "bound",
+        binding: {
+          agentId: secondAgent.id,
+          revision: 1,
+          transportConnectionId: connectionId,
+        },
+      });
 
-    const conflict = await attach(String(secondAgent.id));
-    expect(conflict.terminal).toMatchObject({
-      status: "failed",
-      error: {
-        code: "invalid_input",
-        message: expect.stringContaining("already has a different"),
-      },
-    });
-    const boundRelease = await harness.execute("voice-agents.release_number", {
-      phoneNumber,
-      transportConnectionId: connectionId,
-    });
-    expect(boundRelease.terminal).toMatchObject({
-      status: "failed",
-      error: {
-        code: "invalid_input",
-        message: expect.stringContaining("detach_number"),
-      },
-    });
-
-    expect(
       output(
         await harness.execute("voice-agents.detach_number", { phoneNumber }),
-      ),
-    ).toMatchObject({
-      phoneNumber,
-      bindingStatus: "unbound",
-      detachedBindingId: expect.stringMatching(/^binding_/u),
-    });
-    output(await attach(String(secondAgent.id)));
-    const rebound = object(
-      objects(
+      );
+      expect(
+        output(
+          await harness.execute("voice-agents.release_number", {
+            phoneNumber,
+            transportConnectionId: connectionId,
+          }),
+        ),
+      ).toMatchObject({
+        numberId: bought.numberId,
+        phoneNumber,
+        releasedAt: expect.any(String),
+      });
+      expect(
         output(
           await harness.execute("voice-agents.list_numbers", {
             transportConnectionId: connectionId,
           }),
         ).numbers,
-      )[0],
-    );
-    expect(rebound).toMatchObject({
-      phoneNumber,
-      bindingStatus: "bound",
-      binding: {
-        agentId: secondAgent.id,
-        revision: 1,
-        transportConnectionId: connectionId,
-      },
+      ).toEqual([]);
     });
-
-    output(
-      await harness.execute("voice-agents.detach_number", { phoneNumber }),
-    );
-    expect(
-      output(
-        await harness.execute("voice-agents.release_number", {
-          phoneNumber,
-          transportConnectionId: connectionId,
-        }),
-      ),
-    ).toMatchObject({
-      numberId: bought.numberId,
-      phoneNumber,
-      releasedAt: expect.any(String),
-    });
-    expect(
-      output(
-        await harness.execute("voice-agents.list_numbers", {
-          transportConnectionId: connectionId,
-        }),
-      ).numbers,
-    ).toEqual([]);
-  });
-});
+  },
+);

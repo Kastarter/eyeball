@@ -3,11 +3,11 @@ import type {
   ResolvedCredential,
   StagedFileReference,
 } from "@eyeball/core";
-import type { ProviderMock } from "../../../../mocks/packages/mock-kit/dist/index.js";
 import {
   createInProcessExecutorHarness,
   executionOutput as sharedExecutionOutput,
 } from "../helpers/executor-harness.js";
+import type { ProviderMock } from "../mocks-checkout.js";
 
 export interface ExecuteResult {
   status: number;

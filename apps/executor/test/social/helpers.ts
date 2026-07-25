@@ -1,9 +1,12 @@
 import type { JsonValue, ResolvedCredential } from "@eyeball/core";
-import type { ProviderMock } from "../../../../mocks/packages/mock-kit/dist/index.js";
 import {
   createInProcessExecutorHarness,
   executionOutput as sharedExecutionOutput,
 } from "../helpers/executor-harness.js";
+
+type ProviderMock = NonNullable<
+  Parameters<typeof createInProcessExecutorHarness>[0]["provider"]
+>;
 
 export interface ExecuteResult {
   status: number;

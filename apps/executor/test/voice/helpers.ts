@@ -3,12 +3,12 @@ import type {
   ResolvedCredential,
   ToolkitAdapter,
 } from "@eyeball/core";
-import type { ProviderMock } from "../../../../mocks/packages/mock-kit/dist/index.js";
 import {
   createInProcessExecutorHarness,
   executionOutput,
   type HarnessExecuteResult,
 } from "../helpers/executor-harness.js";
+import type { ProviderMock } from "../mocks-checkout.js";
 
 export type VoiceExecuteResult = HarnessExecuteResult;
 

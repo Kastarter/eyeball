@@ -13,86 +13,51 @@ import {
 } from "@eyeball/core";
 import { VoiceAgentsAdapter } from "@eyeball/toolkits";
 import {
-  EXPIRED_TOKEN,
-  type ProviderMock,
-  type SeedInput,
-} from "../../../../mocks/packages/mock-kit/dist/index.js";
-import {
-  createHubSpotMock,
-  createOdooMock,
-  createQuickBooksMock,
-  createShopifyMock,
-  createStripeMock,
-  createZendeskMock,
-  hubSpotFixtures,
-  odooFixtures,
-  quickBooksFixtures,
-  shopifyFixtures,
-  stripeFixtures,
-  zendeskFixtures,
-} from "../../../../mocks/packages/mocks-business/dist/index.js";
-import {
-  createGmailMock,
-  createMailgunMock,
-  createMicrosoftOutlookMock,
-  createResendMock,
-  createSendGridMock,
-  createSmtpMock,
-  gmailFixtures,
-  mailgunFixtures,
-  microsoftOutlookFixtures,
-  resendFixtures,
-  sendGridFixtures,
-  smtpFixtures,
-} from "../../../../mocks/packages/mocks-email/dist/index.js";
-import {
-  createDiscordMock,
-  createSlackMock,
-  createTelegramMock,
-  createWhatsAppBusinessMock,
-  discordFixtures,
-  slackFixtures,
-  telegramFixtures,
-  whatsAppBusinessFixtures,
-} from "../../../../mocks/packages/mocks-messaging/dist/index.js";
-import {
-  airtableFixtures,
-  createAirtableMock,
-  createGitHubMock,
-  createGoogleCalendarMock,
-  createGoogleDriveMock,
-  createGoogleSheetsMock,
-  createLinearMock,
-  createNotionMock,
-  githubFixtures,
-  googleCalendarFixtures,
-  googleDriveFixtures,
-  googleSheetsFixtures,
-  linearFixtures,
-  notionFixtures,
-} from "../../../../mocks/packages/mocks-productivity/dist/index.js";
-import {
-  createScrapeCreatorsMock,
-  scrapeCreatorsFixtures,
-} from "../../../../mocks/packages/mocks-social/dist/index.js";
-import {
-  createDeepgramMock,
-  createElevenLabsMock,
-  createLiveKitMock,
-  createPipecatMock,
-  createTwilioMock,
-  deepgramFixtures,
-  elevenLabsFixtures,
-  liveKitFixtures,
-  pipecatFixtures,
-  twilioFixtures,
-} from "../../../../mocks/packages/mocks-voice/dist/index.js";
-import {
   createInProcessExecutorHarness,
   executionOutput,
   type InProcessExecutorHarness,
 } from "../helpers/executor-harness.js";
+import {
+  hasMocksCheckout,
+  loadMocksModule,
+  type MockKitModule,
+  type ProviderMock,
+} from "../mocks-checkout.js";
 import type { ContractTarget } from "./fixtures.js";
+
+type MockProviderModule = Readonly<Record<string, unknown>>;
+
+interface MockModules {
+  readonly mockKit: MockKitModule;
+  readonly business: MockProviderModule;
+  readonly email: MockProviderModule;
+  readonly messaging: MockProviderModule;
+  readonly productivity: MockProviderModule;
+  readonly social: MockProviderModule;
+  readonly voice: MockProviderModule;
+}
+
+const mockModules: MockModules | undefined = hasMocksCheckout()
+  ? await Promise.all([
+      loadMocksModule<MockKitModule>("mock-kit"),
+      loadMocksModule<MockProviderModule>("mocks-business"),
+      loadMocksModule<MockProviderModule>("mocks-email"),
+      loadMocksModule<MockProviderModule>("mocks-messaging"),
+      loadMocksModule<MockProviderModule>("mocks-productivity"),
+      loadMocksModule<MockProviderModule>("mocks-social"),
+      loadMocksModule<MockProviderModule>("mocks-voice"),
+    ]).then(
+      ([mockKit, business, email, messaging, productivity, social, voice]) => ({
+        mockKit,
+        business,
+        email,
+        messaging,
+        productivity,
+        social,
+        voice,
+      }),
+    )
+  : undefined;
 
 interface MockDefinition {
   readonly create: () => ProviderMock;
@@ -100,76 +65,199 @@ interface MockDefinition {
   readonly providerSlug?: string;
 }
 
-const socialDefinition: MockDefinition = {
-  create: createScrapeCreatorsMock,
-  seed: scrapeCreatorsFixtures.default,
-  providerSlug: "scrapecreators",
-};
+function requiredMockExport(
+  module: MockProviderModule,
+  exportName: string,
+): unknown {
+  const value = module[exportName];
+  if (value === undefined) {
+    throw new Error(`Mockhouse module did not export ${exportName}.`);
+  }
+  return value;
+}
 
-const MOCKS: Readonly<Record<string, MockDefinition>> = {
-  airtable: { create: createAirtableMock, seed: airtableFixtures.default },
-  deepgram: { create: createDeepgramMock, seed: deepgramFixtures.default },
-  discord: { create: createDiscordMock, seed: discordFixtures.default },
-  elevenlabs: {
-    create: createElevenLabsMock,
-    seed: elevenLabsFixtures.default,
-  },
-  github: { create: createGitHubMock, seed: githubFixtures.default },
-  gmail: { create: createGmailMock, seed: gmailFixtures.default },
-  "google-calendar": {
-    create: createGoogleCalendarMock,
-    seed: googleCalendarFixtures.default,
-  },
-  "google-drive": {
-    create: createGoogleDriveMock,
-    seed: googleDriveFixtures.default,
-  },
-  "google-sheets": {
-    create: createGoogleSheetsMock,
-    seed: googleSheetsFixtures.default,
-  },
-  hubspot: { create: createHubSpotMock, seed: hubSpotFixtures.default },
-  "instagram-data": socialDefinition,
-  linear: { create: createLinearMock, seed: linearFixtures.default },
-  "linkedin-data": socialDefinition,
-  livekit: { create: createLiveKitMock, seed: liveKitFixtures.default },
-  mailgun: { create: createMailgunMock, seed: mailgunFixtures.default },
-  "microsoft-outlook": {
-    create: createMicrosoftOutlookMock,
-    seed: microsoftOutlookFixtures.default,
-  },
-  notion: { create: createNotionMock, seed: notionFixtures.default },
-  odoo: { create: createOdooMock, seed: odooFixtures.default },
-  pipecat: { create: createPipecatMock, seed: pipecatFixtures.default },
-  quickbooks: {
-    create: createQuickBooksMock,
-    seed: quickBooksFixtures.default,
-  },
-  "reddit-data": socialDefinition,
-  resend: { create: createResendMock, seed: resendFixtures.default },
-  sendgrid: { create: createSendGridMock, seed: sendGridFixtures.default },
-  shopify: { create: createShopifyMock, seed: shopifyFixtures.default },
-  slack: { create: createSlackMock, seed: slackFixtures.default },
-  smtp: { create: createSmtpMock, seed: smtpFixtures.default },
-  "snapchat-data": socialDefinition,
-  stripe: { create: createStripeMock, seed: stripeFixtures.default },
-  telegram: { create: createTelegramMock, seed: telegramFixtures.default },
-  "tiktok-data": socialDefinition,
-  twilio: { create: createTwilioMock, seed: twilioFixtures.default },
-  "twitch-data": socialDefinition,
-  "voice-agents": {
-    create: createPipecatMock,
-    seed: pipecatFixtures.default,
-    providerSlug: "pipecat",
-  },
-  "whatsapp-business": {
-    create: createWhatsAppBusinessMock,
-    seed: whatsAppBusinessFixtures.default,
-  },
-  "x-data": socialDefinition,
-  "youtube-data": socialDefinition,
-  zendesk: { create: createZendeskMock, seed: zendeskFixtures.default },
-};
+function mockFactory(
+  module: MockProviderModule,
+  exportName: string,
+): () => ProviderMock {
+  const value = requiredMockExport(module, exportName);
+  if (typeof value !== "function") {
+    throw new Error(`Mockhouse export ${exportName} is not a factory.`);
+  }
+  return value as () => ProviderMock;
+}
+
+function mockFixture(module: MockProviderModule, exportName: string): unknown {
+  const value = requiredMockExport(module, exportName);
+  if (typeof value !== "object" || value === null || !("default" in value)) {
+    throw new Error(`Mockhouse export ${exportName} has no default fixture.`);
+  }
+  return (value as { default: unknown }).default;
+}
+
+function mockDefinition(
+  module: MockProviderModule,
+  factoryExport: string,
+  fixtureExport: string,
+  providerSlug?: string,
+): MockDefinition {
+  return {
+    create: mockFactory(module, factoryExport),
+    seed: mockFixture(module, fixtureExport),
+    ...(providerSlug === undefined ? {} : { providerSlug }),
+  };
+}
+
+function createMockDefinitions(
+  modules: MockModules,
+): Readonly<Record<string, MockDefinition>> {
+  const socialDefinition = mockDefinition(
+    modules.social,
+    "createScrapeCreatorsMock",
+    "scrapeCreatorsFixtures",
+    "scrapecreators",
+  );
+
+  return {
+    airtable: mockDefinition(
+      modules.productivity,
+      "createAirtableMock",
+      "airtableFixtures",
+    ),
+    deepgram: mockDefinition(
+      modules.voice,
+      "createDeepgramMock",
+      "deepgramFixtures",
+    ),
+    discord: mockDefinition(
+      modules.messaging,
+      "createDiscordMock",
+      "discordFixtures",
+    ),
+    elevenlabs: mockDefinition(
+      modules.voice,
+      "createElevenLabsMock",
+      "elevenLabsFixtures",
+    ),
+    github: mockDefinition(
+      modules.productivity,
+      "createGitHubMock",
+      "githubFixtures",
+    ),
+    gmail: mockDefinition(modules.email, "createGmailMock", "gmailFixtures"),
+    "google-calendar": mockDefinition(
+      modules.productivity,
+      "createGoogleCalendarMock",
+      "googleCalendarFixtures",
+    ),
+    "google-drive": mockDefinition(
+      modules.productivity,
+      "createGoogleDriveMock",
+      "googleDriveFixtures",
+    ),
+    "google-sheets": mockDefinition(
+      modules.productivity,
+      "createGoogleSheetsMock",
+      "googleSheetsFixtures",
+    ),
+    hubspot: mockDefinition(
+      modules.business,
+      "createHubSpotMock",
+      "hubSpotFixtures",
+    ),
+    "instagram-data": socialDefinition,
+    linear: mockDefinition(
+      modules.productivity,
+      "createLinearMock",
+      "linearFixtures",
+    ),
+    "linkedin-data": socialDefinition,
+    livekit: mockDefinition(
+      modules.voice,
+      "createLiveKitMock",
+      "liveKitFixtures",
+    ),
+    mailgun: mockDefinition(
+      modules.email,
+      "createMailgunMock",
+      "mailgunFixtures",
+    ),
+    "microsoft-outlook": mockDefinition(
+      modules.email,
+      "createMicrosoftOutlookMock",
+      "microsoftOutlookFixtures",
+    ),
+    notion: mockDefinition(
+      modules.productivity,
+      "createNotionMock",
+      "notionFixtures",
+    ),
+    odoo: mockDefinition(modules.business, "createOdooMock", "odooFixtures"),
+    pipecat: mockDefinition(
+      modules.voice,
+      "createPipecatMock",
+      "pipecatFixtures",
+    ),
+    quickbooks: mockDefinition(
+      modules.business,
+      "createQuickBooksMock",
+      "quickBooksFixtures",
+    ),
+    "reddit-data": socialDefinition,
+    resend: mockDefinition(modules.email, "createResendMock", "resendFixtures"),
+    sendgrid: mockDefinition(
+      modules.email,
+      "createSendGridMock",
+      "sendGridFixtures",
+    ),
+    shopify: mockDefinition(
+      modules.business,
+      "createShopifyMock",
+      "shopifyFixtures",
+    ),
+    slack: mockDefinition(
+      modules.messaging,
+      "createSlackMock",
+      "slackFixtures",
+    ),
+    smtp: mockDefinition(modules.email, "createSmtpMock", "smtpFixtures"),
+    "snapchat-data": socialDefinition,
+    stripe: mockDefinition(
+      modules.business,
+      "createStripeMock",
+      "stripeFixtures",
+    ),
+    telegram: mockDefinition(
+      modules.messaging,
+      "createTelegramMock",
+      "telegramFixtures",
+    ),
+    "tiktok-data": socialDefinition,
+    twilio: mockDefinition(modules.voice, "createTwilioMock", "twilioFixtures"),
+    "twitch-data": socialDefinition,
+    "voice-agents": mockDefinition(
+      modules.voice,
+      "createPipecatMock",
+      "pipecatFixtures",
+      "pipecat",
+    ),
+    "whatsapp-business": mockDefinition(
+      modules.messaging,
+      "createWhatsAppBusinessMock",
+      "whatsAppBusinessFixtures",
+    ),
+    "x-data": socialDefinition,
+    "youtube-data": socialDefinition,
+    zendesk: mockDefinition(
+      modules.business,
+      "createZendeskMock",
+      "zendeskFixtures",
+    ),
+  };
+}
+
+const MOCKS =
+  mockModules === undefined ? {} : createMockDefinitions(mockModules);
 
 export interface ContractTargetHarness {
   readonly harness: InProcessExecutorHarness;
@@ -227,7 +315,15 @@ export function mockCredential(
   manifest: ProviderManifest,
   expired = false,
 ): ResolvedCredential {
-  const token = expired ? EXPIRED_TOKEN : "fixture:valid";
+  if (expired && mockModules === undefined) {
+    throw new Error(
+      "Mockhouse checkout is required for an expired credential.",
+    );
+  }
+  const token = expired ? mockModules?.mockKit.EXPIRED_TOKEN : "fixture:valid";
+  if (token === undefined) {
+    throw new Error("Mockhouse checkout did not provide EXPIRED_TOKEN.");
+  }
   switch (manifest.auth.class) {
     case "oauth2":
       return {
@@ -273,6 +369,9 @@ export function createContractTargetHarness(
 ): ContractTargetHarness {
   const slug = manifest.toolkit.slug;
   if (target === "mock") {
+    if (mockModules === undefined) {
+      throw new Error("Mockhouse checkout is required for contract mocks.");
+    }
     const definition = MOCKS[slug];
     if (definition === undefined) {
       throw new Error(
@@ -281,9 +380,13 @@ export function createContractTargetHarness(
     }
     const provider = definition.create();
     const liveKitProvider =
-      slug === "voice-agents" ? createLiveKitMock() : undefined;
+      slug === "voice-agents"
+        ? mockFactory(mockModules.voice, "createLiveKitMock")()
+        : undefined;
     const twilioProvider =
-      slug === "voice-agents" ? createTwilioMock() : undefined;
+      slug === "voice-agents"
+        ? mockFactory(mockModules.voice, "createTwilioMock")()
+        : undefined;
     const liveKitHarness =
       liveKitProvider === undefined
         ? undefined
@@ -344,7 +447,7 @@ export function createContractTargetHarness(
       harness,
       async initialize() {
         if (definition.seed !== undefined) {
-          await provider.seed(definition.seed as SeedInput);
+          await provider.seed(definition.seed);
         }
       },
     };

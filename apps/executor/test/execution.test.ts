@@ -1195,11 +1195,15 @@ describe("RFC 001 execution API", () => {
     expect(harness.calls).toHaveLength(1);
   });
 
-  it("accepts reserved child identities only from a pinned synchronous worker", async () => {
+  it("accepts reserved child identities only from a pinned worker with an explicit execution mode", async () => {
     const voiceSessionId = "session_1";
     const reservedExecutionId = voiceSessionExecutionId(
       voiceSessionId,
       "test:event:7",
+    );
+    const asyncReservedExecutionId = voiceSessionExecutionId(
+      voiceSessionId,
+      "test:event:8",
     );
     const projectScoped = createHarness();
     const forbidden = await postExecute(
@@ -1228,12 +1232,16 @@ describe("RFC 001 execution API", () => {
       pinned.app,
       executeRequest("reserved", { mode: "async" }),
       {
-        idempotencyKey: "voice-session:session_1:event:7",
-        reservedExecutionId,
+        idempotencyKey: "voice-session:session_1:event:8",
+        reservedExecutionId: asyncReservedExecutionId,
         voiceSessionId,
       },
     );
-    expect(asynchronous.status).toBe(422);
+    expect(asynchronous.status).toBe(202);
+    await expect(asynchronous.json()).resolves.toMatchObject({
+      executionId: asyncReservedExecutionId,
+      status: "pending",
+    });
 
     const accepted = await postExecute(pinned.app, executeRequest("reserved"), {
       idempotencyKey: "voice-session:session_1:event:7",

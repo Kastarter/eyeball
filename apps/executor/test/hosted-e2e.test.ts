@@ -3,18 +3,24 @@ import { fileURLToPath } from "node:url";
 import type { ExecutorLogger } from "@eyeball/core";
 import { describe, expect, it, vi } from "vitest";
 import {
-  createGmailMock,
-  createResendMock,
-} from "../../../mocks/packages/mocks-email/dist/index.js";
-import {
   createConfiguredApiKeyAuthenticator,
   createExecutorApp,
   createExecutorRuntime,
 } from "../src/index.js";
+import {
+  hasMocksCheckout,
+  loadMocksModule,
+  mocksSuiteTitle,
+} from "./mocks-checkout.js";
+
+type EmailMocksModule =
+  typeof import("../../../mocks/packages/mocks-email/dist/index.js");
 
 const CLOUD_CONTROL_ENTRY = fileURLToPath(
   new URL("../../../cloud/apps/control/src/index.ts", import.meta.url),
 );
+const mocksAvailable = hasMocksCheckout();
+const hostedE2eAvailable = mocksAvailable && existsSync(CLOUD_CONTROL_ENTRY);
 const CLOUD_ORIGIN = "https://cloud.example.test";
 const KEY_VERIFY_URL = `${CLOUD_ORIGIN}/internal/keys/verify`;
 const CREDENTIALS_URL = `${CLOUD_ORIGIN}/internal/credentials/resolve`;
@@ -247,11 +253,16 @@ async function currentUsage(
 }
 
 describe("hosted cross-app release gate", () => {
-  it.runIf(existsSync(CLOUD_CONTROL_ENTRY))(
-    "provisions, executes, refreshes, bills exactly once, serializes quota, and revokes",
+  it.skipIf(!hostedE2eAvailable)(
+    mocksSuiteTitle(
+      "provisions, executes, refreshes, bills exactly once, serializes quota, and revokes",
+      mocksAvailable,
+    ),
     async () => {
       const cloudModule = await loadCloudControl();
       const cloudDatabase = await cloudModule.createPgliteDatabase();
+      const { createGmailMock, createResendMock } =
+        await loadMocksModule<EmailMocksModule>("mocks-email");
       const resend = createResendMock();
       const gmail = createGmailMock();
       const providerAuthorizations: ProviderAuthorization[] = [];
