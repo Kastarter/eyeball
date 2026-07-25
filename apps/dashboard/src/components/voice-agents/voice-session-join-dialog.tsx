@@ -152,7 +152,7 @@ export function VoiceSessionJoinDialog({
       : joinState.phase === "connecting"
         ? "Connecting to the room…"
         : joinState.phase === "failed"
-          ? `Could not join: ${joinState.message}`
+          ? `Could not join: ${joinState.message} Mock and development transports do not accept browser connections; connect a real LiveKit provider to talk live.`
           : joinState.speaking === "agent"
             ? "Agent is speaking…"
             : joinState.speaking === "you"
