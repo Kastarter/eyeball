@@ -223,6 +223,29 @@ def test_config_normalizes_blank_optional_compose_values() -> None:
     assert docker_config.executor_url == "http://host.docker.internal:8787"
 
 
+def test_livekit_url_requires_secure_ws_scheme() -> None:
+    base = {
+        "EYEBALL_VOICE_DATABASE_PATH": ":memory:",
+        "EYEBALL_VOICE_MEDIA_MODE": "fake",
+        "EYEBALL_VOICE_WORKER_TOKEN": CONTROL_TOKEN,
+    }
+
+    secure = WorkerConfig.from_env({**base, "LIVEKIT_URL": "wss://livekit.example.test"})
+    assert secure.livekit_url == "wss://livekit.example.test"
+
+    loopback = WorkerConfig.from_env({**base, "LIVEKIT_URL": "ws://127.0.0.1:7880"})
+    assert loopback.livekit_url == "ws://127.0.0.1:7880"
+
+    with pytest.raises(ValueError, match="WSS URL"):
+        WorkerConfig.from_env({**base, "LIVEKIT_URL": "ws://livekit.example.test"})
+    with pytest.raises(ValueError, match="WSS URL"):
+        WorkerConfig.from_env({**base, "LIVEKIT_URL": "https://livekit.example.test"})
+    with pytest.raises(ValueError, match="WSS URL"):
+        WorkerConfig.from_env(
+            {**base, "LIVEKIT_URL": "wss://user:pass@livekit.example.test"}
+        )
+
+
 def test_compose_forwards_fake_transport_opt_in() -> None:
     compose = (Path(__file__).resolve().parents[1] / "compose.yaml").read_text()
 

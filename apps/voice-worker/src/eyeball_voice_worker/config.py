@@ -75,6 +75,23 @@ def _secure_service_url(value: str, name: str) -> None:
         )
 
 
+def _secure_ws_url(value: str, name: str) -> None:
+    parsed = urlsplit(value)
+    if (
+        parsed.scheme not in {"ws", "wss"}
+        or not parsed.netloc
+        or parsed.username is not None
+        or parsed.password is not None
+        or parsed.query
+        or parsed.fragment
+        or (parsed.scheme == "ws" and not _plaintext_development_host(parsed.hostname))
+    ):
+        raise ValueError(
+            f"{name} must be a WSS URL without credentials, query, or fragment "
+            "(WS is allowed only for loopback development)."
+        )
+
+
 @dataclass(frozen=True, slots=True)
 class WorkerConfig:
     database_path: Path
@@ -112,6 +129,8 @@ class WorkerConfig:
             )
         if self.public_url is not None:
             _secure_service_url(self.public_url, "EYEBALL_VOICE_PUBLIC_URL")
+        if self.livekit_url is not None:
+            _secure_ws_url(self.livekit_url, "LIVEKIT_URL")
 
     @classmethod
     def from_env(cls, env: Mapping[str, str] | None = None) -> WorkerConfig:
