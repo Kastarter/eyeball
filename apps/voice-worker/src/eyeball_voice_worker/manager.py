@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import hashlib
+import json
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass, field
 from datetime import UTC, datetime, timedelta
@@ -36,6 +37,45 @@ from .repository import (
 )
 
 TERMINAL_STATES = {"completed", "failed", "abandoned"}
+
+
+def _coerce_stringified_input(
+    schema: dict[str, JsonValue], input: dict[str, JsonValue]
+) -> dict[str, JsonValue]:
+    """LLMs sometimes emit nested object arguments as JSON strings; parse them
+    back when the canonical schema declares an object or array property."""
+    properties = schema.get("properties")
+    defs = schema.get("$defs")
+    if not isinstance(properties, dict):
+        return input
+    coerced: dict[str, JsonValue] = dict(input)
+    for key, value in input.items():
+        if not isinstance(value, str):
+            continue
+        prop = properties.get(key)
+        for _ in range(5):
+            if not (
+                isinstance(prop, dict)
+                and isinstance(prop.get("$ref"), str)
+                and isinstance(defs, dict)
+            ):
+                break
+            ref = cast(str, prop["$ref"])
+            if not ref.startswith("#/$defs/"):
+                break
+            prop = defs.get(ref[len("#/$defs/") :])
+        if not isinstance(prop, dict) or prop.get("type") not in {"object", "array"}:
+            continue
+        text = value.strip()
+        if not text.startswith(("{", "[")):
+            continue
+        try:
+            parsed = json.loads(text)
+        except ValueError:
+            continue
+        if isinstance(parsed, (dict, list)):
+            coerced[key] = cast(JsonValue, parsed)
+    return coerced
 ChatResponder = Callable[
     [str, StartSessionRequest, str, list[SessionEvent]], Awaitable[str]
 ]
@@ -368,6 +408,17 @@ class SessionManager:
         tool: str,
         input: dict[str, JsonValue],
     ) -> ExecutorResult:
+        stored = self._repository.get(session_id)
+        contract = next(
+            (
+                item
+                for item in stored.request.agent.allowed_tools
+                if item.name == tool
+            ),
+            None,
+        )
+        if contract is not None:
+            input = _coerce_stringified_input(contract.input_schema, input)
         async with self._managed(session_id).tool_lock:
             event_key = f"media:{turn_id}:{tool}"
             return await self._execute_tool(
