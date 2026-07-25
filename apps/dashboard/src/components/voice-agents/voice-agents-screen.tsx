@@ -256,7 +256,18 @@ async function runVoiceTool(
   return outputRecord(await terminalExecution(execution, identity.project));
 }
 
+const TRANSPORT_CONNECTION_OVERRIDES: Readonly<
+  Record<string, string | undefined>
+> = {
+  livekit: process.env.NEXT_PUBLIC_EYEBALL_LIVEKIT_CONNECTION_ID,
+  twilio: process.env.NEXT_PUBLIC_EYEBALL_TWILIO_CONNECTION_ID,
+};
+
 async function resolveTransportConnectionId(toolkit: string): Promise<string> {
+  // Executors running remote credential providers do not enumerate
+  // connections; deployments name the transport connection explicitly.
+  const override = TRANSPORT_CONNECTION_OVERRIDES[toolkit];
+  if (override !== undefined && override !== "") return override;
   const page = await dashboardExecutorClient().listConnections();
   const match = page.connections.find(
     (connection) =>
@@ -1254,7 +1265,7 @@ export function VoiceAgentsScreen({
           participantIdentity: DASHBOARD_USER_ID,
           participantName: "Dashboard test participant",
         },
-        "sync",
+        "async",
         true,
       );
       const nextSession = parseSession(output.session);
