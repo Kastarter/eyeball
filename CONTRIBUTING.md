@@ -25,7 +25,8 @@ By contributing you agree your work is licensed under the repository's
 - `packages/toolkits` — the provider **adapters**.
 - `packages/sdk`, `apps/executor`, `apps/mcp-gateway`, `apps/dashboard`,
   `apps/docs` — the client, execution API, MCP surface, admin panel, docs site.
-- `mocks/` — Mockhouse: deterministic provider doubles used by the test suite.
+- `mocks/` — optional read-only maintainers' checkout for the full Mockhouse and
+  certification matrix.
 
 Read `VISION.md` for the why, `SPEC.md` for the architecture, and
 `docs/rfcs/001-canonical-tools.md` for the tool contract.
@@ -40,6 +41,10 @@ pnpm test          # includes the contract matrix
 pnpm typecheck
 pnpm lint
 ~~~
+
+`pnpm test` passes without the optional `mocks/` checkout; mock-dependent
+suites skip in that mode. When it is present, the test gate automatically runs
+the contract matrix against the full Mockhouse.
 
 If you changed catalog or docs content, also run the documentation validators:
 

@@ -9,6 +9,8 @@ This recipe follows the existing Notion and Twilio integrations. A provider is a
 > rows with you. The gates that need built mocks (`pnpm test:contract`,
 > `pnpm dev:stack`, parts of the executor suite) only run with that checkout
 > present.
+> `packages/mocks-starter` shows the exact `ProviderMock` shape a mock will
+> take, so contributors can prototype one there even without `mocks/` access.
 
 ## 1. Choose the smallest canonical surface
 
