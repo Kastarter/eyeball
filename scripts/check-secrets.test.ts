@@ -3,7 +3,11 @@ import { mkdtempSync, rmSync, unlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { describe, expect, it } from "vitest";
-import { scanRepository, scanText } from "./secret-scan.js";
+import {
+  MAX_TEXT_FILE_BYTES,
+  scanRepository,
+  scanText,
+} from "./secret-scan.js";
 
 describe("tracked-file secret scanner", () => {
   it("detects known production prefixes without returning the secret", () => {
@@ -111,6 +115,48 @@ describe("tracked-file secret scanner", () => {
       );
       execFileSync("git", ["add", "kept.ts", "removed.ts"], { cwd: root });
       unlinkSync(join(root, "removed.ts"));
+
+      expect(scanRepository(root)).toEqual([]);
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  it("detects a secret that straddles the oversized-file read window", () => {
+    const root = mkdtempSync(join(tmpdir(), "eyeball-secret-scan-"));
+    try {
+      execFileSync("git", ["init", "--quiet"], { cwd: root });
+      const candidate = [
+        "eb",
+        "live",
+        "mJ8pQ2vZ7xN4cR6tW9yK3sF5dH1uL0aB8eC2gT7q",
+      ].join("_");
+      // Fill line 1 up to ten bytes before the read window boundary, then start
+      // the 48-byte key so its bytes span the boundary and land in the next
+      // overlapping window. A newline immediately precedes the key so the
+      // word-boundary anchor still matches once the window is reassembled.
+      const prefix = `${"a".repeat(MAX_TEXT_FILE_BYTES - 10 - 1)}\n`;
+      writeFileSync(join(root, "oversized.ts"), `${prefix}${candidate}\n`);
+      execFileSync("git", ["add", "oversized.ts"], { cwd: root });
+
+      const findings = scanRepository(root);
+      expect(findings).toEqual([
+        { path: "oversized.ts", line: 2, rule: "eyeball-live-api-key" },
+      ]);
+      expect(JSON.stringify(findings)).not.toContain(candidate);
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  it("does not flag a clean tracked file larger than the read window", () => {
+    const root = mkdtempSync(join(tmpdir(), "eyeball-secret-scan-"));
+    try {
+      execFileSync("git", ["init", "--quiet"], { cwd: root });
+      const line = "const harmless = 1;\n";
+      const repeats = Math.ceil((MAX_TEXT_FILE_BYTES + 4096) / line.length);
+      writeFileSync(join(root, "oversized-clean.ts"), line.repeat(repeats));
+      execFileSync("git", ["add", "oversized-clean.ts"], { cwd: root });
 
       expect(scanRepository(root)).toEqual([]);
     } finally {
