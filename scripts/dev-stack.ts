@@ -37,7 +37,6 @@ const DEFAULT_USER_ID = "demo_user";
 // Deployment-scoped service identity for the mock Pipecat runtime. This is
 // intentionally separate from the auth-free voice-agent management manifest.
 const MOCKHOUSE_PIPECAT_RUNTIME_TOKEN = "fixture:valid";
-const FULL_MOCKHOUSE_MODULE = "../mocks/apps/mockhouse/src/index.js";
 const FULL_MOCKHOUSE_ENTRY = fileURLToPath(
   new URL("../mocks/apps/mockhouse/src/index.ts", import.meta.url),
 );
@@ -64,6 +63,8 @@ export interface DevStackOptions {
   mockhousePort?: number;
   executorPort?: number;
   mcpGatewayPort?: number;
+  /** Use the public starter providers even when a full checkout is available. */
+  mockhouse?: "auto" | "starter";
   apiKey?: string;
   projectId?: string;
   userId?: string;
@@ -177,9 +178,15 @@ function pipecatProvider(
     : undefined;
 }
 
-async function createDevMockhouse(): Promise<MockhouseRuntime> {
-  if (existsSync(FULL_MOCKHOUSE_ENTRY)) {
-    const fullMockhouse = (await import(FULL_MOCKHOUSE_MODULE)) as {
+async function createDevMockhouse(
+  mode: DevStackOptions["mockhouse"] = "auto",
+): Promise<MockhouseRuntime> {
+  if (mode !== "starter" && existsSync(FULL_MOCKHOUSE_ENTRY)) {
+    // The optional checkout is resolved only after its entry has been probed.
+    // Keeping this specifier computed avoids a public build-time dependency on it.
+    const fullMockhouse = (await import(
+      pathToFileURL(FULL_MOCKHOUSE_ENTRY).href
+    )) as {
       createMockhouse?: () => unknown;
     };
     if (typeof fullMockhouse.createMockhouse !== "function") {
@@ -195,7 +202,7 @@ async function createDevMockhouse(): Promise<MockhouseRuntime> {
 
   const { createStarterMockhouse } = await import("@eyeball/mocks-starter");
   process.stdout.write(
-    "starter mocks (3 providers): full Mockhouse checkout not present\n",
+    "starter mocks (4 providers): full Mockhouse checkout not present\n",
   );
   return mockhouseRuntime(createStarterMockhouse(), "Starter Mockhouse");
 }
@@ -587,7 +594,7 @@ export async function startDevStack(
   const servers: HonoServer[] = [];
 
   try {
-    const mockhouse = await createDevMockhouse();
+    const mockhouse = await createDevMockhouse(options.mockhouse);
     const mockhouseServer = await listen(mockhouse.app.fetch, mockhousePort);
     servers.push(mockhouseServer.server);
     const { app: executorApp } = await createMockBackedExecutor(
@@ -639,7 +646,7 @@ export async function createInProcessDevStack(
   const mockhouseUrl = "http://mockhouse.dev-stack.test";
   const executorUrl = "http://executor.dev-stack.test";
   const mcpGatewayOrigin = "http://mcp-gateway.dev-stack.test";
-  const mockhouse = await createDevMockhouse();
+  const mockhouse = await createDevMockhouse(options.mockhouse);
   const { app: executorApp, engine: executorEngine } =
     await createMockBackedExecutor(
       mockhouse,

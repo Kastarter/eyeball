@@ -35,7 +35,7 @@ describe("GitHub starter provider", () => {
     expect(missingAuth.status).toBe(401);
     await expect(missingAuth.json()).resolves.toEqual({
       message: "A bearer token is required.",
-      documentation_url: "https://docs.github.com/rest",
+      documentation_url: "https://docs.github.example.com/rest",
     });
 
     await seedDefault(provider);
@@ -49,6 +49,8 @@ describe("GitHub starter provider", () => {
         id: 1001,
         full_name: "example-org/github-mock-repository",
         default_branch: "main",
+        html_url:
+          "https://github.example.com/example-org/github-mock-repository",
       },
     ]);
   });
@@ -76,6 +78,8 @@ describe("GitHub starter provider", () => {
       number: 3,
       state: "open",
       labels: [{ name: "fixtures" }],
+      html_url:
+        "https://github.example.com/example-org/github-mock-repository/issues/3",
     });
 
     const updatedResponse = await provider.app.request(
@@ -92,7 +96,21 @@ describe("GitHub starter provider", () => {
       title: "Verified public GitHub adapter",
       state: "closed",
       closed_at: "2026-01-01T00:00:00.000Z",
+      html_url:
+        "https://github.example.com/example-org/github-mock-repository/issues/3",
     });
+
+    const commentsResponse = await provider.app.request(
+      `${repositoryPath}/issues/1/comments`,
+      { headers: authorization },
+    );
+    expect(commentsResponse.status).toBe(200);
+    await expect(commentsResponse.json()).resolves.toMatchObject([
+      {
+        html_url:
+          "https://github.example.com/example-org/github-mock-repository/issues/1#issuecomment-3001",
+      },
+    ]);
   });
 
   it("filters commits by branch and returns pull-request branch metadata", async () => {
@@ -108,6 +126,8 @@ describe("GitHub starter provider", () => {
       number: 7,
       head: { ref: "feature/mock-fixtures" },
       base: { ref: "main" },
+      html_url:
+        "https://github.example.com/example-org/github-mock-repository/pull/7",
     });
 
     const commitsResponse = await provider.app.request(
@@ -122,6 +142,8 @@ describe("GitHub starter provider", () => {
           message: "Initialize deterministic mock fixtures",
           author: { email: "fixture-author@example.com" },
         },
+        html_url:
+          "https://github.example.com/example-org/github-mock-repository/commit/fixture-sha-main-0001",
       },
     ]);
   });

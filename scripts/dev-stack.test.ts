@@ -1,9 +1,9 @@
 import { describe, expect, it } from "vitest";
 import { createInProcessDevStack } from "./dev-stack.js";
 
-describe("full development stack", () => {
-  it("runs Mockhouse, executor, and MCP gateway as one composition", async () => {
-    const stack = await createInProcessDevStack();
+describe("development stack", () => {
+  it("runs the public starter Mockhouse, executor, and MCP gateway together", async () => {
+    const stack = await createInProcessDevStack({ mockhouse: "starter" });
     const authorization = { Authorization: `Bearer ${stack.apiKey}` };
 
     const executorHealth = await stack.executorApp.request("/health");
@@ -23,8 +23,11 @@ describe("full development stack", () => {
     const mockStatus = await stack.mockhouseApp.request("/_mock/status");
     const statusBody = (await mockStatus.json()) as { providers: string[] };
     expect(mockStatus.status).toBe(200);
-    expect(statusBody.providers).toHaveLength(30);
-    expect(statusBody.providers).toContain("gmail");
+    expect(statusBody.providers).toHaveLength(4);
+    expect(statusBody.providers).toEqual(
+      expect.arrayContaining(["echo", "github", "gmail", "slack"]),
+    );
+    expect(stack.providerCount).toBe(4);
 
     const execution = await stack.executorApp.request("/v1/execute", {
       method: "POST",
@@ -78,8 +81,12 @@ describe("full development stack", () => {
     );
   });
 
-  it("runs the dashboard voice test call through the composed session runtime", async () => {
+  it("runs the dashboard voice test call when the full Mockhouse is available", async () => {
     const stack = await createInProcessDevStack();
+    if (!stack.mockhouseProviders.some(({ slug }) => slug === "pipecat")) {
+      expect(stack.providerCount).toBe(4);
+      return;
+    }
     const authorization = { Authorization: `Bearer ${stack.apiKey}` };
     const execute = async (
       tool: string,

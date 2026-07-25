@@ -15,16 +15,42 @@ import {
   VoiceAgentsAdapter,
 } from "../../../packages/toolkits/src/index.js";
 import { AdapterRegistry, ExecutionEngine } from "../../executor/src/index.js";
-import { loadMocksModule } from "../test/mocks-checkout.js";
+import { loadFullMocksModule } from "./full-mocks.js";
 
-type MockKitModule =
-  typeof import("../../../mocks/packages/mock-kit/dist/index.js");
-type EmailMocksModule =
-  typeof import("../../../mocks/packages/mocks-email/dist/index.js");
-type ProductivityMocksModule =
-  typeof import("../../../mocks/packages/mocks-productivity/dist/index.js");
-type VoiceMocksModule =
-  typeof import("../../../mocks/packages/mocks-voice/dist/index.js");
+interface ProviderMock {
+  readonly slug: string;
+  seed(data: unknown): void | Promise<void>;
+}
+
+interface MockhouseApp {
+  request(
+    request: Request | string,
+    init?: RequestInit,
+  ): Response | Promise<Response>;
+}
+
+interface MockClock {
+  now(): Date;
+  advance(milliseconds: number): void;
+}
+
+interface MockKitModule {
+  createMockApp(options: { providers: readonly ProviderMock[] }): MockhouseApp;
+  createMockClock(): MockClock;
+}
+
+interface EmailMocksModule {
+  createGmailMock(options: { clock: MockClock }): ProviderMock;
+}
+
+interface ProductivityMocksModule {
+  createGoogleCalendarMock(options: { clock: MockClock }): ProviderMock;
+  googleCalendarFixtures: { default: unknown };
+}
+
+interface VoiceMocksModule {
+  createPipecatMock(options: { clock: MockClock }): ProviderMock;
+}
 
 const API_PROJECT_ID = "proj_restaurant_demo";
 const DINER_USER_ID = "diner_restaurant_demo";
@@ -131,10 +157,10 @@ export interface RestaurantVoiceDemoResult {
 export async function runRestaurantVoiceDemo(): Promise<RestaurantVoiceDemoResult> {
   const [mockKit, emailMocks, productivityMocks, voiceMocks] =
     await Promise.all([
-      loadMocksModule<MockKitModule>("mock-kit"),
-      loadMocksModule<EmailMocksModule>("mocks-email"),
-      loadMocksModule<ProductivityMocksModule>("mocks-productivity"),
-      loadMocksModule<VoiceMocksModule>("mocks-voice"),
+      loadFullMocksModule<MockKitModule>("mock-kit"),
+      loadFullMocksModule<EmailMocksModule>("mocks-email"),
+      loadFullMocksModule<ProductivityMocksModule>("mocks-productivity"),
+      loadFullMocksModule<VoiceMocksModule>("mocks-voice"),
     ]);
   const { createMockApp, createMockClock } = mockKit;
   const { createGmailMock } = emailMocks;

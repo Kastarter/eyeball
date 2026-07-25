@@ -15,7 +15,7 @@ export interface StarterMockhouseRuntime {
 }
 
 /**
- * Creates the provider-free Mockhouse starter app.
+ * Creates the small, public Mockhouse starter app.
  *
  * The echo provider proves the registration pattern. Provider ports append
  * their implementations to `src/providers/index.ts`.

@@ -7,10 +7,6 @@ import {
   MockCredentialProvider,
   type QualifiedToolName,
 } from "@eyeball/core";
-import type { ProviderMock } from "../../../mocks/packages/mock-kit/dist/index.js";
-import type { GmailMessage } from "../../../mocks/packages/mocks-email/dist/index.js";
-import type { SlackMessage } from "../../../mocks/packages/mocks-messaging/dist/index.js";
-import type { GitHubIssue } from "../../../mocks/packages/mocks-productivity/dist/index.js";
 import {
   createExecutorApp,
   ExecutionEngine,
@@ -20,16 +16,40 @@ import {
   MCP_PROTOCOL_VERSION,
   type ToolDiscoveryMode,
 } from "../src/index.js";
-import { loadMocksModule } from "../test/mocks-checkout.js";
+import { loadFullMocksModule } from "./full-mocks.js";
 
-type MockKitModule =
-  typeof import("../../../mocks/packages/mock-kit/dist/index.js");
-type EmailMocksModule =
-  typeof import("../../../mocks/packages/mocks-email/dist/index.js");
-type MessagingMocksModule =
-  typeof import("../../../mocks/packages/mocks-messaging/dist/index.js");
-type ProductivityMocksModule =
-  typeof import("../../../mocks/packages/mocks-productivity/dist/index.js");
+interface ProviderMock {
+  readonly slug: string;
+  readonly stores: Readonly<
+    Record<string, { snapshot(): unknown } | undefined>
+  >;
+  seed(data: unknown): void | Promise<void>;
+}
+
+interface MockhouseApp {
+  request(
+    request: Request | string,
+    init?: RequestInit,
+  ): Response | Promise<Response>;
+}
+
+interface MockKitModule {
+  createMockApp(options: { providers: readonly ProviderMock[] }): MockhouseApp;
+}
+
+interface EmailMocksModule {
+  createGmailMock(): ProviderMock;
+}
+
+interface MessagingMocksModule {
+  createSlackMock(): ProviderMock;
+  slackFixtures: { default: unknown };
+}
+
+interface ProductivityMocksModule {
+  createGitHubMock(): ProviderMock;
+  githubFixtures: { default: unknown };
+}
 
 export const MCP_DEMO_API_KEY = "ey_test_agent_loop";
 export const MCP_DEMO_PROJECT_ID = "proj_agent_loop";
@@ -221,10 +241,10 @@ export async function createMcpDemoEnvironment(
 ): Promise<McpDemoEnvironment> {
   const [mockKit, emailMocks, messagingMocks, productivityMocks] =
     await Promise.all([
-      loadMocksModule<MockKitModule>("mock-kit"),
-      loadMocksModule<EmailMocksModule>("mocks-email"),
-      loadMocksModule<MessagingMocksModule>("mocks-messaging"),
-      loadMocksModule<ProductivityMocksModule>("mocks-productivity"),
+      loadFullMocksModule<MockKitModule>("mock-kit"),
+      loadFullMocksModule<EmailMocksModule>("mocks-email"),
+      loadFullMocksModule<MessagingMocksModule>("mocks-messaging"),
+      loadFullMocksModule<ProductivityMocksModule>("mocks-productivity"),
     ]);
   const { createMockApp } = mockKit;
   const { createGmailMock } = emailMocks;

@@ -80,6 +80,8 @@ export interface CreateGitHubMockOptions {
 }
 
 export const GITHUB_ROUTE_COUNT = 9;
+const GITHUB_FIXTURE_ORIGIN = "https://github.example.com";
+const GITHUB_FIXTURE_DOCUMENTATION_URL = "https://docs.github.example.com/rest";
 
 /**
  * Deterministic, non-production fixtures for the public GitHub mock.
@@ -98,7 +100,7 @@ export const githubFixtures = {
         private: false,
         defaultBranch: "main",
         description: "Obviously fake repository for deterministic mock tests",
-        htmlUrl: "https://github.com/example-org/github-mock-repository",
+        htmlUrl: `${GITHUB_FIXTURE_ORIGIN}/example-org/github-mock-repository`,
       },
     ],
     issues: [
@@ -175,8 +177,7 @@ export const githubFixtures = {
         authorEmail: "fixture-author@example.com",
         authoredAt: "2026-01-01T00:00:00.000Z",
         branch: "main",
-        htmlUrl:
-          "https://github.com/example-org/github-mock-repository/commit/fixture-sha-main-0001",
+        htmlUrl: `${GITHUB_FIXTURE_ORIGIN}/example-org/github-mock-repository/commit/fixture-sha-main-0001`,
       },
       {
         id: "github_commit_fixture_000002",
@@ -187,8 +188,7 @@ export const githubFixtures = {
         authorEmail: "fixture-contributor@example.com",
         authoredAt: "2026-01-01T01:00:00.000Z",
         branch: "feature/mock-fixtures",
-        htmlUrl:
-          "https://github.com/example-org/github-mock-repository/commit/fixture-sha-head-0001",
+        htmlUrl: `${GITHUB_FIXTURE_ORIGIN}/example-org/github-mock-repository/commit/fixture-sha-head-0001`,
       },
     ],
   },
@@ -197,7 +197,7 @@ export const githubFixtures = {
 function githubErrorBody(message: string) {
   return {
     message,
-    documentation_url: "https://docs.github.com/rest",
+    documentation_url: GITHUB_FIXTURE_DOCUMENTATION_URL,
   };
 }
 
@@ -284,7 +284,7 @@ function apiIssue(issue: StoredRecord<GitHubIssue>) {
     created_at: issue.createdAt,
     updated_at: issue.updatedAt,
     closed_at: issue.closedAt,
-    html_url: `https://github.com/${issue.repository}/issues/${issue.number}`,
+    html_url: `${GITHUB_FIXTURE_ORIGIN}/${issue.repository}/issues/${issue.number}`,
   };
 }
 
@@ -296,13 +296,7 @@ function apiComment(comment: StoredRecord<GitHubComment>) {
     user: { login: comment.user },
     created_at: comment.createdAt,
     updated_at: comment.updatedAt,
-    html_url:
-      "https://github.com/" +
-      comment.repository +
-      "/issues/" +
-      comment.issueNumber +
-      "#issuecomment-" +
-      comment.databaseId,
+    html_url: `${GITHUB_FIXTURE_ORIGIN}/${comment.repository}/issues/${comment.issueNumber}#issuecomment-${comment.databaseId}`,
   };
 }
 
@@ -321,7 +315,7 @@ function apiPullRequest(pull: StoredRecord<GitHubPullRequest>) {
     user: { login: pull.user },
     created_at: pull.createdAt,
     updated_at: pull.updatedAt,
-    html_url: `https://github.com/${pull.repository}/pull/${pull.number}`,
+    html_url: `${GITHUB_FIXTURE_ORIGIN}/${pull.repository}/pull/${pull.number}`,
   };
 }
 
