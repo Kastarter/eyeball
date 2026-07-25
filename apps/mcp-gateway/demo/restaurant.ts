@@ -10,21 +10,21 @@ import {
   type QualifiedToolName,
 } from "@eyeball/core";
 import {
-  createMockApp,
-  createMockClock,
-} from "../../../mocks/packages/mock-kit/dist/index.js";
-import { createGmailMock } from "../../../mocks/packages/mocks-email/dist/index.js";
-import {
-  createGoogleCalendarMock,
-  googleCalendarFixtures,
-} from "../../../mocks/packages/mocks-productivity/dist/index.js";
-import { createPipecatMock } from "../../../mocks/packages/mocks-voice/dist/index.js";
-import {
   defaultToolkitAdapters,
   runVoiceSessionDriver,
   VoiceAgentsAdapter,
 } from "../../../packages/toolkits/src/index.js";
 import { AdapterRegistry, ExecutionEngine } from "../../executor/src/index.js";
+import { loadMocksModule } from "../test/mocks-checkout.js";
+
+type MockKitModule =
+  typeof import("../../../mocks/packages/mock-kit/dist/index.js");
+type EmailMocksModule =
+  typeof import("../../../mocks/packages/mocks-email/dist/index.js");
+type ProductivityMocksModule =
+  typeof import("../../../mocks/packages/mocks-productivity/dist/index.js");
+type VoiceMocksModule =
+  typeof import("../../../mocks/packages/mocks-voice/dist/index.js");
 
 const API_PROJECT_ID = "proj_restaurant_demo";
 const DINER_USER_ID = "diner_restaurant_demo";
@@ -129,6 +129,18 @@ export interface RestaurantVoiceDemoResult {
 
 /** Runs the RFC 002 restaurant scenario entirely in-process with deterministic mocks. */
 export async function runRestaurantVoiceDemo(): Promise<RestaurantVoiceDemoResult> {
+  const [mockKit, emailMocks, productivityMocks, voiceMocks] =
+    await Promise.all([
+      loadMocksModule<MockKitModule>("mock-kit"),
+      loadMocksModule<EmailMocksModule>("mocks-email"),
+      loadMocksModule<ProductivityMocksModule>("mocks-productivity"),
+      loadMocksModule<VoiceMocksModule>("mocks-voice"),
+    ]);
+  const { createMockApp, createMockClock } = mockKit;
+  const { createGmailMock } = emailMocks;
+  const { createGoogleCalendarMock, googleCalendarFixtures } =
+    productivityMocks;
+  const { createPipecatMock } = voiceMocks;
   const clock = createMockClock();
   const pipecat = createPipecatMock({ clock });
   const calendar = createGoogleCalendarMock({ clock });

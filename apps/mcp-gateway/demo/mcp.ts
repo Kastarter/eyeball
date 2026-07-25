@@ -7,24 +7,10 @@ import {
   MockCredentialProvider,
   type QualifiedToolName,
 } from "@eyeball/core";
-import {
-  createMockApp,
-  type ProviderMock,
-} from "../../../mocks/packages/mock-kit/dist/index.js";
-import {
-  createGmailMock,
-  type GmailMessage,
-} from "../../../mocks/packages/mocks-email/dist/index.js";
-import {
-  createSlackMock,
-  type SlackMessage,
-  slackFixtures,
-} from "../../../mocks/packages/mocks-messaging/dist/index.js";
-import {
-  createGitHubMock,
-  type GitHubIssue,
-  githubFixtures,
-} from "../../../mocks/packages/mocks-productivity/dist/index.js";
+import type { ProviderMock } from "../../../mocks/packages/mock-kit/dist/index.js";
+import type { GmailMessage } from "../../../mocks/packages/mocks-email/dist/index.js";
+import type { SlackMessage } from "../../../mocks/packages/mocks-messaging/dist/index.js";
+import type { GitHubIssue } from "../../../mocks/packages/mocks-productivity/dist/index.js";
 import {
   createExecutorApp,
   ExecutionEngine,
@@ -34,6 +20,16 @@ import {
   MCP_PROTOCOL_VERSION,
   type ToolDiscoveryMode,
 } from "../src/index.js";
+import { loadMocksModule } from "../test/mocks-checkout.js";
+
+type MockKitModule =
+  typeof import("../../../mocks/packages/mock-kit/dist/index.js");
+type EmailMocksModule =
+  typeof import("../../../mocks/packages/mocks-email/dist/index.js");
+type MessagingMocksModule =
+  typeof import("../../../mocks/packages/mocks-messaging/dist/index.js");
+type ProductivityMocksModule =
+  typeof import("../../../mocks/packages/mocks-productivity/dist/index.js");
 
 export const MCP_DEMO_API_KEY = "ey_test_agent_loop";
 export const MCP_DEMO_PROJECT_ID = "proj_agent_loop";
@@ -214,15 +210,26 @@ export interface McpDemoEnvironment {
   engine: ExecutionEngine;
   executorApp: ReturnType<typeof createExecutorApp>;
   providers: {
-    gmail: ReturnType<typeof createGmailMock>;
-    github: ReturnType<typeof createGitHubMock>;
-    slack: ReturnType<typeof createSlackMock>;
+    gmail: ReturnType<EmailMocksModule["createGmailMock"]>;
+    github: ReturnType<ProductivityMocksModule["createGitHubMock"]>;
+    slack: ReturnType<MessagingMocksModule["createSlackMock"]>;
   };
 }
 
 export async function createMcpDemoEnvironment(
   discoveryMode: ToolDiscoveryMode,
 ): Promise<McpDemoEnvironment> {
+  const [mockKit, emailMocks, messagingMocks, productivityMocks] =
+    await Promise.all([
+      loadMocksModule<MockKitModule>("mock-kit"),
+      loadMocksModule<EmailMocksModule>("mocks-email"),
+      loadMocksModule<MessagingMocksModule>("mocks-messaging"),
+      loadMocksModule<ProductivityMocksModule>("mocks-productivity"),
+    ]);
+  const { createMockApp } = mockKit;
+  const { createGmailMock } = emailMocks;
+  const { createSlackMock, slackFixtures } = messagingMocks;
+  const { createGitHubMock, githubFixtures } = productivityMocks;
   const gmail = createGmailMock();
   const github = createGitHubMock();
   const slack = createSlackMock();

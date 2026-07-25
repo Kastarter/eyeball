@@ -1,8 +1,9 @@
 #!/usr/bin/env node
 
 import { randomUUID } from "node:crypto";
+import { existsSync } from "node:fs";
 import { resolve } from "node:path";
-import { pathToFileURL } from "node:url";
+import { fileURLToPath, pathToFileURL } from "node:url";
 import { serve } from "@hono/node-server";
 import { AdapterRegistry } from "../apps/executor/src/adapters/index.js";
 import { InMemoryDevVault } from "../apps/executor/src/dev-vault.js";
@@ -13,7 +14,6 @@ import {
 } from "../apps/executor/src/engine.js";
 import { createExecutorApp } from "../apps/executor/src/routes.js";
 import { createMcpGatewayApp } from "../apps/mcp-gateway/src/index.js";
-import { createMockhouse } from "../mocks/apps/mockhouse/src/index.js";
 import { defaultCatalog } from "../packages/catalog/src/index.js";
 import {
   EyeballError,
@@ -37,9 +37,28 @@ const DEFAULT_USER_ID = "demo_user";
 // Deployment-scoped service identity for the mock Pipecat runtime. This is
 // intentionally separate from the auth-free voice-agent management manifest.
 const MOCKHOUSE_PIPECAT_RUNTIME_TOKEN = "fixture:valid";
+const FULL_MOCKHOUSE_MODULE = "../mocks/apps/mockhouse/src/index.js";
+const FULL_MOCKHOUSE_ENTRY = fileURLToPath(
+  new URL("../mocks/apps/mockhouse/src/index.ts", import.meta.url),
+);
 
 type HonoServer = ReturnType<typeof serve>;
 type FetchHandler = (request: Request) => Response | Promise<Response>;
+
+interface MockhouseProvider {
+  readonly slug: string;
+  reset(): void;
+}
+
+interface MockhouseRuntime {
+  readonly app: MockhouseApp;
+  readonly providers: readonly MockhouseProvider[];
+}
+
+interface PipecatMockProvider extends MockhouseProvider {
+  readonly clock: { now(): Date };
+  advanceClock(milliseconds: number): void;
+}
 
 export interface DevStackOptions {
   mockhousePort?: number;
@@ -70,8 +89,8 @@ export interface InProcessDevStackRuntime {
   projectId: string;
   userId: string;
   providerCount: number;
-  mockhouseApp: ReturnType<typeof createMockhouse>["app"];
-  mockhouseProviders: ReturnType<typeof createMockhouse>["providers"];
+  mockhouseApp: MockhouseRuntime["app"];
+  mockhouseProviders: MockhouseRuntime["providers"];
   executorEngine: ExecutionEngine;
   executorApp: ReturnType<typeof createExecutorApp>;
   mcpGatewayApp: ReturnType<typeof createMcpGatewayApp>;
@@ -97,7 +116,88 @@ interface StackIdentity {
 }
 
 interface RequestApp {
-  request(request: Request): Response | Promise<Response>;
+  request(
+    request: Request | string,
+    init?: RequestInit,
+  ): Response | Promise<Response>;
+}
+
+interface MockhouseApp extends RequestApp {
+  fetch: FetchHandler;
+}
+
+function isMockhouseRuntime(value: unknown): value is MockhouseRuntime {
+  if (typeof value !== "object" || value === null) return false;
+  const candidate = value as { app?: unknown; providers?: unknown };
+  if (typeof candidate.app !== "object" || candidate.app === null) {
+    return false;
+  }
+  const app = candidate.app as { fetch?: unknown };
+  return (
+    typeof app.fetch === "function" &&
+    Array.isArray(candidate.providers) &&
+    candidate.providers.every(
+      (provider) =>
+        typeof provider === "object" &&
+        provider !== null &&
+        "slug" in provider &&
+        typeof provider.slug === "string" &&
+        "reset" in provider &&
+        typeof provider.reset === "function",
+    )
+  );
+}
+
+function mockhouseRuntime(value: unknown, source: string): MockhouseRuntime {
+  if (!isMockhouseRuntime(value)) {
+    throw new Error(`${source} returned an invalid Mockhouse runtime.`);
+  }
+  return value;
+}
+
+function pipecatProvider(
+  providers: readonly MockhouseProvider[],
+): PipecatMockProvider | undefined {
+  const provider = providers.find(({ slug }) => slug === "pipecat");
+  if (
+    provider === undefined ||
+    typeof provider !== "object" ||
+    !("clock" in provider) ||
+    !("advanceClock" in provider)
+  ) {
+    return undefined;
+  }
+  const candidate = provider as {
+    clock?: { now?: unknown };
+    advanceClock?: unknown;
+  };
+  return typeof candidate.clock?.now === "function" &&
+    typeof candidate.advanceClock === "function"
+    ? (provider as PipecatMockProvider)
+    : undefined;
+}
+
+async function createDevMockhouse(): Promise<MockhouseRuntime> {
+  if (existsSync(FULL_MOCKHOUSE_ENTRY)) {
+    const fullMockhouse = (await import(FULL_MOCKHOUSE_MODULE)) as {
+      createMockhouse?: () => unknown;
+    };
+    if (typeof fullMockhouse.createMockhouse !== "function") {
+      throw new Error(
+        "Full Mockhouse checkout does not export createMockhouse.",
+      );
+    }
+    return mockhouseRuntime(
+      fullMockhouse.createMockhouse(),
+      "Full Mockhouse checkout",
+    );
+  }
+
+  const { createStarterMockhouse } = await import("@eyeball/mocks-starter");
+  process.stdout.write(
+    "starter mocks (3 providers): full Mockhouse checkout not present\n",
+  );
+  return mockhouseRuntime(createStarterMockhouse(), "Starter Mockhouse");
 }
 
 function configuredPort(
@@ -217,10 +317,10 @@ function mockProviderSlug(manifest: ProviderManifest): string {
 
 function baseUrlOverrides(
   mockhouseUrl: string,
-  providerSlugs: ReadonlySet<string>,
+  manifests: readonly ProviderManifest[],
 ): Readonly<Record<string, string>> {
   const overrides: Record<string, string> = {};
-  for (const manifest of defaultCatalog.listManifests()) {
+  for (const manifest of manifests) {
     const envName = manifest.endpoint.baseUrlOverrideEnv;
     if (envName === undefined) {
       throw new Error(
@@ -228,11 +328,6 @@ function baseUrlOverrides(
       );
     }
     const providerSlug = mockProviderSlug(manifest);
-    if (!providerSlugs.has(providerSlug)) {
-      throw new Error(
-        `Mockhouse does not mount ${providerSlug}, required by ${manifest.toolkit.slug}.`,
-      );
-    }
     const value = `${mockhouseUrl}/${providerSlug}`;
     const existing = overrides[envName];
     if (existing !== undefined && existing !== value) {
@@ -284,7 +379,7 @@ function serviceAuthenticatedFetch(
 }
 
 async function createMockBackedExecutor(
-  mockhouse: ReturnType<typeof createMockhouse>,
+  mockhouse: MockhouseRuntime,
   mockhouseUrl: string,
   identity: StackIdentity,
   env: Readonly<Record<string, string | undefined>>,
@@ -297,12 +392,14 @@ async function createMockBackedExecutor(
   const providerSlugs = new Set(
     mockhouse.providers.map((provider) => provider.slug),
   );
+  const manifests = defaultCatalog
+    .listManifests()
+    .filter((manifest) => providerSlugs.has(mockProviderSlug(manifest)));
   const executorEnv = {
     ...env,
     EYEBALL_LOG_FORMAT: env.EYEBALL_LOG_FORMAT ?? "pretty",
-    ...baseUrlOverrides(mockhouseUrl, providerSlugs),
+    ...baseUrlOverrides(mockhouseUrl, manifests),
   };
-  const manifests = defaultCatalog.listManifests();
   const devVault = new InMemoryDevVault({
     credentials: Object.fromEntries(
       manifests.map((manifest) => [
@@ -320,62 +417,82 @@ async function createMockBackedExecutor(
       }),
     ),
   );
-  const providerFetch = fetchImpl ?? globalThis.fetch;
-  const pipecatBaseUrl = `${mockhouseUrl}/pipecat`;
-  const sessionRuntimeFetch = serviceAuthenticatedFetch(
-    providerFetch,
-    pipecatBaseUrl,
-    MOCKHOUSE_PIPECAT_RUNTIME_TOKEN,
-  );
   const agentStore = new InMemoryAgentStore();
   let boundEngine: ExecutionEngine | undefined;
-  const voiceAgents = new VoiceAgentsAdapter({
-    store: agentStore,
-    sessionRuntimeFetch,
-    resolveTool: (name) => defaultCatalog.getTool(name),
-    executeProviderTool: async (request) => {
-      if (boundEngine === undefined) {
-        throw new Error(
-          "Voice provider executor was used before dev-stack runtime binding.",
+  const pipecat = pipecatProvider(mockhouse.providers);
+  const providerFetch = fetchImpl ?? globalThis.fetch;
+  const pipecatBaseUrl = `${mockhouseUrl}/pipecat`;
+  const sessionRuntimeFetch =
+    pipecat === undefined
+      ? undefined
+      : serviceAuthenticatedFetch(
+          providerFetch,
+          pipecatBaseUrl,
+          MOCKHOUSE_PIPECAT_RUNTIME_TOKEN,
         );
-      }
-      const outcome = await boundEngine.execute({
-        projectId: request.projectId,
-        idempotencyKey: `voice-provider-${randomUUID()}`,
-        request: {
-          tool: request.tool,
-          userId: request.userId,
-          connectionId: request.connectionId,
-          input: request.input,
-          mode: "sync",
-        },
-      });
-      const response = outcome.response;
-      if (response.status === "succeeded") return response.output;
-      if (response.status === "failed" || response.status === "cancelled") {
-        throw new EyeballError({
-          code: response.error.code,
-          message: response.error.message,
-          retryable: response.error.retryable,
-          ...(response.error.retryAfter === undefined
-            ? {}
-            : { retryAfter: response.error.retryAfter }),
-          ...(response.error.provider === undefined
-            ? {}
-            : { providerDetail: response.error.provider }),
+  const voiceAgents =
+    sessionRuntimeFetch === undefined
+      ? undefined
+      : new VoiceAgentsAdapter({
+          store: agentStore,
+          sessionRuntimeFetch,
+          resolveTool: (name) => defaultCatalog.getTool(name),
+          executeProviderTool: async (request) => {
+            if (boundEngine === undefined) {
+              throw new Error(
+                "Voice provider executor was used before dev-stack runtime binding.",
+              );
+            }
+            const outcome = await boundEngine.execute({
+              projectId: request.projectId,
+              idempotencyKey: `voice-provider-${randomUUID()}`,
+              request: {
+                tool: request.tool,
+                userId: request.userId,
+                connectionId: request.connectionId,
+                input: request.input,
+                mode: "sync",
+              },
+            });
+            const response = outcome.response;
+            if (response.status === "succeeded") return response.output;
+            if (
+              response.status === "failed" ||
+              response.status === "cancelled"
+            ) {
+              throw new EyeballError({
+                code: response.error.code,
+                message: response.error.message,
+                retryable: response.error.retryable,
+                ...(response.error.retryAfter === undefined
+                  ? {}
+                  : { retryAfter: response.error.retryAfter }),
+                ...(response.error.provider === undefined
+                  ? {}
+                  : { providerDetail: response.error.provider }),
+              });
+            }
+            throw new Error(
+              `Nested synchronous provider execution returned ${response.status}.`,
+            );
+          },
         });
-      }
-      throw new Error(
-        `Nested synchronous provider execution returned ${response.status}.`,
-      );
-    },
-  });
+  if (pipecat === undefined) {
+    process.stdout.write(
+      "voice session runtime disabled: Pipecat mock provider is not present\n",
+    );
+  }
   const twilio = new TwilioAdapter({ bindingLookup: agentStore });
   const engine = new ExecutionEngine({
     catalog: defaultCatalog,
     adapters: new AdapterRegistry(
       defaultToolkitAdapters.map((adapter) => {
-        if (adapter.toolkitSlug === "voice-agents") return voiceAgents;
+        if (
+          adapter.toolkitSlug === "voice-agents" &&
+          voiceAgents !== undefined
+        ) {
+          return voiceAgents;
+        }
         if (adapter.toolkitSlug === "twilio") return twilio;
         return adapter;
       }),
@@ -386,30 +503,27 @@ async function createMockBackedExecutor(
     ...engineOptions,
   });
   boundEngine = engine;
-  const pipecat = mockhouse.providers.find(
-    (provider) => provider.slug === "pipecat",
-  );
-  if (pipecat === undefined) {
-    throw new Error("Mockhouse does not mount the Pipecat session runtime.");
-  }
-  const devVoiceSessions = new DevVoiceSessionRuntime({
-    engine,
-    agentStore,
-    pipecatBaseUrl,
-    fetch: sessionRuntimeFetch,
-    clock: {
-      now: () => pipecat.clock.now(),
-      advance: (milliseconds) => {
-        pipecat.advanceClock(milliseconds);
-      },
-    },
-  });
+  const devVoiceSessions =
+    pipecat === undefined || sessionRuntimeFetch === undefined
+      ? undefined
+      : new DevVoiceSessionRuntime({
+          engine,
+          agentStore,
+          pipecatBaseUrl,
+          fetch: sessionRuntimeFetch,
+          clock: {
+            now: () => pipecat.clock.now(),
+            advance: (milliseconds) => {
+              pipecat.advanceClock(milliseconds);
+            },
+          },
+        });
   return {
     engine,
     app: createExecutorApp({
       engine,
       devVault,
-      devVoiceSessions,
+      ...(devVoiceSessions === undefined ? {} : { devVoiceSessions }),
       apiKeys: { [identity.apiKey]: identity.projectId },
       env: executorEnv,
     }),
@@ -473,7 +587,7 @@ export async function startDevStack(
   const servers: HonoServer[] = [];
 
   try {
-    const mockhouse = createMockhouse();
+    const mockhouse = await createDevMockhouse();
     const mockhouseServer = await listen(mockhouse.app.fetch, mockhousePort);
     servers.push(mockhouseServer.server);
     const { app: executorApp } = await createMockBackedExecutor(
@@ -525,7 +639,7 @@ export async function createInProcessDevStack(
   const mockhouseUrl = "http://mockhouse.dev-stack.test";
   const executorUrl = "http://executor.dev-stack.test";
   const mcpGatewayOrigin = "http://mcp-gateway.dev-stack.test";
-  const mockhouse = createMockhouse();
+  const mockhouse = await createDevMockhouse();
   const { app: executorApp, engine: executorEngine } =
     await createMockBackedExecutor(
       mockhouse,
