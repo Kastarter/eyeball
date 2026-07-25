@@ -65,8 +65,11 @@ Tests are in-process and require no live accounts or open ports.
    credential and canonical input, call the provider, and return canonical
    output. Normalize errors through the shared taxonomy — never throw a raw
    `Error` across the boundary.
-4. **Add a mock** in the `mocks/` repository so the toolkit is certified without
-   a live account. The contract matrix runs your toolkit against it.
+4. **Add a mock** so the toolkit is certified without a live account. The
+   deterministic mocks live in a separate repository (`mocks/` when checked
+   out) that may not be public yet — if you don't have access, ship the
+   manifest and adapter with your declared operations, note it in the PR, and
+   a maintainer will pair with you on the mock and contract rows.
 5. **Regenerate docs** (`pnpm docs:generate`) and run the gates above.
 
 [docs/ADDING-A-PROVIDER.md](./docs/ADDING-A-PROVIDER.md) walks the same five

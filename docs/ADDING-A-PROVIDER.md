@@ -2,6 +2,14 @@
 
 This recipe follows the existing Notion and Twilio integrations. A provider is a manifest, a canonical adapter, a deterministic vendor-shaped mock, and contract coverage—not a provider-specific API exposed to agents.
 
+> **Mocks repository access:** the deterministic provider mocks live in a
+> separate repository checked out at `mocks/`. If it is not public (or you do
+> not have access), complete the manifest and adapter steps, skip the mock
+> steps, and say so in your PR — a maintainer will add the mock and contract
+> rows with you. The gates that need built mocks (`pnpm test:contract`,
+> `pnpm dev:stack`, parts of the executor suite) only run with that checkout
+> present.
+
 ## 1. Choose the smallest canonical surface
 
 Start in `packages/catalog/src/capabilities/` and use an existing capability contract whenever the provider fits one. Declare only the canonical operations the adapter really implements; undeclared operations are expected to return `not_supported` without contacting the provider.
