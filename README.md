@@ -1,8 +1,10 @@
 # Eyeball
 
-Eyeball is one typed, authenticated tool API for AI agents: agents discover canonical tools once, execute them through the SDK or MCP, and let Eyeball handle provider-specific payloads, credentials, retries, and audit records. The source tree ships a local-first stack with deterministic provider doubles, so the same execution path can be developed and tested without live SaaS accounts before it is certified against real providers.
+Eyeball is one typed, authenticated tool API for AI agents: agents discover canonical tools once, execute them through the SDK or MCP, and let Eyeball handle provider-specific payloads, credentials, retries, and audit records. It ships 37 toolkits across email, messaging, voice calling, CRMs, business systems, and social data — with per-end-user connected accounts as a first-class primitive and tools shaped for Anthropic, OpenAI, the Vercel AI SDK, or any MCP host.
 
-> **Status:** `0.2.0` has been cut in source. The publishing pipeline is ready, but access to the `@eyeball` npm organization, final license approval, and the first registry release remain pending; no npm or hosted Cloud release is claimed. The local platform is runnable, and the private cloud control plane is implemented but not deployed or live-provider certified.
+Eyeball is **open source (MIT)**, and that is the bet: integrations are a problem solved faster by many hands than by one company. Fork it, add the toolkit your agent needs, and open a PR — every adapter hardens the layer every agent can reach. See [CONTRIBUTING.md](./CONTRIBUTING.md).
+
+> **Status:** pre-release. The engineering is complete and gated (build, tests, the 493-row contract matrix, typecheck, lint), and the four public packages (`@eyeball/core`, `@eyeball/catalog`, `@eyeball/toolkits`, `@eyeball/sdk`) are cut and MIT-licensed. The npm publish is imminent, pending the `@eyeball` organization. The hosted Cloud control plane lives in a separate private repository and is not part of this open project. Provider adapters are certified against deterministic mocks; live-provider certification is ongoing (Notion and Google Drive are proven live).
 
 ## Architecture
 
@@ -150,7 +152,7 @@ ANTHROPIC_API_KEY=... pnpm demo:anthropic
 
 ## Release status
 
-| Surface | Status in `0.2.0` source |
+| Surface | Status |
 | --- | --- |
 | Activepieces bridge breadth spike | Complete as a private experiment: five pinned pieces introspect, three actions execute in-process, and the decision is selective per-piece promotion with no wholesale vendoring; production isolation and certification remain pending ([RFC 003](./docs/rfcs/003-bridge-spike-findings.md)) |
 | 37 toolkits/provider manifests | Built in catalog `1.1` with canonical schemas and discovery |
