@@ -310,6 +310,15 @@ importers:
         specifier: ^3.0.1
         version: 3.0.1(ajv@8.20.0)
 
+  packages/mocks-starter:
+    dependencies:
+      '@hono/node-server':
+        specifier: ^1.16.0
+        version: 1.19.14(hono@4.12.30)
+      hono:
+        specifier: ^4.8.10
+        version: 4.12.30
+
   packages/sdk:
     dependencies:
       '@eyeball/catalog':
