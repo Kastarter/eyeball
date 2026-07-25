@@ -69,6 +69,8 @@ Tests are in-process and require no live accounts or open ports.
    a live account. The contract matrix runs your toolkit against it.
 5. **Regenerate docs** (`pnpm docs:generate`) and run the gates above.
 
+[docs/ADDING-A-PROVIDER.md](./docs/ADDING-A-PROVIDER.md) walks the same five
+steps with annotated code skeletons for each file.
 `docs/CERTIFICATION.md` explains mock-vs-real certification. Live-provider
 certification (running against a real account) is a great follow-up PR once the
 mock path is green.
