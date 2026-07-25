@@ -1,7 +1,13 @@
 #!/usr/bin/env node
 
 import { execFileSync } from "node:child_process";
-import { lstatSync, readFileSync } from "node:fs";
+import {
+  closeSync,
+  lstatSync,
+  openSync,
+  readFileSync,
+  readSync,
+} from "node:fs";
 import { dirname, extname, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 
@@ -17,7 +23,12 @@ interface SecretRule {
 }
 
 const repositoryRoot = resolve(dirname(fileURLToPath(import.meta.url)), "..");
-const MAX_TEXT_FILE_BYTES = 5 * 1024 * 1024;
+export const MAX_TEXT_FILE_BYTES = 5 * 1024 * 1024;
+// Bytes carried between adjacent windows when a tracked text file exceeds the
+// per-read window. Every rule in this scanner matches ASCII-only tokens, so an
+// overlap larger than any realistic single secret guarantees a credential that
+// straddles a window boundary is still seen whole inside the next window.
+const SCAN_WINDOW_OVERLAP_BYTES = 64 * 1024;
 const SKIPPED_EXTENSIONS = new Set([
   ".avif",
   ".gif",
@@ -198,6 +209,55 @@ function trackedFiles(root: string): string[] {
   return encoded.split("\0").filter(Boolean);
 }
 
+/**
+ * Scans a tracked text file that is larger than one read window by streaming it
+ * in overlapping windows, so an oversized file can never bypass the gate (it is
+ * scanned, not skipped) while memory stays bounded to one window plus overlap.
+ * Reported line numbers are file-absolute; findings are de-duplicated across the
+ * overlap. Any window containing a NUL byte marks the file binary and abandons
+ * it, matching the whole-file path.
+ */
+function scanLargeText(
+  path: string,
+  absolute: string,
+  sizeBytes: number,
+): SecretFinding[] {
+  const findings: SecretFinding[] = [];
+  const seen = new Set<string>();
+  const fd = openSync(absolute, "r");
+  try {
+    const buffer = Buffer.allocUnsafe(MAX_TEXT_FILE_BYTES);
+    let carry = "";
+    let lineBase = 1; // File-absolute line number of carry's first character.
+    let position = 0;
+    while (position < sizeBytes) {
+      const bytesRead = readSync(fd, buffer, 0, MAX_TEXT_FILE_BYTES, position);
+      if (bytesRead === 0) break;
+      const chunk = buffer.subarray(0, bytesRead);
+      if (chunk.includes(0)) return [];
+      const windowText = carry + chunk.toString("utf8");
+      for (const finding of scanText(path, windowText)) {
+        const line = lineBase + finding.line - 1;
+        const identity = `${line}:${finding.rule}`;
+        if (seen.has(identity)) continue;
+        seen.add(identity);
+        findings.push({ path, line, rule: finding.rule });
+      }
+      position += bytesRead;
+      if (position >= sizeBytes) break;
+      const overlap = windowText.slice(-SCAN_WINDOW_OVERLAP_BYTES);
+      const droppedCount = windowText.length - overlap.length;
+      for (let index = 0; index < droppedCount; index += 1) {
+        if (windowText.charCodeAt(index) === 10) lineBase += 1;
+      }
+      carry = overlap;
+    }
+    return findings;
+  } finally {
+    closeSync(fd);
+  }
+}
+
 /** Scans tracked, non-binary files in one Git worktree. */
 export function scanRepository(root: string): SecretFinding[] {
   const findings: SecretFinding[] = [];
@@ -209,10 +269,9 @@ export function scanRepository(root: string): SecretFinding[] {
     const stat = lstatSync(absolute, { throwIfNoEntry: false });
     if (stat === undefined || !stat.isFile()) continue;
     if (stat.size > MAX_TEXT_FILE_BYTES) {
-      // Visible skip: a secret hidden in an oversized file must not pass silently.
-      process.stderr.write(
-        `secret scan: skipping oversized tracked file ${path} (${stat.size} bytes)\n`,
-      );
+      // Oversized tracked text files are streamed in overlapping windows rather
+      // than skipped, so a secret can never pass the offline gate unscanned.
+      findings.push(...scanLargeText(path, absolute, stat.size));
       continue;
     }
     const bytes = readFileSync(absolute);
