@@ -967,14 +967,15 @@ export class ExecutionEngine {
         if (
           command.source?.kind === "voice_session" &&
           (command.executionId === undefined ||
-            canonicalRequest.mode !== "sync" ||
+            (canonicalRequest.mode !== "sync" &&
+              canonicalRequest.mode !== "async") ||
             !isVoiceSessionExecutionIdForSession(
               command.executionId,
               command.source.sessionId,
             ))
         ) {
           return invalidRequest(
-            "Voice-session source does not match the reserved synchronous child execution.",
+            "Voice-session source does not match the reserved child execution.",
           );
         }
         return {

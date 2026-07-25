@@ -661,13 +661,6 @@ describe("voice-session grant route confinement", () => {
         sessionId: SESSION_A,
         userId: USER_A,
         tool: TOOL_A,
-        mode: "async",
-      }),
-      executeRequest({
-        token: issued.token,
-        sessionId: SESSION_A,
-        userId: USER_A,
-        tool: TOOL_A,
         executionId: "not-an-execution-id",
       }),
       withoutIdempotency,
@@ -735,6 +728,35 @@ describe("voice-session grant route confinement", () => {
     expect(legitimateBody).toMatchObject({
       executionId: sessionBExecutionId,
     });
+  });
+
+  it("admits async child executions and scopes execution reads to the grant session", async () => {
+    const harness = await routeHarness();
+    const issued = await harness.grant(SESSION_A, USER_A, [TOOL_A]);
+    const reserved = voiceSessionExecutionId(SESSION_A, "test:event:1");
+    const submitted = await harness.app.request(
+      executeRequest({
+        token: issued.token,
+        sessionId: SESSION_A,
+        userId: USER_A,
+        tool: TOOL_A,
+        mode: "async",
+      }),
+    );
+    expect(submitted.status).toBe(202);
+    expect(await submitted.json()).toMatchObject({ executionId: reserved });
+
+    const ownRead = await harness.app.request(`/v1/executions/${reserved}`, {
+      headers: { Authorization: `Bearer ${issued.token}` },
+    });
+    expect(ownRead.status).toBe(200);
+    expect(await ownRead.json()).toMatchObject({ executionId: reserved });
+
+    const foreignRead = await harness.app.request(
+      `/v1/executions/${voiceSessionExecutionId(SESSION_B, "test:event:1")}`,
+      { headers: { Authorization: `Bearer ${issued.token}` } },
+    );
+    expect(foreignRead.status).toBe(403);
   });
 
   it("preserves the dedicated static pinned-key path", async () => {
