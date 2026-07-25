@@ -23,6 +23,38 @@ ToolExecutor = Callable[
 TranscriptRecorder = Callable[[str, str, str], str]
 
 
+
+def _inline_local_refs(schema: dict[str, Any]) -> dict[str, Any]:
+    """Resolve local #/$defs references so LLM tool schemas stay self-contained
+    after the $defs root is stripped by downstream function-schema builders."""
+    defs = schema.get("$defs")
+    if not isinstance(defs, dict):
+        return schema
+
+    def resolve(node: Any, seen: tuple[str, ...]) -> Any:
+        if isinstance(node, dict):
+            ref = node.get("$ref")
+            if isinstance(ref, str) and ref.startswith("#/$defs/"):
+                name = ref[len("#/$defs/") :]
+                target = defs.get(name)
+                if isinstance(target, dict) and name not in seen:
+                    extras = {k: v for k, v in node.items() if k != "$ref"}
+                    resolved = resolve(target, seen + (name,))
+                    if isinstance(resolved, dict) and extras:
+                        return {**resolved, **extras}
+                    return resolved
+                return node
+            return {key: resolve(value, seen) for key, value in node.items()}
+        if isinstance(node, list):
+            return [resolve(item, seen) for item in node]
+        return node
+
+    return {
+        key: resolve(value, ())
+        for key, value in schema.items()
+        if key != "$defs"
+    }
+
 class MediaConfigurationError(RuntimeError):
     pass
 
@@ -97,7 +129,7 @@ class PipecatPipelineFactory:
                 {
                     "name": encoded_name,
                     "description": tool.description,
-                    "input_schema": tool.input_schema,
+                    "input_schema": _inline_local_refs(tool.input_schema),
                 }
             )
         messages = _anthropic_messages(history)
@@ -270,6 +302,7 @@ class PipecatPipelineFactory:
             from pipecat.adapters.schemas.function_schema import FunctionSchema
             from pipecat.adapters.schemas.tools_schema import ToolsSchema
             from pipecat.audio.vad.silero import SileroVADAnalyzer
+            from pipecat.audio.vad.vad_analyzer import VADParams
             from pipecat.pipeline.pipeline import Pipeline
             from pipecat.pipeline.runner import PipelineRunner
             from pipecat.pipeline.task import PipelineParams, PipelineTask
@@ -311,6 +344,7 @@ class PipecatPipelineFactory:
             settings=DeepgramSTTService.Settings(
                 model=stt_config.get("model", "nova-3"),
                 language=stt_config.get("language", "en"),
+                endpointing=500,
                 smart_format=stt_config.get("smartFormat", True),
                 interim_results=stt_config.get("interimResults", True),
             ),
@@ -331,9 +365,10 @@ class PipecatPipelineFactory:
         schemas = []
         for tool in request.agent.allowed_tools:
             encoded_name = tool.name.replace(".", "__")
-            properties_value = tool.input_schema.get("properties", {})
+            inlined_schema = _inline_local_refs(tool.input_schema)
+            properties_value = inlined_schema.get("properties", {})
             properties = properties_value if isinstance(properties_value, dict) else {}
-            required_value = tool.input_schema.get("required", [])
+            required_value = inlined_schema.get("required", [])
             required = (
                 required_value
                 if isinstance(required_value, list)
@@ -374,6 +409,9 @@ class PipecatPipelineFactory:
                 cancel_on_interruption=True,
             )
 
+        turn_stop_seconds = self._config.voice_turn_stop_seconds
+        audio_idle_timeout = max(turn_stop_seconds + 0.25, 1.6)
+
         context = LLMContext(tools=ToolsSchema(standard_tools=schemas))
         mute_strategies: list[Any] = [FunctionCallUserMuteStrategy()]
         if not request.agent.barge_in.enabled:
@@ -381,7 +419,10 @@ class PipecatPipelineFactory:
         user_aggregator, assistant_aggregator = LLMContextAggregatorPair(
             context,
             user_params=LLMUserAggregatorParams(
-                vad_analyzer=SileroVADAnalyzer(),
+                audio_idle_timeout=audio_idle_timeout,
+                vad_analyzer=SileroVADAnalyzer(
+                    params=VADParams(stop_secs=turn_stop_seconds),
+                ),
                 user_mute_strategies=mute_strategies,
             ),
         )
@@ -483,10 +524,13 @@ class TwilioDialer:
                 "A Twilio `from` number or TWILIO_FROM_NUMBER is required."
             )
         account_sid = cast(str, self._config.twilio_account_sid)
+        # Trial accounts reject inline Twiml on Calls.json; serve the same
+        # document through the echo twimlet Url instead.
+        echo_url = "https://twimlets.com/echo?" + urlencode({"Twiml": twiml})
         response = await self._client.post(
             f"https://api.twilio.com/2010-04-01/Accounts/{account_sid}/Calls.json",
             auth=(account_sid, cast(str, self._config.twilio_auth_token)),
-            data={"To": transport.to, "From": from_number, "Twiml": twiml},
+            data={"To": transport.to, "From": from_number, "Url": echo_url},
         )
         response.raise_for_status()
         payload = response.json()

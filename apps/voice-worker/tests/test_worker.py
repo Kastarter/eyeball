@@ -1091,7 +1091,13 @@ async def test_twilio_dialer_authenticates_the_public_media_socket(
     assert call_sid == "CA_voice_worker_test"
     assert len(requests) == 1
     body = parse_qs(requests[0].content.decode())
-    twiml = body["Twiml"][0]
+    echo_url = urlsplit(body["Url"][0])
+    assert (echo_url.scheme, echo_url.netloc, echo_url.path) == (
+        "https",
+        "twimlets.com",
+        "/echo",
+    )
+    twiml = parse_qs(echo_url.query)["Twiml"][0]
     stream_url = twiml.split('url="', 1)[1].split('"', 1)[0]
     parsed = urlsplit(stream_url)
     assert parsed.scheme == "wss"

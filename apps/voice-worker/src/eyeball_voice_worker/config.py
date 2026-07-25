@@ -98,6 +98,7 @@ class WorkerConfig:
     host: str = "0.0.0.0"
     port: int = 8080
     drain_timeout_seconds: float = 25.0
+    voice_turn_stop_seconds: float = 1.35
     media_mode: Literal["fake", "pipecat"] = "pipecat"
     executor_url: str = "http://127.0.0.1:8787"
     executor_key: str | None = None
@@ -121,6 +122,8 @@ class WorkerConfig:
             raise ValueError("PORT must be an integer from 1 through 65535.")
         if self.drain_timeout_seconds <= 0:
             raise ValueError("EYEBALL_VOICE_DRAIN_SECONDS must be positive.")
+        if self.voice_turn_stop_seconds <= 0:
+            raise ValueError("EYEBALL_VOICE_TURN_STOP_SECS must be positive.")
         _secure_service_url(self.executor_url, "EYEBALL_EXECUTOR_URL")
         control_token = (self.control_token or "").strip()
         if len(control_token.encode()) < 32:
@@ -156,6 +159,9 @@ class WorkerConfig:
             port=_port(source),
             drain_timeout_seconds=_positive_float(
                 source, "EYEBALL_VOICE_DRAIN_SECONDS", 25.0
+            ),
+            voice_turn_stop_seconds=_positive_float(
+                source, "EYEBALL_VOICE_TURN_STOP_SECS", 1.35
             ),
             media_mode=media_mode,
             executor_url=executor_url,
