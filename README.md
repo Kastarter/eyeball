@@ -118,7 +118,49 @@ EYEBALL_EXECUTOR_URL=http://127.0.0.1:3000 \
 node --import tsx example.ts
 ```
 
+### Connect from Claude Code or any MCP host
+
+With the stack running, register the gateway as an MCP server. For Claude Code:
+
+```sh
+claude mcp add --transport http eyeball http://127.0.0.1:3001/mcp \
+  --header "Authorization: Bearer eyeball_dev_project"
+```
+
+or in a `.mcp.json` / Cursor MCP configuration:
+
+```json
+{
+  "mcpServers": {
+    "eyeball": {
+      "type": "http",
+      "url": "http://127.0.0.1:3001/mcp",
+      "headers": { "Authorization": "Bearer eyeball_dev_project" }
+    }
+  }
+}
+```
+
+The gateway defaults to search discovery: agents call `eyeball.search_tools`
+to find canonical tools and `eyeball.execute_tool` to run them, so hundreds of
+tools never flood the model's context. Async-by-nature tools (such as
+starting a phone call) run as bounded synchronous calls for ordinary MCP
+hosts, or as pollable tasks for hosts that negotiate MCP Tasks.
+
 The listener ports and development identity can be changed with `EYEBALL_MOCKHOUSE_PORT`, `EYEBALL_EXECUTOR_PORT`, `EYEBALL_MCP_GATEWAY_PORT`, `EYEBALL_DEV_API_KEY`, `EYEBALL_DEV_PROJECT_ID`, and `EYEBALL_DEV_USER_ID`.
+
+## Live voice agents
+
+Voice agents are first-class: compose an agent (system prompt, LLM, TTS/STT,
+tool allowlist), then run it over web audio or the phone. From the dashboard's
+Voice Agents panel you can create a web session and **join the room directly in
+the browser** — microphone capture, live agent audio, and the running
+transcript with inline tool calls. Agents with telephony tools can place real
+outbound calls mid-session through `voice-agents.start_agent_call`. The full
+live path — LiveKit web session, Deepgram STT, ElevenLabs TTS, Anthropic
+tool-use, and a real Twilio PSTN call answered on a phone — was certified
+end-to-end on 2026-07-25. See [Voice worker](./docs-site/self-hosting/voice-worker.mdx)
+for deployment and the dashboard panel for the interactive flow.
 
 ## Deployment persistence
 
@@ -157,13 +199,13 @@ ANTHROPIC_API_KEY=... pnpm demo:anthropic
 | Activepieces bridge breadth spike | Complete as a private experiment: five pinned pieces introspect, three actions execute in-process, and the decision is selective per-piece promotion with no wholesale vendoring; production isolation and certification remain pending ([RFC 003](./docs/rfcs/003-bridge-spike-findings.md)) |
 | 37 toolkits/provider manifests | Built in catalog `1.1` with canonical schemas and discovery |
 | 493-row contract matrix | Built: 227 smoke rows and 266 explicit `not_supported` rows |
-| Admin panel | Built as a demo-default Next.js dashboard with an explicit private-cloud mode |
+| Admin panel | Built as a demo-default Next.js dashboard with in-browser voice-session join and an explicit private-cloud mode |
 | MCP gateway | JSON/SSE Streamable HTTP, authenticated session lifecycle, catalog/search discovery, execution metadata, and experimental task polling built; stock execution cancellation is not available |
 | Documentation | Built in `docs/`, the verified 112-page `docs-site/` source, and the self-hosted `apps/docs` renderer |
 | Local credential vault | Built with encrypted single-tenant storage and development fixtures |
 | Hosted OAuth vault | Implemented in the private cloud repository with encrypted credentials, hosted connect flows, and refresh scheduling; deployment and live-provider certification remain pending |
 | Real-provider certification | Pending provider credentials and certification runs |
-| Voice-worker control plane | Versioned Python worker, executor bridge, SQLite recovery, account-free contract suites, and Docker/Fly certification assets built; no live carrier, media, speech, or model path is certified yet |
+| Voice-worker control plane | Versioned Python worker, executor bridge, SQLite recovery, and account-free contract suites built; live path certified 2026-07-25 (Twilio PSTN call answered, LiveKit web session, Deepgram/ElevenLabs/Anthropic) |
 | Billing | Implemented in the private cloud repository with versioned plans, usage metering, and Stripe integration; live catalog bootstrap, policy sign-off, and deployment remain pending |
 
 ## Documentation map

@@ -476,10 +476,11 @@ The following are explicit limitations, not implied guarantees:
 
 ## Vulnerability disclosure
 
-Until a public security contact is provisioned, **`security@eyeball.dev` is a
-placeholder and must not be represented as monitored**. Before any public
-release, publish and monitor that mailbox (or replace it here), add a
-`SECURITY.md` contact to public hosting, and define an encrypted intake path.
+Report vulnerabilities privately through GitHub's
+[private vulnerability reporting](https://github.com/Kastarter/eyeball/security/advisories/new)
+for `Kastarter/eyeball`, as described in the repository root `SECURITY.md`.
+Do not open public issues for security reports. A monitored security mailbox
+and an encrypted intake path remain future work for the hosted service.
 
 Reports should include the affected version/commit, reproduction steps, impact,
 and any proof-of-concept data. Reporters should avoid accessing other users'

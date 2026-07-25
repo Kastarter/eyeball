@@ -1044,7 +1044,9 @@ export class WebhooksClient {
    *   url: "https://agent.example.com/eyeball",
    *   events: ["execution.completed", "trigger.slack.message_received"],
    * });
-   * console.log(endpoint.secret);
+   * // endpoint.secret appears only in this response; hand it straight to your
+   * // secret manager instead of logging it.
+   * await secrets.store(`eyeball-webhook-${endpoint.id}`, endpoint.secret);
    */
   create(
     options: CreateWebhookEndpointOptions,

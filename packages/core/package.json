@@ -7,10 +7,10 @@
   "license": "MIT",
   "repository": {
     "type": "git",
-    "url": "git+https://github.com/eyeball-ai/eyeball.git",
+    "url": "git+https://github.com/Kastarter/eyeball.git",
     "directory": "packages/core"
   },
-  "homepage": "https://github.com/eyeball-ai/eyeball#readme",
+  "homepage": "https://github.com/Kastarter/eyeball#readme",
   "engines": {
     "node": ">=20"
   },

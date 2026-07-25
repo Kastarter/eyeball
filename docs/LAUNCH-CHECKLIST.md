@@ -166,17 +166,14 @@ git push -u origin main
 git ls-remote --exit-code origin HEAD
 ~~~
 
-Do not rewrite package metadata to Kastarter and do not transfer the repository
-to eyeball-ai until the founder answers: **Is Kastarter the canonical launch
-organization, or only the staging/private push?**
+Resolved 2026-07-25: **Kastarter is the canonical launch organization.**
+Package metadata points at `Kastarter/eyeball`.
 
 ### 3. Finalize the public license
 
-`LICENSE.md` and all four package license copies currently contain one line:
-“FSL-1.1 — Functional Source License. Final license text pending legal review.”
-The package `license` field correctly resolves to the included `LICENSE.md`, but
-that file is not publication-ready. Counsel must supply the exact approved text
-and redistribution terms.
+Resolved: `LICENSE.md` and all four package license copies now contain the
+full MIT License, and package `license` fields declare MIT. A regression test
+asserts the public manifests stay MIT.
 
 ~~~sh
 pnpm test:release
@@ -274,11 +271,11 @@ pnpm docs:snippets
 pnpm docs:typecheck
 pnpm docs:sdk:test
 pnpm test:contract
-pnpm --dir=/Users/khalidsh/eyeball/cloud run build
-pnpm --dir=/Users/khalidsh/eyeball/cloud run test
-pnpm --dir=/Users/khalidsh/eyeball/cloud run typecheck
-pnpm --dir=/Users/khalidsh/eyeball/cloud run lint
-uv run --project /Users/khalidsh/eyeball/apps/voice-worker --no-sync pytest
+pnpm --dir=cloud run build
+pnpm --dir=cloud run test
+pnpm --dir=cloud run typecheck
+pnpm --dir=cloud run lint
+uv run --project apps/voice-worker --no-sync pytest
 ~~~
 
 ### Deploy and initialize only after the register closes
@@ -289,18 +286,18 @@ certification. An owner must supply the private Vercel project, production
 Postgres, KMS and backup model, domains, OAuth applications, and Stripe account.
 
 ~~~sh
-vercel --cwd /Users/khalidsh/eyeball/cloud link
-vercel --cwd /Users/khalidsh/eyeball/cloud env add DATABASE_URL production
-vercel --cwd /Users/khalidsh/eyeball/cloud env add SESSION_SECRET production
-vercel --cwd /Users/khalidsh/eyeball/cloud env add INTERNAL_API_SECRET production
-vercel --cwd /Users/khalidsh/eyeball/cloud env add VAULT_MASTER_KEY production
-vercel --cwd /Users/khalidsh/eyeball/cloud env add OAUTH_INTENT_SECRET production
-vercel --cwd /Users/khalidsh/eyeball/cloud env add OAUTH_CALLBACK_URL production
-vercel --cwd /Users/khalidsh/eyeball/cloud env add STRIPE_SECRET_KEY production
-vercel --cwd /Users/khalidsh/eyeball/cloud env add STRIPE_WEBHOOK_SECRET production
-pnpm --dir=/Users/khalidsh/eyeball/cloud run build
-vercel --cwd /Users/khalidsh/eyeball/cloud deploy --prod
-pnpm --dir=/Users/khalidsh/eyeball/cloud run billing:bootstrap
+vercel --cwd cloud link
+vercel --cwd cloud env add DATABASE_URL production
+vercel --cwd cloud env add SESSION_SECRET production
+vercel --cwd cloud env add INTERNAL_API_SECRET production
+vercel --cwd cloud env add VAULT_MASTER_KEY production
+vercel --cwd cloud env add OAUTH_INTENT_SECRET production
+vercel --cwd cloud env add OAUTH_CALLBACK_URL production
+vercel --cwd cloud env add STRIPE_SECRET_KEY production
+vercel --cwd cloud env add STRIPE_WEBHOOK_SECRET production
+pnpm --dir=cloud run build
+vercel --cwd cloud deploy --prod
+pnpm --dir=cloud run billing:bootstrap
 ~~~
 
 The bootstrap command must run in an authenticated operator environment with
@@ -319,7 +316,7 @@ volume; never treat the static worker key as multi-user authority.
 ~~~sh
 fly volumes create voice_worker_data --region <region> --size 10 --app <app>
 fly secrets set --app <app> EYEBALL_VOICE_WORKER_TOKEN='...' EYEBALL_EXECUTOR_URL='https://executor.example.com' EYEBALL_VOICE_PUBLIC_URL='https://<app>.fly.dev' ANTHROPIC_API_KEY='...' DEEPGRAM_API_KEY='...' ELEVENLABS_API_KEY='...' TWILIO_ACCOUNT_SID='...' TWILIO_AUTH_TOKEN='...' TWILIO_FROM_NUMBER='...' LIVEKIT_URL='...' LIVEKIT_API_KEY='...' LIVEKIT_API_SECRET='...'
-fly deploy --config /Users/khalidsh/eyeball/apps/voice-worker/fly.toml --app <app> --region <region>
+fly deploy --config apps/voice-worker/fly.toml --app <app> --region <region>
 EYEBALL_CONTRACT_TARGET=real EYEBALL_CONTRACT_PROVIDERS='deepgram,elevenlabs,livekit,pipecat,twilio,voice-agents' pnpm test:contract
 ~~~
 
