@@ -1,6 +1,6 @@
 {
   "name": "@eyeball/core",
-  "version": "0.2.0",
+  "version": "0.3.0",
   "description": "Canonical contracts, schemas, credentials, and execution seams for Eyeball.",
   "private": false,
   "type": "module",
@@ -11,6 +11,18 @@
     "directory": "packages/core"
   },
   "homepage": "https://github.com/Kastarter/eyeball#readme",
+  "bugs": {
+    "url": "https://github.com/Kastarter/eyeball/issues"
+  },
+  "keywords": [
+    "mcp",
+    "ai-agents",
+    "tool-calling",
+    "function-calling",
+    "typescript",
+    "tool-contracts",
+    "json-schema"
+  ],
   "engines": {
     "node": ">=20"
   },

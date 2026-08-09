@@ -1,6 +1,6 @@
 {
   "name": "@eyeball/catalog",
-  "version": "0.2.0",
+  "version": "0.3.0",
   "description": "Deterministic Eyeball toolkit manifests, auth metadata, and tool discovery.",
   "private": false,
   "type": "module",
@@ -11,6 +11,18 @@
     "directory": "packages/catalog"
   },
   "homepage": "https://github.com/Kastarter/eyeball#readme",
+  "bugs": {
+    "url": "https://github.com/Kastarter/eyeball/issues"
+  },
+  "keywords": [
+    "mcp",
+    "ai-agents",
+    "tool-calling",
+    "function-calling",
+    "typescript",
+    "integration-catalog",
+    "tool-discovery"
+  ],
   "engines": {
     "node": ">=20"
   },

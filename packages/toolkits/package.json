@@ -1,6 +1,6 @@
 {
   "name": "@eyeball/toolkits",
-  "version": "0.2.0",
+  "version": "0.3.0",
   "description": "Provider adapters for Eyeball's canonical integration toolkits.",
   "private": false,
   "type": "module",
@@ -11,6 +11,18 @@
     "directory": "packages/toolkits"
   },
   "homepage": "https://github.com/Kastarter/eyeball#readme",
+  "bugs": {
+    "url": "https://github.com/Kastarter/eyeball/issues"
+  },
+  "keywords": [
+    "mcp",
+    "ai-agents",
+    "tool-calling",
+    "function-calling",
+    "typescript",
+    "integrations",
+    "provider-adapters"
+  ],
   "engines": {
     "node": ">=20"
   },
