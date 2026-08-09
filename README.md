@@ -1,16 +1,122 @@
 # Eyeball
 
-Eyeball is one typed, authenticated tool API for AI agents: agents discover canonical tools once, execute them through the SDK or MCP, and let Eyeball handle provider-specific payloads, credentials, retries, and audit records. It ships 37 toolkits across email, messaging, voice calling, CRMs, business systems, and social data — with per-end-user connected accounts as a first-class primitive and tools shaped for Anthropic, OpenAI, the Vercel AI SDK, or any MCP host.
+Self-host every tool for your agents—credentials never leave your infrastructure.
 
-Eyeball is **open source (MIT)**, and that is the bet: integrations are a problem solved faster by many hands than by one company. Fork it, add the toolkit your agent needs, and open a PR — every adapter hardens the layer every agent can reach. See [CONTRIBUTING.md](./CONTRIBUTING.md).
-
-> **Status:** pre-release. The engineering is complete and gated (build, tests, typecheck, lint); when the optional maintainers' `mocks/` checkout is present, the test gates also run the 493-row contract matrix. The four public packages (`@eyeball/core`, `@eyeball/catalog`, `@eyeball/toolkits`, `@eyeball/sdk`) are cut and MIT-licensed. The npm publish is imminent, pending the `@eyeball` organization. The hosted Cloud control plane lives in a separate private repository and is not part of this open project. Provider adapters are certified against deterministic mocks in that maintainers' suite; live-provider certification is ongoing (Notion and Google Drive are proven live).
-
-## Demo
+Eyeball is a typed, authenticated tool API for AI agents, with 37 toolkits across communications, business systems, and social data. Tools are shaped for Anthropic, OpenAI, the Vercel AI SDK, and any MCP host; the stack is self-hosted and MIT-licensed.
 
 ![Eyeball demo](docs/assets/eyeball.gif)
 
 [▶️ Watch the full-quality video](docs/assets/eyeball.mp4)
+
+## Install
+
+```sh
+npm install @eyeball/sdk
+```
+
+Or run the source development stack:
+
+```sh
+git clone https://github.com/Kastarter/eyeball.git
+cd eyeball
+pnpm install
+pnpm build
+pnpm dev:stack
+```
+
+## Use the SDK
+
+```ts
+import { Eyeball } from "@eyeball/sdk";
+
+const eyeball = new Eyeball({
+  apiKey: process.env.EYEBALL_API_KEY!,
+  baseUrl: process.env.EYEBALL_EXECUTOR_URL!,
+});
+
+const tools = await eyeball.tools.get({ toolkits: ["gmail"], format: "anthropic" });
+const result = await eyeball.tools.run("gmail.search_emails", { query: "from:reservations@example.com", pageSize: 5 }, { userId: "demo_user" });
+```
+
+## Why Eyeball
+
+- Credentials stay on your infrastructure. The May 2026 Composio breach exposed customer API keys and OAuth tokens, a reminder why that boundary matters.
+- One typed API covers 37 toolkits, so agents call canonical tools instead of provider-specific payloads.
+- Get tool definitions shaped for Anthropic, OpenAI, the Vercel AI SDK, or any MCP host.
+- MCP search discovery keeps large tool catalogs out of the model context; [contribute an adapter](./CONTRIBUTING.md) to extend the MIT core.
+
+## Quickstart
+
+Use Node.js 24 or newer and pnpm 11.
+
+```sh
+pnpm install
+pnpm build
+pnpm dev:stack
+```
+
+`dev:stack` starts the included starter mock stack (Echo, Gmail, Slack, and GitHub), then starts:
+
+- the starter Mockhouse at `http://127.0.0.1:4010`
+- the executor at `http://127.0.0.1:3000`
+- the MCP gateway at `http://127.0.0.1:3001/mcp`
+- a development project using the dev API key `eyeball_dev_project` and user `demo_user`
+
+The SDK example above works unchanged against the starter stack.
+
+For full provider coverage, maintainers use a separate repository checked out at `mocks/`: it contains the full 30-provider Mockhouse and the 493-row certification matrix. When that checkout is present, `pnpm dev:stack` and mock-dependent tests automatically use it; without it, `dev:stack` uses the starter stack and mock-dependent suites skip.
+
+With the stack running, save the SDK example above as `example.ts` in the repository root, then run:
+
+```sh
+EYEBALL_API_KEY=eyeball_dev_project \
+EYEBALL_EXECUTOR_URL=http://127.0.0.1:3000 \
+node --import tsx example.ts
+```
+
+### Connect from Claude Code or any MCP host
+
+With the stack running, register the gateway as an MCP server. For Claude Code:
+
+```sh
+claude mcp add --transport http eyeball http://127.0.0.1:3001/mcp \
+  --header "Authorization: Bearer eyeball_dev_project"
+```
+
+or in a `.mcp.json` / Cursor MCP configuration:
+
+```json
+{
+  "mcpServers": {
+    "eyeball": {
+      "type": "http",
+      "url": "http://127.0.0.1:3001/mcp",
+      "headers": { "Authorization": "Bearer eyeball_dev_project" }
+    }
+  }
+}
+```
+
+The gateway defaults to search discovery: agents call `eyeball.search_tools`
+to find canonical tools and `eyeball.execute_tool` to run them, so hundreds of
+tools never flood the model's context. Async-by-nature tools (such as
+starting a phone call) run as bounded synchronous calls for ordinary MCP
+hosts, or as pollable tasks for hosts that negotiate MCP Tasks.
+
+The listener ports and development identity can be changed with `EYEBALL_MOCKHOUSE_PORT`, `EYEBALL_EXECUTOR_PORT`, `EYEBALL_MCP_GATEWAY_PORT`, `EYEBALL_DEV_API_KEY`, `EYEBALL_DEV_PROJECT_ID`, and `EYEBALL_DEV_USER_ID`.
+
+## Live voice agents
+
+Voice agents are first-class: compose an agent (system prompt, LLM, TTS/STT,
+tool allowlist), then run it over web audio or the phone. From the dashboard's
+Voice Agents panel you can create a web session and **join the room directly in
+the browser** — microphone capture, live agent audio, and the running
+transcript with inline tool calls. Agents with telephony tools can place real
+outbound calls mid-session through `voice-agents.start_agent_call`. The full
+live path — LiveKit web session, Deepgram STT, ElevenLabs TTS, Anthropic
+tool-use, and a real Twilio PSTN call answered on a phone — was certified
+end-to-end on 2026-07-25. See [Voice worker](./docs-site/self-hosting/voice-worker.mdx)
+for deployment and the dashboard panel for the interactive flow.
 
 ## Architecture
 
@@ -77,100 +183,6 @@ The main monorepo and private `cloud/` control plane are independent Git reposit
 | `mocks/` | Optional read-only maintainers' checkout: the full 30-provider Mockhouse and 493-row certification matrix; `dev:stack` and tests use it when present |
 | `cloud/` | Nested private control-plane repository: tenancy, Auth Vault/connect flows, key lifecycle, audit, and billing |
 
-## Quickstart
-
-Use Node.js 24 or newer and pnpm 11.
-
-```sh
-pnpm install
-pnpm build
-pnpm dev:stack
-```
-
-`dev:stack` starts the included starter mock stack (Echo, Gmail, Slack, and GitHub), then starts:
-
-- the starter Mockhouse at `http://127.0.0.1:4010`
-- the executor at `http://127.0.0.1:3000`
-- the MCP gateway at `http://127.0.0.1:3001/mcp`
-- a development project using the dev API key `eyeball_dev_project` and user `demo_user`
-
-The SDK example below works unchanged against the starter stack.
-
-For full provider coverage, maintainers use a separate repository checked out at `mocks/`: it contains the full 30-provider Mockhouse and the 493-row certification matrix. When that checkout is present, `pnpm dev:stack` and mock-dependent tests automatically use it; without it, `dev:stack` uses the starter stack and mock-dependent suites skip.
-
-With the stack running, save the following SDK example as `example.ts` in the repository root:
-
-```ts
-import { Eyeball } from "@eyeball/sdk";
-
-const eyeball = new Eyeball({
-  apiKey: process.env.EYEBALL_API_KEY!,
-  baseUrl: process.env.EYEBALL_EXECUTOR_URL!,
-});
-
-const tools = await eyeball.tools.get({
-  toolkits: ["gmail"],
-  format: "anthropic",
-});
-
-const result = await eyeball.tools.run(
-  "gmail.search_emails",
-  { query: "from:reservations@example.com", pageSize: 5 },
-  { userId: "demo_user" },
-);
-console.log({ modelTools: tools.tools.length, result });
-```
-
-```sh
-EYEBALL_API_KEY=eyeball_dev_project \
-EYEBALL_EXECUTOR_URL=http://127.0.0.1:3000 \
-node --import tsx example.ts
-```
-
-### Connect from Claude Code or any MCP host
-
-With the stack running, register the gateway as an MCP server. For Claude Code:
-
-```sh
-claude mcp add --transport http eyeball http://127.0.0.1:3001/mcp \
-  --header "Authorization: Bearer eyeball_dev_project"
-```
-
-or in a `.mcp.json` / Cursor MCP configuration:
-
-```json
-{
-  "mcpServers": {
-    "eyeball": {
-      "type": "http",
-      "url": "http://127.0.0.1:3001/mcp",
-      "headers": { "Authorization": "Bearer eyeball_dev_project" }
-    }
-  }
-}
-```
-
-The gateway defaults to search discovery: agents call `eyeball.search_tools`
-to find canonical tools and `eyeball.execute_tool` to run them, so hundreds of
-tools never flood the model's context. Async-by-nature tools (such as
-starting a phone call) run as bounded synchronous calls for ordinary MCP
-hosts, or as pollable tasks for hosts that negotiate MCP Tasks.
-
-The listener ports and development identity can be changed with `EYEBALL_MOCKHOUSE_PORT`, `EYEBALL_EXECUTOR_PORT`, `EYEBALL_MCP_GATEWAY_PORT`, `EYEBALL_DEV_API_KEY`, `EYEBALL_DEV_PROJECT_ID`, and `EYEBALL_DEV_USER_ID`.
-
-## Live voice agents
-
-Voice agents are first-class: compose an agent (system prompt, LLM, TTS/STT,
-tool allowlist), then run it over web audio or the phone. From the dashboard's
-Voice Agents panel you can create a web session and **join the room directly in
-the browser** — microphone capture, live agent audio, and the running
-transcript with inline tool calls. Agents with telephony tools can place real
-outbound calls mid-session through `voice-agents.start_agent_call`. The full
-live path — LiveKit web session, Deepgram STT, ElevenLabs TTS, Anthropic
-tool-use, and a real Twilio PSTN call answered on a phone — was certified
-end-to-end on 2026-07-25. See [Voice worker](./docs-site/self-hosting/voice-worker.mdx)
-for deployment and the dashboard panel for the interactive flow.
-
 ## Deployment persistence
 
 The executor remains zero-config and process-local by default. Set `EYEBALL_DATABASE_URL` in a deployment to use the Drizzle-backed Postgres stores for executions and 24-hour idempotency, lease-fenced execution and webhook jobs, immutable webhook work snapshots and delivery logs, trigger subscription/cursor/dedup state, redacted trigger-event history, staged-file metadata and content, terminal usage reports awaiting delivery, stable voice-agent heads and immutable revisions, number bindings, executor-side session pointers, lease-fenced observer cursor/phase/retry state, complete voice webhook source envelopes, and message receipts. The MCP gateway uses the same variable for its separate Postgres session/task store while keeping its own migration history. The stock FileStore uses Postgres `bytea` for content today while preserving the seam for a later object-store backend. Each owning service applies only its committed migrations at boot; root `pnpm db:migrate` applies both streams before a coordinated deployment. `docker compose up -d postgres` starts the optional local development database. CI and contract tests use embedded PGlite and do not require Docker.
@@ -205,6 +217,8 @@ ANTHROPIC_API_KEY=... pnpm demo:anthropic
 
 | Surface | Status |
 | --- | --- |
+| Public packages | Four MIT-licensed `v0.2.0` packages are cut for npm: `@eyeball/core`, `@eyeball/catalog`, `@eyeball/toolkits`, and `@eyeball/sdk` |
+| Open-source and Cloud boundary | The hosted Cloud control plane is a separate private repository and is not part of this open project |
 | Activepieces bridge breadth spike | Complete as a private experiment: five pinned pieces introspect, three actions execute in-process, and the decision is selective per-piece promotion with no wholesale vendoring; production isolation and certification remain pending ([RFC 003](./docs/rfcs/003-bridge-spike-findings.md)) |
 | 37 toolkits/provider manifests | Built in catalog `1.1` with canonical schemas and discovery |
 | 493-row contract matrix | Maintainers' optional `mocks/` checkout: 227 smoke rows and 266 explicit `not_supported` rows; root tests run it when that checkout is present |
@@ -213,7 +227,7 @@ ANTHROPIC_API_KEY=... pnpm demo:anthropic
 | Documentation | Built in `docs/`, the verified 112-page `docs-site/` source, and the self-hosted `apps/docs` renderer |
 | Local credential vault | Built with encrypted single-tenant storage and development fixtures |
 | Hosted OAuth vault | Implemented in the private cloud repository with encrypted credentials, hosted connect flows, and refresh scheduling; deployment and live-provider certification remain pending |
-| Real-provider certification | Pending provider credentials and certification runs |
+| Real-provider certification | Ongoing: Notion and Google Drive are proven live; additional provider credentials and certification runs remain pending |
 | Voice-worker control plane | Versioned Python worker, executor bridge, SQLite recovery, and account-free contract suites built; live path certified 2026-07-25 (Twilio PSTN call answered, LiveKit web session, Deepgram/ElevenLabs/Anthropic) |
 | Billing | Implemented in the private cloud repository with versioned plans, usage metering, and Stripe integration; live catalog bootstrap, policy sign-off, and deployment remain pending |
 
