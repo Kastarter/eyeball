@@ -37,7 +37,33 @@ import {
   type StoredMcpTask,
 } from "./session-store.js";
 
+/** The latest initialize/session-based protocol revision supported by the gateway. */
 export const MCP_PROTOCOL_VERSION = "2025-11-25" as const;
+/** The first stateless protocol revision. */
+export const MCP_MODERN_PROTOCOL_VERSION = "2026-07-28" as const;
+/**
+ * Protocol revisions advertised by `server/discover`, in preference order.
+ *
+ * Keep the legacy revision in this list while the gateway supports both eras:
+ * initialize-capable clients continue to negotiate MCP_PROTOCOL_VERSION, while
+ * modern clients can select MCP_MODERN_PROTOCOL_VERSION without a session.
+ */
+export const MCP_PROTOCOL_VERSIONS = [
+  MCP_MODERN_PROTOCOL_VERSION,
+  MCP_PROTOCOL_VERSION,
+] as const;
+export const MCP_UNSUPPORTED_PROTOCOL_VERSION_CODE = -32022 as const;
+export const MCP_PROTOCOL_VERSION_META_KEY =
+  "io.modelcontextprotocol/protocolVersion" as const;
+export const MCP_CLIENT_INFO_META_KEY =
+  "io.modelcontextprotocol/clientInfo" as const;
+export const MCP_CLIENT_CAPABILITIES_META_KEY =
+  "io.modelcontextprotocol/clientCapabilities" as const;
+export const MCP_SERVER_INFO_META_KEY =
+  "io.modelcontextprotocol/serverInfo" as const;
+/** Discovery describes static gateway capabilities and may be shared by clients. */
+export const MCP_DISCOVER_CACHE_TTL_MS = 60 * 60 * 1_000;
+export const MCP_DISCOVER_CACHE_SCOPE = "public" as const;
 export const MCP_SERVER_NAME = "eyeball-mcp-gateway" as const;
 export const MCP_SERVER_VERSION = "0.1.0" as const;
 export const MCP_TASKS_CAPABILITY = "tasks" as const;
@@ -111,6 +137,8 @@ export const systemMcpClock: McpClock = {
 
 export interface McpRequestContext {
   apiKey: string;
+  /** Protocol revision declared by the transport or per-request metadata. */
+  protocolVersion?: string;
   /** One-way binding for the inbound credential and canonical authority scope. */
   authBinding?: string;
   /** Trusted server binding or transport-provided end-user identity. */
@@ -193,6 +221,66 @@ function rpcError(
 
 function rpcResult(id: JsonRpcId, result: unknown): JsonRpcResponse {
   return { jsonrpc: "2.0", id, result };
+}
+
+function supportedProtocolVersion(value: string): boolean {
+  return (MCP_PROTOCOL_VERSIONS as readonly string[]).includes(value);
+}
+
+function requestProtocolVersion(value: unknown): string | undefined {
+  if (!isRecord(value) || !isRecord(value.params)) return undefined;
+  const meta = value.params._meta;
+  if (!isRecord(meta)) return undefined;
+  const version = meta[MCP_PROTOCOL_VERSION_META_KEY];
+  return typeof version === "string" ? version : undefined;
+}
+
+function modernRequest(value: unknown, context: McpRequestContext): boolean {
+  return (
+    (context.protocolVersion ?? requestProtocolVersion(value)) ===
+    MCP_MODERN_PROTOCOL_VERSION
+  );
+}
+
+function unsupportedProtocolVersion(
+  id: JsonRpcId,
+  requested: string,
+): JsonRpcResponse {
+  return rpcError(
+    id,
+    MCP_UNSUPPORTED_PROTOCOL_VERSION_CODE,
+    `Unsupported MCP protocol version: ${requested}.`,
+    {
+      requested,
+      supported: [...MCP_PROTOCOL_VERSIONS],
+    },
+  );
+}
+
+function modernResponse(
+  response: JsonRpcResponse,
+  serverVersion: string,
+): JsonRpcResponse {
+  if (response.result === undefined || !isRecord(response.result)) {
+    return response;
+  }
+  const resultMeta = isRecord(response.result._meta)
+    ? response.result._meta
+    : {};
+  return {
+    ...response,
+    result: {
+      ...response.result,
+      resultType: response.result.resultType ?? "complete",
+      _meta: {
+        ...resultMeta,
+        [MCP_SERVER_INFO_META_KEY]: resultMeta[MCP_SERVER_INFO_META_KEY] ?? {
+          name: MCP_SERVER_NAME,
+          version: serverVersion,
+        },
+      },
+    },
+  };
 }
 
 function serialized(value: unknown): string {
@@ -813,26 +901,102 @@ export class McpProtocol {
       return {};
     }
 
+    const declaredVersion = requestProtocolVersion(value);
+    if (
+      declaredVersion !== undefined &&
+      !supportedProtocolVersion(declaredVersion)
+    ) {
+      return {
+        response: unsupportedProtocolVersion(message.id, declaredVersion),
+      };
+    }
+    if (
+      context.protocolVersion !== undefined &&
+      !supportedProtocolVersion(context.protocolVersion)
+    ) {
+      return {
+        response: unsupportedProtocolVersion(
+          message.id,
+          context.protocolVersion,
+        ),
+      };
+    }
+    if (
+      declaredVersion !== undefined &&
+      context.protocolVersion !== undefined &&
+      declaredVersion !== context.protocolVersion
+    ) {
+      return {
+        response: unsupportedProtocolVersion(message.id, declaredVersion),
+      };
+    }
+
+    const isModern = modernRequest(value, context);
+    if (isModern && message.method === "initialize") {
+      return {
+        response: rpcError(message.id, -32601, "Method not found"),
+      };
+    }
+    if (message.method === "server/discover" && !isModern) {
+      return {
+        response: rpcError(message.id, -32601, "Method not found"),
+      };
+    }
+
+    let result: McpProtocolResult;
     switch (message.method) {
       case "initialize":
-        return this.#initialize(message, context);
+        result = await this.#initialize(message, context);
+        break;
+      case "server/discover":
+        result = {
+          response: rpcResult(message.id, {
+            resultType: "complete",
+            supportedVersions: [...MCP_PROTOCOL_VERSIONS],
+            capabilities: { tools: { listChanged: true } },
+            _meta: {
+              [MCP_SERVER_INFO_META_KEY]: {
+                name: MCP_SERVER_NAME,
+                version: this.#serverVersion,
+              },
+            },
+            instructions:
+              "Use eyeball.search_tools to find canonical provider tools. In search discovery mode, invoke a returned tool through eyeball.execute_tool. Tool failures are returned as normalized MCP tool results.",
+            ttlMs: MCP_DISCOVER_CACHE_TTL_MS,
+            cacheScope: MCP_DISCOVER_CACHE_SCOPE,
+          }),
+        };
+        break;
       case "ping":
-        return { response: rpcResult(message.id, {}) };
+        result = { response: rpcResult(message.id, {}) };
+        break;
       case "tools/list":
-        return this.#listTools(message, context);
+        result = await this.#listTools(message, context);
+        break;
       case "tools/call":
-        return this.#call(message, context);
+        result = await this.#call(message, context);
+        break;
       case "tasks/get":
-        return this.#getTask(message, context);
+        result = await this.#getTask(message, context);
+        break;
       case "tasks/result":
-        return this.#getTaskResult(message, context);
+        result = await this.#getTaskResult(message, context);
+        break;
       case "tasks/cancel":
-        return this.#cancelTask(message, context);
+        result = await this.#cancelTask(message, context);
+        break;
       default:
-        return {
+        result = {
           response: rpcError(message.id, -32601, "Method not found"),
         };
     }
+    if (isModern && result.response !== undefined) {
+      return {
+        ...result,
+        response: modernResponse(result.response, this.#serverVersion),
+      };
+    }
+    return result;
   }
 
   async #initialize(
