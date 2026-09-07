@@ -8,6 +8,10 @@ import { Hono } from "hono";
 import { describe, expect, it, vi } from "vitest";
 import {
   createMcpGatewayApp,
+  InMemorySessionStore,
+  MCP_DISCOVER_CACHE_SCOPE,
+  MCP_DISCOVER_CACHE_TTL_MS,
+  MCP_MODERN_PROTOCOL_VERSION,
   MCP_PROTOCOL_VERSION,
   type McpExecuteRequest,
   type McpExecutor,
@@ -91,6 +95,120 @@ describe("MCP Streamable HTTP gateway", () => {
         serverInfo: { name: "eyeball-mcp-gateway", version: "0.1.0" },
         instructions:
           "Use eyeball.search_tools to find canonical provider tools. In search discovery mode, invoke a returned tool through eyeball.execute_tool. Tool failures are returned as normalized MCP tool results. Async-by-nature tools run to completion before the call returns.",
+      },
+    });
+  });
+
+  it("discovers both protocol eras without allocating a legacy session", async () => {
+    const sessionStore = new InMemorySessionStore();
+    const setSession = vi.spyOn(sessionStore, "set");
+    const app = createMcpGatewayApp({
+      executor: executor(),
+      apiKey: API_KEY,
+      sessionStore,
+    });
+    const response = await request(
+      app,
+      rpc("server/discover", {
+        _meta: {
+          "io.modelcontextprotocol/protocolVersion":
+            MCP_MODERN_PROTOCOL_VERSION,
+          "io.modelcontextprotocol/clientInfo": {
+            name: "modern-test",
+            version: "1.0.0",
+          },
+          "io.modelcontextprotocol/clientCapabilities": {},
+        },
+      }),
+    );
+
+    expect(response.status).toBe(200);
+    await expect(response.json()).resolves.toMatchObject({
+      result: {
+        resultType: "complete",
+        supportedVersions: [MCP_MODERN_PROTOCOL_VERSION, MCP_PROTOCOL_VERSION],
+        capabilities: { tools: { listChanged: true } },
+        ttlMs: MCP_DISCOVER_CACHE_TTL_MS,
+        cacheScope: MCP_DISCOVER_CACHE_SCOPE,
+        _meta: {
+          "io.modelcontextprotocol/serverInfo": {
+            name: "eyeball-mcp-gateway",
+            version: "0.1.0",
+          },
+        },
+      },
+    });
+    expect(setSession).not.toHaveBeenCalled();
+    expect(response.headers.get("Mcp-Session-Id")).toBeNull();
+  });
+
+  it.each([
+    "tools/list",
+    "tools/call",
+  ])("preserves session validation for modern %s until the tools migration", async (method) => {
+    const backend = executor();
+    const app = createMcpGatewayApp({ executor: backend, apiKey: API_KEY });
+    const response = await request(
+      app,
+      rpc(method, {
+        name: "eyeball.search_tools",
+        arguments: { query: "email" },
+        _meta: {
+          "io.modelcontextprotocol/protocolVersion":
+            MCP_MODERN_PROTOCOL_VERSION,
+          "io.modelcontextprotocol/clientCapabilities": {},
+        },
+      }),
+      { "Mcp-Session-Id": "unknown-session" },
+    );
+
+    expect(response.status).toBe(404);
+    expect(backend.execute).not.toHaveBeenCalled();
+  });
+
+  it("returns the structured unsupported-version error for HTTP negotiation", async () => {
+    const app = createMcpGatewayApp({ executor: executor(), apiKey: API_KEY });
+    const response = await request(app, rpc("server/discover"), {
+      "MCP-Protocol-Version": "2099-01-01",
+    });
+
+    expect(response.status).toBe(400);
+    await expect(response.json()).resolves.toEqual({
+      jsonrpc: "2.0",
+      id: 1,
+      error: {
+        code: -32022,
+        message: "Unsupported MCP protocol version: 2099-01-01.",
+        data: {
+          requested: "2099-01-01",
+          supported: [MCP_MODERN_PROTOCOL_VERSION, MCP_PROTOCOL_VERSION],
+        },
+      },
+    });
+  });
+
+  it("stamps modern results while leaving the legacy path unchanged", async () => {
+    const app = createMcpGatewayApp({ executor: executor(), apiKey: API_KEY });
+    const response = await request(
+      app,
+      rpc("tools/list", {
+        _meta: {
+          "io.modelcontextprotocol/protocolVersion":
+            MCP_MODERN_PROTOCOL_VERSION,
+          "io.modelcontextprotocol/clientCapabilities": {},
+        },
+      }),
+    );
+
+    await expect(response.json()).resolves.toMatchObject({
+      result: {
+        resultType: "complete",
+        _meta: {
+          "io.modelcontextprotocol/serverInfo": {
+            name: "eyeball-mcp-gateway",
+            version: "0.1.0",
+          },
+        },
       },
     });
   });

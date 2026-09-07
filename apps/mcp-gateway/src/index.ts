@@ -11,7 +11,10 @@ import {
   type GatewayCatalog,
   type JsonRpcNotification,
   type JsonRpcResponse,
-  MCP_PROTOCOL_VERSION,
+  MCP_MODERN_PROTOCOL_VERSION,
+  MCP_PROTOCOL_VERSION_META_KEY,
+  MCP_PROTOCOL_VERSIONS,
+  MCP_UNSUPPORTED_PROTOCOL_VERSION_CODE,
   type McpClock,
   McpProtocol,
   parseJsonRpc,
@@ -222,6 +225,26 @@ function requestMethod(value: unknown): string | undefined {
     : undefined;
 }
 
+function requestProtocolVersion(value: unknown): string | undefined {
+  if (
+    typeof value !== "object" ||
+    value === null ||
+    !("params" in value) ||
+    typeof value.params !== "object" ||
+    value.params === null ||
+    Array.isArray(value.params) ||
+    !("_meta" in value.params) ||
+    typeof value.params._meta !== "object" ||
+    value.params._meta === null ||
+    Array.isArray(value.params._meta) ||
+    !(MCP_PROTOCOL_VERSION_META_KEY in value.params._meta)
+  ) {
+    return undefined;
+  }
+  const version = value.params._meta[MCP_PROTOCOL_VERSION_META_KEY];
+  return typeof version === "string" ? version : undefined;
+}
+
 function isNotification(value: unknown): boolean {
   return (
     typeof value === "object" &&
@@ -265,21 +288,51 @@ function originAllowed(
   return allowedOrigins.includes(origin);
 }
 
-function protocolVersionError(context: Context): Response | undefined {
-  const protocolVersion = context.req.header(PROTOCOL_VERSION_HEADER);
+function protocolVersionError(
+  context: Context,
+  value?: unknown,
+): Response | undefined {
+  const headerVersion = context.req.header(PROTOCOL_VERSION_HEADER);
+  const bodyVersion = requestProtocolVersion(value);
+  if (
+    headerVersion !== undefined &&
+    bodyVersion !== undefined &&
+    headerVersion !== bodyVersion
+  ) {
+    return context.json(
+      {
+        jsonrpc: "2.0",
+        id: requestId(value),
+        error: {
+          code: MCP_UNSUPPORTED_PROTOCOL_VERSION_CODE,
+          message: `MCP protocol version mismatch: header ${headerVersion}, request ${bodyVersion}.`,
+          data: {
+            requested: bodyVersion,
+            supported: [...MCP_PROTOCOL_VERSIONS],
+          },
+        },
+      },
+      400,
+    );
+  }
+  const protocolVersion = bodyVersion ?? headerVersion;
   if (
     protocolVersion === undefined ||
-    protocolVersion === MCP_PROTOCOL_VERSION
+    (MCP_PROTOCOL_VERSIONS as readonly string[]).includes(protocolVersion)
   ) {
     return undefined;
   }
   return context.json(
     {
       jsonrpc: "2.0",
-      id: null,
+      id: requestId(value),
       error: {
-        code: -32600,
+        code: MCP_UNSUPPORTED_PROTOCOL_VERSION_CODE,
         message: `Unsupported MCP protocol version: ${protocolVersion}.`,
+        data: {
+          requested: protocolVersion,
+          supported: [...MCP_PROTOCOL_VERSIONS],
+        },
       },
     },
     400,
@@ -592,15 +645,20 @@ function createMcpGatewayComposition(options: McpGatewayOptions = {}): {
       return forbiddenOrigin(context);
     const authenticated = authenticate(context);
     if (authenticated instanceof Response) return authenticated;
-    const versionError = protocolVersionError(context);
-    if (versionError !== undefined) return versionError;
-
     const parsed = parseJsonRpc(await context.req.text());
     if (!parsed.ok) {
       return context.json(parsed.response, 400);
     }
+    const versionError = protocolVersionError(context, parsed.value);
+    if (versionError !== undefined) return versionError;
     const method = requestMethod(parsed.value);
     const sessionId = context.req.header(SESSION_ID_HEADER);
+    const requestedVersion =
+      requestProtocolVersion(parsed.value) ??
+      context.req.header(PROTOCOL_VERSION_HEADER);
+    const isModernDiscovery =
+      requestedVersion === MCP_MODERN_PROTOCOL_VERSION &&
+      method === "server/discover";
     if (method === "initialize" && sessionId !== undefined) {
       return context.json(
         {
@@ -615,7 +673,7 @@ function createMcpGatewayComposition(options: McpGatewayOptions = {}): {
       );
     }
     let activeSession = false;
-    if (sessionId !== undefined) {
+    if (sessionId !== undefined && !isModernDiscovery) {
       const resolved = await protocol.resolveSession(
         sessionId,
         authenticated.authBinding,
@@ -633,7 +691,10 @@ function createMcpGatewayComposition(options: McpGatewayOptions = {}): {
       ...(authenticated.principal?.userId === undefined
         ? {}
         : { pinnedUserId: authenticated.principal.userId }),
-      ...(sessionId === undefined ? {} : { sessionId }),
+      ...(sessionId === undefined || isModernDiscovery ? {} : { sessionId }),
+      ...(requestedVersion === undefined
+        ? {}
+        : { protocolVersion: requestedVersion }),
     };
     const run = async (): Promise<JsonRpcResponse | undefined> => {
       if (sessionId !== undefined && activeSession) {
@@ -666,7 +727,7 @@ function createMcpGatewayComposition(options: McpGatewayOptions = {}): {
     if (wantsSse) {
       return requestSseResponse(
         protocol,
-        sessionId,
+        isModernDiscovery ? undefined : sessionId,
         run,
         requestId(parsed.value),
       );
