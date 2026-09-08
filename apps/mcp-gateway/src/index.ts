@@ -11,6 +11,8 @@ import {
   type GatewayCatalog,
   type JsonRpcNotification,
   type JsonRpcResponse,
+  MCP_CLIENT_CAPABILITIES_META_KEY,
+  MCP_CLIENT_INFO_META_KEY,
   MCP_MODERN_PROTOCOL_VERSION,
   MCP_PROTOCOL_VERSION_META_KEY,
   MCP_PROTOCOL_VERSIONS,
@@ -339,6 +341,86 @@ function protocolVersionError(
   );
 }
 
+function record(value: unknown): value is Record<string, unknown> {
+  return typeof value === "object" && value !== null && !Array.isArray(value);
+}
+
+function decodedName(value: string | undefined): string | undefined {
+  if (value === undefined) return undefined;
+  if (!/^[\t\x20-\x7e]*$/u.test(value)) return undefined;
+  if (!value.startsWith("=?base64?") || !value.endsWith("?=")) return value;
+  const encoded = value.slice(9, -2);
+  // Buffer's decoder is permissive; reject malformed Base64 and invalid UTF-8.
+  if (
+    !/^(?:[A-Za-z0-9+/]{4})*(?:[A-Za-z0-9+/]{2}==|[A-Za-z0-9+/]{3}=)?$/u.test(
+      encoded,
+    )
+  )
+    return undefined;
+  try {
+    return new TextDecoder("utf-8", { fatal: true, ignoreBOM: true }).decode(
+      Buffer.from(encoded, "base64"),
+    );
+  } catch {
+    return undefined;
+  }
+}
+
+function modernRequestError(
+  context: Context,
+  value: unknown,
+): Response | undefined {
+  const headerVersion = context.req.header(PROTOCOL_VERSION_HEADER);
+  const bodyVersion = requestProtocolVersion(value);
+  if (
+    headerVersion !== MCP_MODERN_PROTOCOL_VERSION &&
+    bodyVersion !== MCP_MODERN_PROTOCOL_VERSION
+  )
+    return undefined;
+  if (isNotification(value)) return undefined;
+  const params =
+    record(value) && record(value.params) ? value.params : undefined;
+  const meta = record(params?._meta) ? params._meta : undefined;
+  const clientInfo = meta?.[MCP_CLIENT_INFO_META_KEY];
+  const error = (code: number, message: string) =>
+    context.json(
+      { jsonrpc: "2.0", id: requestId(value), error: { code, message } },
+      400,
+    );
+  if (
+    bodyVersion === undefined ||
+    !record(meta?.[MCP_CLIENT_CAPABILITIES_META_KEY]) ||
+    (clientInfo !== undefined &&
+      (!record(clientInfo) ||
+        typeof clientInfo.name !== "string" ||
+        typeof clientInfo.version !== "string"))
+  ) {
+    return error(-32602, "Invalid per-request MCP metadata.");
+  }
+  const method = requestMethod(value);
+  if (
+    headerVersion !== bodyVersion ||
+    context.req.header("Mcp-Method") !== method
+  ) {
+    return error(
+      -32020,
+      "Header mismatch: MCP-Protocol-Version or Mcp-Method.",
+    );
+  }
+  if (
+    (method === "tools/call" ||
+      method === "prompts/get" ||
+      method === "resources/read") &&
+    (typeof (method === "resources/read" ? params?.uri : params?.name) !==
+      "string" ||
+      decodedName(context.req.header("Mcp-Name")) !==
+        (method === "resources/read" ? params?.uri : params?.name))
+  ) {
+    return error(-32020, "Header mismatch: Mcp-Name.");
+  }
+  return undefined;
+}
+
 function sseHeaders(sessionId?: string): Headers {
   const headers = new Headers({
     "Content-Type": "text/event-stream; charset=utf-8",
@@ -649,6 +731,8 @@ function createMcpGatewayComposition(options: McpGatewayOptions = {}): {
     if (!parsed.ok) {
       return context.json(parsed.response, 400);
     }
+    const envelopeError = modernRequestError(context, parsed.value);
+    if (envelopeError !== undefined) return envelopeError;
     const versionError = protocolVersionError(context, parsed.value);
     if (versionError !== undefined) return versionError;
     const method = requestMethod(parsed.value);
@@ -656,9 +740,11 @@ function createMcpGatewayComposition(options: McpGatewayOptions = {}): {
     const requestedVersion =
       requestProtocolVersion(parsed.value) ??
       context.req.header(PROTOCOL_VERSION_HEADER);
-    const isModernDiscovery =
+    const isModernStateless =
       requestedVersion === MCP_MODERN_PROTOCOL_VERSION &&
-      method === "server/discover";
+      (method === "server/discover" ||
+        method === "tools/list" ||
+        method === "tools/call");
     if (method === "initialize" && sessionId !== undefined) {
       return context.json(
         {
@@ -673,7 +759,7 @@ function createMcpGatewayComposition(options: McpGatewayOptions = {}): {
       );
     }
     let activeSession = false;
-    if (sessionId !== undefined && !isModernDiscovery) {
+    if (sessionId !== undefined && !isModernStateless) {
       const resolved = await protocol.resolveSession(
         sessionId,
         authenticated.authBinding,
@@ -691,7 +777,7 @@ function createMcpGatewayComposition(options: McpGatewayOptions = {}): {
       ...(authenticated.principal?.userId === undefined
         ? {}
         : { pinnedUserId: authenticated.principal.userId }),
-      ...(sessionId === undefined || isModernDiscovery ? {} : { sessionId }),
+      ...(sessionId === undefined || isModernStateless ? {} : { sessionId }),
       ...(requestedVersion === undefined
         ? {}
         : { protocolVersion: requestedVersion }),
@@ -727,7 +813,7 @@ function createMcpGatewayComposition(options: McpGatewayOptions = {}): {
     if (wantsSse) {
       return requestSseResponse(
         protocol,
-        isModernDiscovery ? undefined : sessionId,
+        isModernStateless ? undefined : sessionId,
         run,
         requestId(parsed.value),
       );

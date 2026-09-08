@@ -1083,6 +1083,9 @@ export class McpProtocol {
           this.#discoveryMode,
           session?.tasksEnabled ?? false,
         ),
+        ...(context.protocolVersion === MCP_MODERN_PROTOCOL_VERSION
+          ? { ttlMs: 0, cacheScope: "private" }
+          : {}),
       }),
     };
   }

@@ -53,6 +53,25 @@ async function request(
     headers: {
       Authorization: `Bearer ${API_KEY}`,
       "Content-Type": "application/json",
+      ...(typeof body === "object" &&
+      body !== null &&
+      "params" in body &&
+      typeof body.params === "object" &&
+      body.params !== null &&
+      "_meta" in body.params &&
+      typeof body.params._meta === "object" &&
+      body.params._meta !== null &&
+      "io.modelcontextprotocol/protocolVersion" in body.params._meta &&
+      body.params._meta["io.modelcontextprotocol/protocolVersion"] ===
+        MCP_MODERN_PROTOCOL_VERSION
+        ? {
+            "MCP-Protocol-Version": MCP_MODERN_PROTOCOL_VERSION,
+            "Mcp-Method": String("method" in body ? body.method : ""),
+            ...("name" in body.params
+              ? { "Mcp-Name": String(body.params.name) }
+              : {}),
+          }
+        : {}),
       ...headers,
     },
     body: JSON.stringify(body),
@@ -145,7 +164,7 @@ describe("MCP Streamable HTTP gateway", () => {
   it.each([
     "tools/list",
     "tools/call",
-  ])("preserves session validation for modern %s until the tools migration", async (method) => {
+  ])("ignores unknown sessions for modern %s", async (method) => {
     const backend = executor();
     const app = createMcpGatewayApp({ executor: backend, apiKey: API_KEY });
     const response = await request(
@@ -162,7 +181,8 @@ describe("MCP Streamable HTTP gateway", () => {
       { "Mcp-Session-Id": "unknown-session" },
     );
 
-    expect(response.status).toBe(404);
+    expect(response.status).toBe(200);
+    expect(response.headers.has("Mcp-Session-Id")).toBe(false);
     expect(backend.execute).not.toHaveBeenCalled();
   });
 
