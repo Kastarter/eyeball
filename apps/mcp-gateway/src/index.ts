@@ -11,7 +11,12 @@ import {
   type GatewayCatalog,
   type JsonRpcNotification,
   type JsonRpcResponse,
-  MCP_PROTOCOL_VERSION,
+  MCP_CLIENT_CAPABILITIES_META_KEY,
+  MCP_CLIENT_INFO_META_KEY,
+  MCP_MODERN_PROTOCOL_VERSION,
+  MCP_PROTOCOL_VERSION_META_KEY,
+  MCP_PROTOCOL_VERSIONS,
+  MCP_UNSUPPORTED_PROTOCOL_VERSION_CODE,
   type McpClock,
   McpProtocol,
   parseJsonRpc,
@@ -222,6 +227,26 @@ function requestMethod(value: unknown): string | undefined {
     : undefined;
 }
 
+function requestProtocolVersion(value: unknown): string | undefined {
+  if (
+    typeof value !== "object" ||
+    value === null ||
+    !("params" in value) ||
+    typeof value.params !== "object" ||
+    value.params === null ||
+    Array.isArray(value.params) ||
+    !("_meta" in value.params) ||
+    typeof value.params._meta !== "object" ||
+    value.params._meta === null ||
+    Array.isArray(value.params._meta) ||
+    !(MCP_PROTOCOL_VERSION_META_KEY in value.params._meta)
+  ) {
+    return undefined;
+  }
+  const version = value.params._meta[MCP_PROTOCOL_VERSION_META_KEY];
+  return typeof version === "string" ? version : undefined;
+}
+
 function isNotification(value: unknown): boolean {
   return (
     typeof value === "object" &&
@@ -265,25 +290,135 @@ function originAllowed(
   return allowedOrigins.includes(origin);
 }
 
-function protocolVersionError(context: Context): Response | undefined {
-  const protocolVersion = context.req.header(PROTOCOL_VERSION_HEADER);
+function protocolVersionError(
+  context: Context,
+  value?: unknown,
+): Response | undefined {
+  const headerVersion = context.req.header(PROTOCOL_VERSION_HEADER);
+  const bodyVersion = requestProtocolVersion(value);
+  if (
+    headerVersion !== undefined &&
+    bodyVersion !== undefined &&
+    headerVersion !== bodyVersion
+  ) {
+    return context.json(
+      {
+        jsonrpc: "2.0",
+        id: requestId(value),
+        error: {
+          code: MCP_UNSUPPORTED_PROTOCOL_VERSION_CODE,
+          message: `MCP protocol version mismatch: header ${headerVersion}, request ${bodyVersion}.`,
+          data: {
+            requested: bodyVersion,
+            supported: [...MCP_PROTOCOL_VERSIONS],
+          },
+        },
+      },
+      400,
+    );
+  }
+  const protocolVersion = bodyVersion ?? headerVersion;
   if (
     protocolVersion === undefined ||
-    protocolVersion === MCP_PROTOCOL_VERSION
+    (MCP_PROTOCOL_VERSIONS as readonly string[]).includes(protocolVersion)
   ) {
     return undefined;
   }
   return context.json(
     {
       jsonrpc: "2.0",
-      id: null,
+      id: requestId(value),
       error: {
-        code: -32600,
+        code: MCP_UNSUPPORTED_PROTOCOL_VERSION_CODE,
         message: `Unsupported MCP protocol version: ${protocolVersion}.`,
+        data: {
+          requested: protocolVersion,
+          supported: [...MCP_PROTOCOL_VERSIONS],
+        },
       },
     },
     400,
   );
+}
+
+function record(value: unknown): value is Record<string, unknown> {
+  return typeof value === "object" && value !== null && !Array.isArray(value);
+}
+
+function decodedName(value: string | undefined): string | undefined {
+  if (value === undefined) return undefined;
+  if (!/^[\t\x20-\x7e]*$/u.test(value)) return undefined;
+  if (!value.startsWith("=?base64?") || !value.endsWith("?=")) return value;
+  const encoded = value.slice(9, -2);
+  // Buffer's decoder is permissive; reject malformed Base64 and invalid UTF-8.
+  if (
+    !/^(?:[A-Za-z0-9+/]{4})*(?:[A-Za-z0-9+/]{2}==|[A-Za-z0-9+/]{3}=)?$/u.test(
+      encoded,
+    )
+  )
+    return undefined;
+  try {
+    return new TextDecoder("utf-8", { fatal: true, ignoreBOM: true }).decode(
+      Buffer.from(encoded, "base64"),
+    );
+  } catch {
+    return undefined;
+  }
+}
+
+function modernRequestError(
+  context: Context,
+  value: unknown,
+): Response | undefined {
+  const headerVersion = context.req.header(PROTOCOL_VERSION_HEADER);
+  const bodyVersion = requestProtocolVersion(value);
+  if (
+    headerVersion !== MCP_MODERN_PROTOCOL_VERSION &&
+    bodyVersion !== MCP_MODERN_PROTOCOL_VERSION
+  )
+    return undefined;
+  if (isNotification(value)) return undefined;
+  const params =
+    record(value) && record(value.params) ? value.params : undefined;
+  const meta = record(params?._meta) ? params._meta : undefined;
+  const clientInfo = meta?.[MCP_CLIENT_INFO_META_KEY];
+  const error = (code: number, message: string) =>
+    context.json(
+      { jsonrpc: "2.0", id: requestId(value), error: { code, message } },
+      400,
+    );
+  if (
+    bodyVersion === undefined ||
+    !record(meta?.[MCP_CLIENT_CAPABILITIES_META_KEY]) ||
+    (clientInfo !== undefined &&
+      (!record(clientInfo) ||
+        typeof clientInfo.name !== "string" ||
+        typeof clientInfo.version !== "string"))
+  ) {
+    return error(-32602, "Invalid per-request MCP metadata.");
+  }
+  const method = requestMethod(value);
+  if (
+    headerVersion !== bodyVersion ||
+    context.req.header("Mcp-Method") !== method
+  ) {
+    return error(
+      -32020,
+      "Header mismatch: MCP-Protocol-Version or Mcp-Method.",
+    );
+  }
+  if (
+    (method === "tools/call" ||
+      method === "prompts/get" ||
+      method === "resources/read") &&
+    (typeof (method === "resources/read" ? params?.uri : params?.name) !==
+      "string" ||
+      decodedName(context.req.header("Mcp-Name")) !==
+        (method === "resources/read" ? params?.uri : params?.name))
+  ) {
+    return error(-32020, "Header mismatch: Mcp-Name.");
+  }
+  return undefined;
 }
 
 function sseHeaders(sessionId?: string): Headers {
@@ -592,15 +727,24 @@ function createMcpGatewayComposition(options: McpGatewayOptions = {}): {
       return forbiddenOrigin(context);
     const authenticated = authenticate(context);
     if (authenticated instanceof Response) return authenticated;
-    const versionError = protocolVersionError(context);
-    if (versionError !== undefined) return versionError;
-
     const parsed = parseJsonRpc(await context.req.text());
     if (!parsed.ok) {
       return context.json(parsed.response, 400);
     }
+    const envelopeError = modernRequestError(context, parsed.value);
+    if (envelopeError !== undefined) return envelopeError;
+    const versionError = protocolVersionError(context, parsed.value);
+    if (versionError !== undefined) return versionError;
     const method = requestMethod(parsed.value);
     const sessionId = context.req.header(SESSION_ID_HEADER);
+    const requestedVersion =
+      requestProtocolVersion(parsed.value) ??
+      context.req.header(PROTOCOL_VERSION_HEADER);
+    const isModernStateless =
+      requestedVersion === MCP_MODERN_PROTOCOL_VERSION &&
+      (method === "server/discover" ||
+        method === "tools/list" ||
+        method === "tools/call");
     if (method === "initialize" && sessionId !== undefined) {
       return context.json(
         {
@@ -615,7 +759,7 @@ function createMcpGatewayComposition(options: McpGatewayOptions = {}): {
       );
     }
     let activeSession = false;
-    if (sessionId !== undefined) {
+    if (sessionId !== undefined && !isModernStateless) {
       const resolved = await protocol.resolveSession(
         sessionId,
         authenticated.authBinding,
@@ -633,7 +777,10 @@ function createMcpGatewayComposition(options: McpGatewayOptions = {}): {
       ...(authenticated.principal?.userId === undefined
         ? {}
         : { pinnedUserId: authenticated.principal.userId }),
-      ...(sessionId === undefined ? {} : { sessionId }),
+      ...(sessionId === undefined || isModernStateless ? {} : { sessionId }),
+      ...(requestedVersion === undefined
+        ? {}
+        : { protocolVersion: requestedVersion }),
     };
     const run = async (): Promise<JsonRpcResponse | undefined> => {
       if (sessionId !== undefined && activeSession) {
@@ -666,7 +813,7 @@ function createMcpGatewayComposition(options: McpGatewayOptions = {}): {
     if (wantsSse) {
       return requestSseResponse(
         protocol,
-        sessionId,
+        isModernStateless ? undefined : sessionId,
         run,
         requestId(parsed.value),
       );

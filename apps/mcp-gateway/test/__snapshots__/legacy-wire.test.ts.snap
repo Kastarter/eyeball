@@ -1,0 +1,136 @@
+// Vitest Snapshot v1, https://vitest.dev/guide/snapshot.html
+
+exports[`preserves the PR1 legacy wire contract 1`] = `
+[
+  {
+    "body": {
+      "id": 1,
+      "jsonrpc": "2.0",
+      "result": {
+        "capabilities": {
+          "tools": {
+            "listChanged": true,
+          },
+        },
+        "instructions": "Use eyeball.search_tools to find canonical provider tools. In search discovery mode, invoke a returned tool through eyeball.execute_tool. Tool failures are returned as normalized MCP tool results. Async-by-nature tools run to completion before the call returns.",
+        "protocolVersion": "2025-11-25",
+        "serverInfo": {
+          "name": "eyeball-mcp-gateway",
+          "version": "0.1.0",
+        },
+      },
+    },
+    "headers": {
+      "content-type": "application/json",
+      "mcp-session-id": "legacy_session",
+    },
+    "status": 200,
+  },
+  {
+    "body": {
+      "id": 1,
+      "jsonrpc": "2.0",
+      "result": {
+        "tools": {
+          "count": 228,
+          "sha256": "182cda2491de473055f301754999dab526369c547c92af2c84b102ae99de8e01",
+        },
+      },
+    },
+    "headers": {
+      "content-type": "application/json",
+    },
+    "status": 200,
+  },
+  {
+    "body": {
+      "id": 1,
+      "jsonrpc": "2.0",
+      "result": {
+        "_meta": {
+          "dev.eyeball/execution": {
+            "catalogVersion": "1.1",
+            "executionId": "exe_legacy",
+            "latencyMs": 1,
+            "status": "succeeded",
+            "tool": "gmail.list_emails",
+            "toolVersion": "1.0.0",
+          },
+        },
+        "content": [
+          {
+            "text": "{"emails":[]}",
+            "type": "text",
+          },
+        ],
+        "structuredContent": {
+          "emails": [],
+        },
+      },
+    },
+    "headers": {
+      "content-type": "application/json",
+    },
+    "status": 200,
+  },
+  {
+    "body": {
+      "error": {
+        "code": -32004,
+        "message": "MCP session not found.",
+      },
+      "id": null,
+      "jsonrpc": "2.0",
+    },
+    "headers": {
+      "content-type": "application/json",
+    },
+    "status": 404,
+  },
+  {
+    "body": {
+      "id": 1,
+      "jsonrpc": "2.0",
+      "result": {
+        "_meta": {
+          "dev.eyeball/execution": {
+            "catalogVersion": "1.1",
+            "executionId": "exe_legacy",
+            "latencyMs": 1,
+            "status": "succeeded",
+            "tool": "gmail.list_emails",
+            "toolVersion": "1.0.0",
+          },
+        },
+        "content": [
+          {
+            "text": "{"emails":[]}",
+            "type": "text",
+          },
+        ],
+        "structuredContent": {
+          "emails": [],
+        },
+      },
+    },
+    "headers": {
+      "content-type": "application/json",
+    },
+    "status": 200,
+  },
+  {
+    "body": {
+      "error": {
+        "code": -32600,
+        "message": "Mcp-Session-Id is required.",
+      },
+      "id": null,
+      "jsonrpc": "2.0",
+    },
+    "headers": {
+      "content-type": "application/json",
+    },
+    "status": 400,
+  },
+]
+`;
